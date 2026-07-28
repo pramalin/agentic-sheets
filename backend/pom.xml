@@ -20,10 +20,12 @@
     <version>0.1.0-SNAPSHOT</version>
     <name>agentic-sheets-backend</name>
     <description>
-        Spring Boot backend for agentic-sheets. Step 2: health endpoint
-        only. Spring AI (MCP client, tool-calling agent) arrives in Step 5;
-        a datasource arrives in Step 4. Deliberately minimal until each of
-        those is actually needed, not pre-wired speculatively.
+        Spring Boot backend for agentic-sheets. Step 4: CanonicalModelRegistry
+        (parses canonical-models/*.yaml and client-configs/*.yaml into typed,
+        validated objects) plus a JDBC connection to the orchestration
+        Postgres schema. Spring AI (MCP client, tool-calling agent) arrives
+        in Step 5; repository/DAO code for the orchestration tables arrives
+        when something actually needs to read or write them.
     </description>
 
     <properties>
@@ -39,6 +41,34 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Plain JDBC, not JPA/Hibernate — Step 4 only needs the
+             orchestration schema to exist and be reachable (surfaced via
+             actuator's db health indicator). Real repository/DAO code for
+             import_batch, mapping_proposal, etc. arrives in later steps
+             when something actually reads/writes them; no ORM layer
+             speculatively added ahead of that. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Declared explicitly rather than relying on it arriving
+             transitively via spring-boot-starter (which pulls it in for
+             application.yml support) — canonical-models/*.yaml and
+             client-configs/*.yaml come from various teams, not just this
+             project's own authors, so this needs to be a stable, visible
+             dependency rather than an implicit one. Version is
+             BOM-managed by spring-boot-starter-parent. -->
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
         </dependency>
 
         <dependency>

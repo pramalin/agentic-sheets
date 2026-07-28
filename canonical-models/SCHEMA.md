@@ -136,7 +136,7 @@ Configuration here is expected to change often, not to be set once and
 forgotten — which means *how* it's loaded matters as much as its shape.
 One rule: **exactly one component parses these files, ever.** A
 `CanonicalModelRegistry` reads `canonical-models/*.yaml`, parses each into
-the typed `CanonicalType` tree (`runtime-sketch/CanonicalType.java`),
+the typed `CanonicalType` tree (`backend/src/main/java/com/alai/agenticsheets/canonical/`),
 validates it (every type reference resolves, `root` exists, no dangling
 names), and holds the result as one immutable `CanonicalModel` object per
 team. Every downstream consumer — the agent's prompt builder, the

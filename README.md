@@ -44,14 +44,17 @@ below.
 ## Repository layout
 
 ```
-compose.yaml         Postgres (Step 1); backend/frontend services arrive later
+compose.yaml         Postgres + backend; frontend service arrives at Step 8
 .env.example                 Postgres credentials -- copy to .env
+db/init/                      Plain SQL orchestration schema (Step 4)
+backend/
+  pom.xml, Dockerfile
+  src/main/java/com/alai/agenticsheets/
+    canonical/                CanonicalModelRegistry and the ADT type model (Step 4)
 canonical-models/
   SCHEMA.md                  The ADT configuration format itself
   holdings.yaml               Canonical model: holdings/positions
   market_rate_book_value.yaml Canonical model: market rate + book value
-  runtime-sketch/
-    CanonicalType.java        Illustrative JVM representation (Step 4 implements this for real)
 client-configs/
   jpmc.yaml, metlife.yaml,
   pimco.yaml                  Per-client source conventions (date format, etc.) -- see SCHEMA.md
@@ -74,8 +77,17 @@ mapping-notes.md              The reasoning behind every mapping decision above,
 cp .env.example .env
 docker compose up -d --build
 docker compose ps                                # postgres and backend should both report healthy
-curl -f http://localhost:8081/actuator/health     # {"status":"UP", ...}
+curl -f http://localhost:8081/actuator/health     # {"status":"UP", ..., "db":{"status":"UP"}}
+curl -s http://localhost:8081/internal/canonical/models | jq   # both canonical models loaded
+curl -s http://localhost:8081/internal/canonical/clients | jq  # jpmc, metlife, pimco
 ```
+
+If you already ran `docker compose up` before this change, the `postgres-data`
+volume already exists and initialized *without* the orchestration schema --
+Postgres only runs `docker-entrypoint-initdb.d` scripts against a brand
+new, empty data directory. Either `docker compose down -v` first (destroys
+the volume, re-initializes cleanly) or apply `db/init/01-orchestration-schema.sql`
+to the running container by hand.
 
 ## Roadmap
 
@@ -84,13 +96,13 @@ curl -f http://localhost:8081/actuator/health     # {"status":"UP", ...}
 - [x] **Step 2** — Spring Boot backend skeleton (health endpoint).
       Boot 4.1.0 + Spring AI 2.0.0, matching `sheets-reader-mcp`'s stack.
 - [x] **Step 3** — Wire the backend into `compose.yaml`; verify
-      `docker compose up` end to end. *(this commit)*
+      `docker compose up` end to end.
 - [ ] **Step 4** — `CanonicalModelRegistry`: parse `canonical-models/*.yaml`
       and `client-configs/*.yaml` into typed, validated objects (atomic,
       fail-safe reload). Orchestration Postgres schema via a plain SQL
       init script: `import_batch`, `mapping_proposal`, `mapping_memory`,
       `delivery_log`. No canonical *target* tables here — those belong to
-      each team's own service.
+      each team's own service. *(this commit, pending verification)*
 - [ ] **Step 5** — Spring AI MCP client wired to `sheets-reader-mcp`.
       First capability: explore a spreadsheet
       (`list_worksheets`/`describe_table`/`read_rows`) — no mapping logic

@@ -8,12 +8,24 @@ server:
 spring:
   application:
     name: agentic-sheets-backend
+  datasource:
+    url: jdbc:postgresql://${AGENTIC_SHEETS_DB_HOST:localhost}:${AGENTIC_SHEETS_DB_PORT:5432}/${POSTGRES_DB:agentic_sheets}
+    username: ${POSTGRES_USER:agentic_sheets}
+    password: ${POSTGRES_PASSWORD:}
+
+agentic-sheets:
+  canonical-models-dir: ${AGENTIC_SHEETS_CANONICAL_MODELS_DIR:/config/canonical-models}
+  client-configs-dir: ${AGENTIC_SHEETS_CLIENT_CONFIGS_DIR:/config/client-configs}
+  canonical:
+    reload-interval-ms: ${AGENTIC_SHEETS_CANONICAL_RELOAD_MS:300000}
 
 management:
   endpoints:
     web:
       exposure:
         include: health
+  # DataSourceHealthContributorAutoConfiguration picks this up automatically
+  # once a DataSource bean exists -- /actuator/health now also reports "db".
 
 logging:
   level:

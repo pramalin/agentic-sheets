@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Learned the hard way on sheets-reader-mcp: Maven running directly
+      # on the runner (not inside a Docker image with a pinned JDK) has no
+      # guarantee its default JDK supports --release 21 unless this is
+      # explicit.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Backend unit tests
+        working-directory: backend
+        run: mvn -B test
+
+      # No docker-compose integration run here yet -- that needs a real
+      # Postgres and currently only gets exercised manually. Worth adding
+      # once there's enough orchestration logic to be worth the runner
+      # time; not yet.
