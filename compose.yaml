@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-agentic_sheets}
+      - POSTGRES_USER=${POSTGRES_USER:-agentic_sheets}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Step 4 adds an init script here (docker-entrypoint-initdb.d) for
+      # the orchestration schema -- import_batch, mapping_proposal,
+      # mapping_memory, delivery_log. Deliberately plain SQL, not a
+      # migration framework, same reasoning as agentic-analytics: a
+      # handful of tables that this project owns end to end doesn't need
+      # migration tooling's overhead yet.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentic_sheets}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:

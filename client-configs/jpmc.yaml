@@ -1,0 +1,5 @@
+client: jpmc
+# JPMC's "As Of Date" column arrives as a native Excel date cell, not
+# text -- no string parsing needed, so this is effectively unused. Kept
+# for completeness/documentation rather than left absent.
+dateFormat: yyyy-MM-dd

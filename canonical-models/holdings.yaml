@@ -1,0 +1,82 @@
+# DRAFT -- see mapping-notes.md for the reasoning and open questions.
+model: Holdings
+version: 1
+
+# Placeholder -- real service name/endpoint/auth TBD by whichever team
+# owns holdings persistence. transport: rest shown here; transport: mcp
+# is equally supported (see canonical-models/SCHEMA.md) if that team
+# already runs MCP infrastructure. delivery: shown explicitly here as an
+# example override; market_rate_book_value.yaml omits it entirely to show
+# the all-defaults case.
+target:
+  service: holdings-writer
+  transport: rest
+  endpoint: https://REPLACE-ME.internal/ingest/holdings
+  auth:
+    type: api-key
+    secretRef: HOLDINGS_WRITER_API_KEY
+  delivery:
+    maxAttempts: 8              # holdings-writer is known to be slow to warm up after a deploy
+    backoff: exponential
+    initialDelaySeconds: 5
+    maxDelaySeconds: 120
+
+types:
+  Holding:
+    kind: record
+    fields:
+      # Explicit format shown here as a demonstration -- yyyy-MM-dd is
+      # also the default, so this line is redundant in practice. What it
+      # is NOT is a statement about how any client's raw spreadsheet
+      # writes its own dates -- that's client-configs/<client>.yaml,
+      # entirely separate.
+      as_of_date: { type: Date, format: yyyy-MM-dd }
+      client_id: String
+      account_id: String
+      security_id: String
+      security_description: String?
+      asset_class: AssetClass
+      quantity: Number
+      unit_cost: Number?
+      market_price: Number?
+      market_value: Number
+      currency: Currency
+      custodian: String?
+
+  # Sum type: a position is EXACTLY ONE of these, and FixedIncome carries
+  # fields the other variants don't have. This replaces asset_class as a
+  # free-text String -- "Equity" vs "equity" vs "EQ" is now a mapping
+  # problem the agent solves once (which variant does this row belong to),
+  # not a data-quality problem that leaks into every downstream query.
+  AssetClass:
+    kind: sum
+    variants:
+      Equity:
+        kind: record
+        fields: {}
+      FixedIncome:
+        kind: record
+        fields:
+          maturity_date: Date?
+          coupon_rate: Number?
+          credit_rating: String?
+      Cash:
+        kind: record
+        fields: {}
+      Alternative:
+        kind: record
+        fields: {}
+
+  # Sum type with every variant empty -- structurally just an enum, shown
+  # here to make the point that "enum" isn't a separate concept from "sum
+  # type", it's the degenerate case where no variant carries a payload.
+  Currency:
+    kind: sum
+    variants:
+      USD: { kind: record, fields: {} }
+      EUR: { kind: record, fields: {} }
+      GBP: { kind: record, fields: {} }
+      JPY: { kind: record, fields: {} }
+      CAD: { kind: record, fields: {} }
+
+root: Holding

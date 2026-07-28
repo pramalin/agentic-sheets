@@ -1,0 +1,39 @@
+# RESOLVED (was a sum-vs-product open question): both market_rate and
+# book_value are always present on a row -- Entry is a plain product type,
+# not a sum. market_rate is stored as a FRACTION (0.05375, not 5.375).
+model: MarketRateBookValue
+version: 1
+
+# Placeholder. Uses transport: mcp here specifically to show the other
+# option next to holdings.yaml's transport: rest -- pick whichever a given
+# team's own service actually supports, don't standardize on one globally.
+target:
+  service: rates-writer
+  transport: mcp
+  endpoint: https://REPLACE-ME.internal/mcp
+  tool: upsert_rate_and_book_value
+  auth:
+    type: oauth2-client-credentials
+    secretRef: RATES_WRITER_OAUTH_CLIENT
+
+types:
+  Entry:
+    kind: record
+    fields:
+      as_of_date: Date
+      client_id: String
+      instrument_id: String
+      description: String?
+      market_rate: Number      # fraction: 0.05375 means 5.375%
+      book_value: Number
+      effective_date: Date?
+      currency: Currency
+
+  Currency:
+    kind: sum
+    variants:
+      USD: { kind: record, fields: {} }
+      EUR: { kind: record, fields: {} }
+      GBP: { kind: record, fields: {} }
+
+root: Entry

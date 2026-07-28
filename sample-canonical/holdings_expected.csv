@@ -1,0 +1,8 @@
+as_of_date,client_id,account_id,security_id,security_description,asset_class,quantity,unit_cost,market_price,market_value,currency,custodian
+2026-01-15,jpmc,ACC-1001,037833100,Apple Inc,Equity,5000,150.20,185.30,926500.00,USD,State Street
+2026-01-15,jpmc,ACC-1001,91282CJL9,US Treasury Note 4.5% 2028,Fixed Income,200000,99.50,101.25,202500.00,USD,State Street
+2026-01-15,jpmc,ACC-1002,594918104,Microsoft Corp,Equity,3000,280.00,410.75,1232250.00,USD,State Street
+2026-01-15,jpmc,ACC-1002,912828U57,US Treasury Bond 3% 2045,Fixed Income,500000,92.00,88.40,442000.00,USD,State Street
+2026-02-01,metlife,PORT-77,46625H100,JPMorgan Chase & Co,Equity,10000,120.00,245.60,2456000.00,USD,
+2026-02-01,metlife,PORT-77,88160R101,Tesla Inc,Equity,1500,210.00,265.10,397650.00,USD,
+2026-02-01,metlife,PORT-88,3130AJHU6,FHLB Note 4.25% 2027,Fixed Income,300000,98.75,99.80,299400.00,USD,

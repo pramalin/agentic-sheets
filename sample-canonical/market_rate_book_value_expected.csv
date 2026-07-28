@@ -1,0 +1,4 @@
+as_of_date,client_id,instrument_id,description,market_rate,book_value,effective_date,currency
+2025-05-01,pimco,PIM-CUSIP-001,Floating Rate Note A,0.05375,1000000.00,2025-05-01,USD
+2025-05-01,pimco,PIM-CUSIP-002,Floating Rate Note B,0.04950,2500000.00,2025-05-01,USD
+2025-05-01,pimco,PIM-CUSIP-003,GIC Contract 2027,0.03200,750000.00,2025-05-01,USD

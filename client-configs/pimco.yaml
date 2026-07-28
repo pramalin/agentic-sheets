@@ -1,0 +1,5 @@
+client: pimco
+# Both "Effective Date" and "Report Date" arrive as MM/dd/yyyy text
+# strings, not native Excel dates -- this is what resolves the ambiguity
+# without needing the parser (or the agent) to guess per file.
+dateFormat: MM/dd/yyyy
