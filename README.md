@@ -44,7 +44,7 @@ below.
 ## Repository layout
 
 ```
-docker-compose.yaml         Postgres (Step 1); backend/frontend services arrive later
+compose.yaml         Postgres (Step 1); backend/frontend services arrive later
 .env.example                 Postgres credentials -- copy to .env
 canonical-models/
   SCHEMA.md                  The ADT configuration format itself
@@ -78,11 +78,11 @@ docker compose ps   # postgres should report healthy
 
 ## Roadmap
 
-- [x] **Step 1** — Empty repo, `docker-compose.yaml` (Postgres only),
+- [x] **Step 1** — Empty repo, `compose.yaml` (Postgres only),
       README with this roadmap. *(this commit)*
 - [ ] **Step 2** — Spring Boot backend skeleton (health endpoint).
       Boot 4.1.0 + Spring AI 2.0.0, matching `sheets-reader-mcp`'s stack.
-- [ ] **Step 3** — Wire the backend into `docker-compose.yaml`; verify
+- [ ] **Step 3** — Wire the backend into `compose.yaml`; verify
       `docker compose up` end to end.
 - [ ] **Step 4** — `CanonicalModelRegistry`: parse `canonical-models/*.yaml`
       and `client-configs/*.yaml` into typed, validated objects (atomic,
