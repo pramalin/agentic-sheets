@@ -21,5 +21,19 @@ services:
       timeout: 3s
       retries: 10
 
+  backend:
+    build: ./backend
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Deliberately no `depends_on: postgres` yet -- Step 2's backend has
+    # zero functional dependency on the database (no datasource is even
+    # configured). That dependency belongs here once Step 4 actually adds
+    # one, not before, so this file stays honest about what the code does.
+
 volumes:
   postgres-data:

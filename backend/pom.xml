@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <!-- Same version already proven working in sheets-reader-mcp's own
+             build in this environment — Spring AI 2.0.0's release notes
+             specifically target this Boot version, and Boot 3.5.x mixed
+             with Spring AI 2.0 fails at startup (Jackson 2 vs 3 conflict). -->
+        <version>4.1.0</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.alai</groupId>
+    <artifactId>agentic-sheets-backend</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <name>agentic-sheets-backend</name>
+    <description>
+        Spring Boot backend for agentic-sheets. Step 2: health endpoint
+        only. Spring AI (MCP client, tool-calling agent) arrives in Step 5;
+        a datasource arrives in Step 4. Deliberately minimal until each of
+        those is actually needed, not pre-wired speculatively.
+    </description>
+
+    <properties>
+        <java.version>21</java.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>agentic-sheets-backend</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

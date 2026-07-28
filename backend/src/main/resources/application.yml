@@ -1,0 +1,20 @@
+server:
+  # Deliberately different from sheets-reader-mcp's 8080, since Step 5
+  # wires this backend to sheets-reader-mcp as an MCP client -- the two
+  # will likely run side by side, and picking a distinct port now avoids
+  # a collision to fix later.
+  port: 8081
+
+spring:
+  application:
+    name: agentic-sheets-backend
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+logging:
+  level:
+    com.alai.agenticsheets: INFO

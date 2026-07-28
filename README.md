@@ -72,18 +72,19 @@ mapping-notes.md              The reasoning behind every mapping decision above,
 
 ```bash
 cp .env.example .env
-docker compose up -d
-docker compose ps   # postgres should report healthy
+docker compose up -d --build
+docker compose ps                                # postgres and backend should both report healthy
+curl -f http://localhost:8081/actuator/health     # {"status":"UP", ...}
 ```
 
 ## Roadmap
 
 - [x] **Step 1** — Empty repo, `compose.yaml` (Postgres only),
-      README with this roadmap. *(this commit)*
-- [ ] **Step 2** — Spring Boot backend skeleton (health endpoint).
+      README with this roadmap.
+- [x] **Step 2** — Spring Boot backend skeleton (health endpoint).
       Boot 4.1.0 + Spring AI 2.0.0, matching `sheets-reader-mcp`'s stack.
-- [ ] **Step 3** — Wire the backend into `compose.yaml`; verify
-      `docker compose up` end to end.
+- [x] **Step 3** — Wire the backend into `compose.yaml`; verify
+      `docker compose up` end to end. *(this commit)*
 - [ ] **Step 4** — `CanonicalModelRegistry`: parse `canonical-models/*.yaml`
       and `client-configs/*.yaml` into typed, validated objects (atomic,
       fail-safe reload). Orchestration Postgres schema via a plain SQL
