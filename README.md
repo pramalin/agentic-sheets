@@ -94,6 +94,8 @@ sample-canonical/             Expected canonical output for the fixtures above -
                                doubles as a future automated test fixture
 mapping-notes.md              The reasoning behind every mapping decision above,
                                written the way a human reviewer would see it
+ui-notes.md                   Review UI design decisions -- embeddability, auth,
+                               kept separate from mapping-notes.md as a different concern
 ```
 
 ## Prerequisites
@@ -204,10 +206,17 @@ expose these ports on an untrusted network.
       `delivery_log`. No review UI yet — approval is a plain endpoint
       call (`/proposals/{id}/approve`), same "manual now, automatic
       later" pattern as Step 6.
-- [ ] **Step 8** — Review web UI (Angular) — queue, review screen
-      (source columns + samples + proposed field + confidence, editable),
-      approve/edit/reject, plus a delivery-status view for Step 7's
-      outcomes.
+- [ ] **Step 8** — Review web UI, built as embeddable Angular Elements
+      (custom elements) from the start — a real requirement (teams want
+      to embed review in their own applications, not be redirected to a
+      separate site) landed before this step had any code, so it shapes
+      the build rather than getting retrofitted after. Queue, review
+      screen (source columns + samples + proposed field + confidence,
+      editable), approve/edit/reject, plus a delivery-status view for
+      Step 7's outcomes. Needs real token-based auth (validating an
+      identity the host application already has, not a separate login)
+      before this is embeddable in anyone's actual product — see
+      `ui-notes.md` for the full reasoning and open questions.
 - [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
       (same filename + same hash → skip; same filename + different hash
       → new batch), filename parsing

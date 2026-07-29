@@ -113,7 +113,7 @@ public class MappingController {
 
         if (validationReport.validRows().isEmpty()) {
             importBatchRepository.updateStatus(batch.id(), "VALIDATION_FAILED");
-            return new ApproveResponse(batch.id(), id, validationReport, null);
+            return new ApproveResponse(batch.id(), id, ValidationSummary.from(validationReport), null);
         }
 
         DispatchResult dispatchResult = dispatcher.dispatch(batch.id(), currentModel.target(), validationReport.validRows());
@@ -121,7 +121,7 @@ public class MappingController {
                 ? "DELIVERED" : "DELIVERY_FAILED";
         importBatchRepository.updateStatus(batch.id(), finalStatus);
 
-        return new ApproveResponse(batch.id(), id, validationReport, dispatchResult);
+        return new ApproveResponse(batch.id(), id, ValidationSummary.from(validationReport), dispatchResult);
     }
 
     @ExceptionHandler(MappingProposalValidationException.class)
@@ -139,8 +139,29 @@ public class MappingController {
     public record ProposeResponse(long importBatchId, long mappingProposalId, MappingProposal proposal) {
     }
 
-    public record ApproveResponse(long importBatchId, long mappingProposalId, ValidationReport validation,
+    public record ApproveResponse(long importBatchId, long mappingProposalId, ValidationSummary validation,
             DispatchResult dispatch) {
+    }
+
+    /**
+     * The API-facing view of a {@link ValidationReport} -- {@code
+     * validRows} here is the same {@code CanonicalValueJson}-converted
+     * wire format actually sent to the team's service (see
+     * {@link Dispatcher}), not the raw internal {@code CanonicalValue}
+     * tree. Returning the raw tree directly used to make an absent
+     * optional field show up as {@code {}} in this response while the
+     * team's service actually received {@code null} for it -- same
+     * data, two different shapes, which reads like a bug when you're
+     * comparing what this endpoint shows against what was actually
+     * delivered. This response should always reflect reality, not an
+     * implementation detail.
+     */
+    public record ValidationSummary(List<Object> validRows, List<ValidationReport.RowError> rowErrors) {
+        public static ValidationSummary from(ValidationReport report) {
+            return new ValidationSummary(
+                    report.validRows().stream().map(CanonicalValueJson::toJsonCompatible).toList(),
+                    report.rowErrors());
+        }
     }
 
     public record ValidationErrorResponse(List<String> problems) {

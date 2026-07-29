@@ -556,3 +556,31 @@ The scale difference is a property of the source data's own text
 representation passing through unchanged, not something this code does
 to the numbers.
 
+### MetLife confirmed clean, and one API-response inconsistency caught along the way
+
+Re-ran MetLife after the Step 6.1 `sourceConstant` prompt fix: `as_of_date`
+now comes back as a clean `"2026-02-01"` (still via the same
+filename-parsing fallback, still coincidentally correct rather than
+correctly-derived from the banner -- see the "MetLife verification"
+section above, that risk is unchanged) instead of the messy
+explanation-stuffed string from before. All three rows validated with
+zero errors and dispatched successfully -- Step 7 now confirmed clean on
+both the easy fixture and the one built specifically to be hard.
+
+One inconsistency surfaced by actually reading the response closely: an
+absent optional field (`custodian`, not present in MetLife's sheet at
+all) showed up in the `/approve` response as `{}`, not `null`. Not a
+delivery bug -- `Dispatcher` already converts through
+`CanonicalValueJson` before sending, so the team's service genuinely
+received `null` for it. The `/approve` HTTP response, though, was
+returning the *raw* internal `CanonicalValue` tree (an `AbsentValue` is
+an empty Java record, hence `{}`) rather than the same wire-format JSON
+that was actually delivered. Two different, both-correct
+representations of the same data, shown inconsistently -- exactly the
+kind of thing that reads as a bug when comparing what an endpoint shows
+against what was actually sent. Fixed by converting `ValidationReport`
+through `CanonicalValueJson` at the API boundary
+(`MappingController.ValidationSummary`), so the response now always
+reflects what was actually delivered, not an internal implementation
+detail.
+
