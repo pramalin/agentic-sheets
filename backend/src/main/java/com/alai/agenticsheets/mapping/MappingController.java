@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * Step 6's manual trigger for the mapping pipeline, and Step 7's manual
@@ -32,18 +33,36 @@ import java.util.List;
  * {@link MappingProposalRepository#claim}, and permanent once it
  * happens), while validate-and-dispatch can legitimately need retrying
  * (a transient delivery failure, or an unexpected exception mid-flight)
- * without re-litigating whether a human already approved this. An
- * external review of Step 7 correctly caught that the original
- * single-endpoint design conflated the two: an exception partway through
- * validate-and-dispatch left the proposal permanently APPROVED with no
- * way to retry through the same endpoint, since it was no longer
- * PENDING.
+ * without re-litigating whether a human already approved this.
+ *
+ * Both endpoints share {@link #processDelivery}, which claims the
+ * *batch* atomically before doing anything else -- a third-round
+ * external review correctly caught that the proposal-level claim above
+ * only protected the one-time approval decision, not the actual
+ * delivery attempt: nothing stopped two concurrent {@code /redeliver}
+ * calls, or a {@code /redeliver} racing {@code /approve}'s own in-flight
+ * delivery, from both reaching {@link Dispatcher#dispatch} for the same
+ * batch. See {@link ImportBatchRepository#claimForProcessing}.
  */
 @RestController
 @RequestMapping("/internal/mapping")
 public class MappingController {
 
     private static final Logger log = LoggerFactory.getLogger(MappingController.class);
+
+    /** Fresh off proposal approval -- the batch should still be
+      * whatever {@code findOrCreate} left it as (PENDING; nothing sets
+      * it otherwise before this point). */
+    private static final Set<String> ELIGIBLE_FOR_APPROVE = Set.of("PENDING");
+
+    /** Retrying after a recorded failure, or recovering a batch stuck at
+      * APPROVED by a genuine process crash (one that killed the JVM
+      * before even the catch block in {@link #processDelivery} could
+      * run) -- deliberately excludes DELIVERED, since redelivering
+      * something already successfully delivered is exactly the
+      * duplicate-delivery risk this whole mechanism exists to prevent. */
+    private static final Set<String> ELIGIBLE_FOR_REDELIVER =
+            Set.of("APPROVED", "DELIVERY_FAILED", "PROCESSING_ERROR");
 
     private final MappingProposalService proposalService;
     private final ImportBatchRepository importBatchRepository;
@@ -95,9 +114,7 @@ public class MappingController {
     /**
      * Approves a pending proposal -- atomically claimed, see
      * {@link MappingProposalRepository#claim} -- then immediately
-     * validates and dispatches. Refuses to proceed if the canonical
-     * model has moved to a different version, or the source file's
-     * content has changed, since this proposal was created.
+     * validates and dispatches.
      */
     @PostMapping("/proposals/{id}/approve")
     public ApproveResponse approve(
@@ -122,21 +139,18 @@ public class MappingController {
         }
 
         StoredMappingProposal stored = mappingProposalRepository.findById(id);
-        ImportBatch batch = importBatchRepository.findById(stored.importBatchId());
-        importBatchRepository.updateStatus(batch.id(), "APPROVED");
-
-        return validateAndDispatch(id, stored, batch);
+        return processDelivery(id, stored, ELIGIBLE_FOR_APPROVE);
     }
 
     /**
      * Re-runs validation and dispatch for an already-approved proposal
      * -- for retrying after a transient delivery failure, or after an
      * unexpected exception left the batch in {@code PROCESSING_ERROR}.
-     * Does not re-claim or re-check approval status: once a human has
-     * approved something, that decision doesn't need repeating just
-     * because delivery needs another attempt. Still re-verifies the
-     * canonical model version and source file hash, same as
-     * {@code /approve} -- both can still have drifted between attempts.
+     * Does not re-check the proposal's own approval status: once a
+     * human has approved something, that decision doesn't need
+     * repeating just because delivery needs another attempt. The batch
+     * -level claim below is what actually guards against redelivering
+     * something concurrently or something already {@code DELIVERED}.
      */
     @PostMapping("/proposals/{id}/redeliver")
     public ApproveResponse redeliver(@PathVariable long id) {
@@ -146,13 +160,38 @@ public class MappingController {
                     "proposal " + id + " is not APPROVED (status: " + stored.status()
                             + ") -- only an already-approved proposal can be redelivered");
         }
-        ImportBatch batch = importBatchRepository.findById(stored.importBatchId());
-        return validateAndDispatch(id, stored, batch);
+        return processDelivery(id, stored, ELIGIBLE_FOR_REDELIVER);
     }
 
-    private ApproveResponse validateAndDispatch(long proposalId, StoredMappingProposal stored, ImportBatch batch) {
+    /**
+     * Claims the batch atomically before doing anything else, then
+     * checks for drift (canonical config version, source file content)
+     * and either validates+dispatches or records exactly why it
+     * couldn't. Shared by {@code /approve} and {@code /redeliver} --
+     * the only difference between them is which batch statuses are
+     * eligible to claim from.
+     */
+    private ApproveResponse processDelivery(long proposalId, StoredMappingProposal stored, Set<String> eligibleFromStatuses) {
+        if (!importBatchRepository.claimForProcessing(stored.importBatchId(), eligibleFromStatuses)) {
+            ImportBatch current = importBatchRepository.findById(stored.importBatchId());
+            throw new IllegalStateException(
+                    "batch " + stored.importBatchId() + " could not be claimed for processing -- current status is "
+                            + current.status() + ", not one of " + eligibleFromStatuses
+                            + " (already being processed concurrently, already delivered, or in a state that "
+                            + "isn't safe to (re)deliver from)");
+        }
+        ImportBatch batch = importBatchRepository.findById(stored.importBatchId());
+
         CanonicalModel currentModel = registry.get(batch.modelId());
         if (currentModel.version() != stored.configVersion()) {
+            // A distinct, precise status rather than leaving the batch
+            // at whatever it was -- a second-round external review
+            // correctly caught that a drift failure here used to leave
+            // the batch looking like an ordinary, actionable APPROVED
+            // in the database even though nothing had actually
+            // succeeded, which would read as confusing or misleading in
+            // a future review UI.
+            importBatchRepository.updateStatus(batch.id(), "CONFIG_CHANGED");
             throw new IllegalStateException(
                     "canonical model '" + batch.modelId() + "' has moved from version " + stored.configVersion()
                             + " (when this proposal was created) to version " + currentModel.version()
@@ -160,24 +199,38 @@ public class MappingController {
                             + "proposed. Re-run /propose against the current config before approving.");
         }
 
-        // An external review correctly caught that the source file was
-        // never re-verified at approval time -- only hashed once, at
-        // /propose. Someone could replace the file between proposing and
-        // approving, and the approval would silently apply the mapping
-        // to different data than what was actually reviewed.
-        String currentHash = fileHasher.sha256(batch.sourceFilename());
-        if (!currentHash.equals(batch.contentHash())) {
+        // Hashed once already at /propose time and re-checked here --
+        // still a real time-of-check/time-of-use window between this
+        // check and the MCP read_rows calls ProposalValidationService is
+        // about to make (a complete fix needs an immutable,
+        // content-addressed copy of the source file, not attempted
+        // here). What this narrows: re-hashing again below, after all
+        // rows are read, catches a file replaced *during* that read
+        // window too, not just before it -- cheap insurance, not a full
+        // fix for the underlying window.
+        String hashBeforeReading = fileHasher.sha256(batch.sourceFilename());
+        if (!hashBeforeReading.equals(batch.contentHash())) {
+            importBatchRepository.updateStatus(batch.id(), "SOURCE_CHANGED");
             throw new IllegalStateException(
                     "SOURCE_CHANGED: the file '" + batch.sourceFilename() + "' has different content now than "
                             + "when this batch was created (expected hash " + batch.contentHash() + ", observed "
-                            + currentHash + ") -- refusing to approve a mapping against data that isn't what was "
-                            + "actually reviewed. Re-run /propose against the current file.");
+                            + hashBeforeReading + ") -- refusing to approve a mapping against data that isn't what "
+                            + "was actually reviewed. Re-run /propose against the current file.");
         }
 
         ClientConfig client = registry.getClient(batch.clientId());
 
         try {
             ValidationReport validationReport = validationService.validate(currentModel, client, batch, stored.proposal());
+
+            String hashAfterReading = fileHasher.sha256(batch.sourceFilename());
+            if (!hashAfterReading.equals(hashBeforeReading)) {
+                importBatchRepository.updateStatus(batch.id(), "SOURCE_CHANGED");
+                throw new IllegalStateException(
+                        "SOURCE_CHANGED: the file '" + batch.sourceFilename() + "' changed while its rows were "
+                                + "being read -- refusing to dispatch data that may be an inconsistent mix of two "
+                                + "versions of the file. Re-run /propose against the current file.");
+            }
 
             if (validationReport.validRows().isEmpty()) {
                 importBatchRepository.updateStatus(batch.id(), "VALIDATION_FAILED");
@@ -219,12 +272,12 @@ public class MappingController {
      * Safety net for anything not already handled above. Added after a
      * live concurrency test surfaced a bare Spring Boot default error
      * page (no useful detail at all) for an exception thrown inside
-     * {@link #validateAndDispatch}. The full detail still needs the
-     * server log (this only has the exception's own message, not a
-     * stack trace) -- but a structured 500 with at least the message is
-     * still strictly better than Spring's default HTML error page,
-     * which was actively getting in the way of diagnosing what had
-     * actually gone wrong from the client side.
+     * {@link #processDelivery}. The full detail still needs the server
+     * log (this only has the exception's own message, not a stack
+     * trace) -- but a structured 500 with at least the message is still
+     * strictly better than Spring's default HTML error page, which was
+     * actively getting in the way of diagnosing what had actually gone
+     * wrong from the client side.
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ValidationErrorResponse> handleUnexpected(Exception e) {

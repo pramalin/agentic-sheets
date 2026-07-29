@@ -11,7 +11,11 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.HexFormat;
 import java.util.List;
 
 /**
@@ -116,6 +120,20 @@ public class Dispatcher {
         String payload = jsonMapper.writeValueAsString(
                 validRows.stream().map(CanonicalValueJson::toJsonCompatible).toList());
 
+        // A stable key a receiver *could* dedupe a retried delivery
+        // against -- an external review correctly noted that
+        // X-Import-Batch-Id/X-Mapping-Proposal-Id identify *what* this
+        // delivery is, but don't formally instruct a receiver to treat
+        // two deliveries with the same key as the same operation. Same
+        // proposal + same payload (rows only change if the proposal or
+        // source data changed, either of which produces a different
+        // hash) always yields the same key, so a naive retry of an
+        // otherwise-identical delivery is dedupeable even without a full
+        // transactional outbox on this side -- that piece is still
+        // deferred, this is a cheap, real step toward it, not a
+        // substitute for it.
+        String idempotencyKey = mappingProposalId + ":" + sha256Hex(payload);
+
         DeliveryConfig delivery = target.delivery();
 
         for (int attempt = 1; attempt <= delivery.maxAttempts(); attempt++) {
@@ -126,6 +144,7 @@ public class Dispatcher {
                         .header("Content-Type", "application/json")
                         .header("X-Import-Batch-Id", String.valueOf(importBatchId))
                         .header("X-Mapping-Proposal-Id", String.valueOf(mappingProposalId))
+                        .header("Idempotency-Key", idempotencyKey)
                         .header("Authorization", "Bearer " + secret)
                         .POST(HttpRequest.BodyPublishers.ofString(payload))
                         .build();
@@ -171,6 +190,17 @@ public class Dispatcher {
             return Math.min(delay, delivery.maxDelaySeconds());
         }
         return Math.min(delivery.initialDelaySeconds(), delivery.maxDelaySeconds());
+    }
+
+    private String sha256Hex(String text) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            // SHA-256 is guaranteed present on every standard JVM, same
+            // reasoning as FileHasher's identical catch clause.
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 
     /** @return false if interrupted during the sleep (caller should stop

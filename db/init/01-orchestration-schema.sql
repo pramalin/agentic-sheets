@@ -25,8 +25,9 @@ CREATE TABLE import_batch (
     worksheet           TEXT NOT NULL,
     config_version      INTEGER NOT NULL,
     -- Informal for now (PENDING / MAPPED / APPROVED / REJECTED /
-    -- VALIDATION_FAILED / PROCESSING_ERROR / DELIVERED /
-    -- DELIVERY_FAILED), not a DB-level enum or CHECK
+    -- PROCESSING / VALIDATION_FAILED / PROCESSING_ERROR /
+    -- SOURCE_CHANGED / CONFIG_CHANGED / DELIVERED / DELIVERY_FAILED),
+    -- not a DB-level enum or CHECK
     -- constraint -- easier to iterate on the state machine in application
     -- code while this is still actively evolving.
     status              TEXT NOT NULL DEFAULT 'PENDING',

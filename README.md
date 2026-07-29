@@ -94,7 +94,7 @@ sample-canonical/             Expected canonical output for the fixtures above -
                                doubles as a future automated test fixture
 mapping-notes.md              The reasoning behind every mapping decision above,
                                written the way a human reviewer would see it
-ui-notes.md                   Review UI design decisions -- embeddability, auth,
+ui-notes.md                   Review UI design decisions -- framework choice, auth,
                                kept separate from mapping-notes.md as a different concern
 ```
 
@@ -226,18 +226,39 @@ expose these ports on an untrusted network.
       deferred (client-config version-pinning, an all-or-nothing vs.
       valid-rows-only delivery policy, durable validation-report
       storage).
-- [ ] **Step 8** — Review web UI, built as standards-based Web
-      Components (Lit, not Angular or React as the implementation) from
-      the start — folding `agentic-sheets` into a product for unknown
-      future adopters means committing to either full framework as the
-      embeddable implementation imposes a real, unnecessary runtime cost
-      on every adopter who doesn't already use it. Queue, review screen
-      (source columns + samples + proposed field + confidence, editable),
-      approve/edit/reject, plus a delivery-status view for Step 7's
-      outcomes. Needs real token-based auth, likely supporting multiple
-      identity providers rather than one — see `ui-notes.md` for the
-      full reasoning and the bigger open questions (auth federation,
-      multi-tenancy, deployment model) this raises.
+- [x] **Step 7.2** — A third external review found that Step 7.1's own
+      new `/redeliver` endpoint had a real concurrency gap of its own:
+      it checked the proposal was `APPROVED` (permanent, never changes
+      back) but never atomically claimed the *batch*, so two concurrent
+      `/redeliver` calls -- or one racing `/approve`'s own in-flight
+      delivery -- could both dispatch. Fixed with a second atomic claim
+      on `import_batch` (`ImportBatchRepository.claimForProcessing`),
+      shared by `/approve` and `/redeliver`, gated by different eligible
+      starting statuses for each. Also added: distinct `SOURCE_CHANGED`/
+      `CONFIG_CHANGED` batch statuses so a drift failure doesn't leave
+      the batch looking like a plain, misleadingly-successful `APPROVED`;
+      a second source-hash check after all rows are read, narrowing (not
+      closing) a real time-of-check/time-of-use window; `DeliveryConfig`
+      invariant validation (a malformed `delivery:` block now fails at
+      config-load time, not at actual delivery time); and a stable
+      idempotency key sent with every delivery. See `mapping-notes.md`
+      for the full account, including what this review confirmed was
+      already correct from the previous round.
+- [ ] **Step 8** — Review web UI, built with React, integrated into
+      agentic-sheets itself rather than designed for embedding into
+      third-party applications — the project's main goal is processing
+      spreadsheets into canonical data, and a genuinely reusable,
+      embeddable review widget is better scoped as its own separate
+      project later, built against this project's REST API from the
+      outside. Queue, review screen (source columns + samples + proposed
+      field + confidence, editable), approve/edit/reject, plus a
+      delivery-status view for Step 7's outcomes. Needs a real auth
+      story before real approvals happen through it — doesn't need the
+      multi-tenant/multi-identity-provider complexity an embeddable
+      product would, just something more than the current
+      unauthenticated endpoints. See `ui-notes.md` for the full
+      reasoning, including what's deferred to the eventual separate
+      embeddable-widget project rather than dropped entirely.
 - [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
       (same filename + same hash → skip; same filename + different hash
       → new batch), filename parsing

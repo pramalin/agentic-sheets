@@ -779,3 +779,141 @@ of the deterministic logic, just not of concurrency or live HTTP
 behavior, which need infrastructure this project has consistently
 deferred building speculatively ahead of an actual need.
 
+## Step 7.2 hardening (third external review)
+
+A third external review (ChatGPT, same rigor as the first two rounds)
+went through Step 7.1's fixes and found the previous round's own new
+code had introduced a real gap: `/redeliver`, added specifically to give
+a failed delivery somewhere to retry safely, didn't actually protect
+itself from the exact class of problem it existed to fix. Worth naming
+plainly -- fixing a concurrency bug can introduce a new one in the code
+written to fix it, and the only real defense is testing the *new* code
+under the same conditions that found the *old* bug, not assuming a fix
+is safe because it addresses the finding it was written for.
+
+### Fixed
+
+**`/redeliver` had no atomic claim at all.** `MappingProposalRepository.
+claim()` (Step 7.1) protects the one-time PENDING->APPROVED transition
+correctly, but `/redeliver` only checked that the *proposal* was
+APPROVED -- a permanent status once set, not something a second request
+would ever find already changed. Nothing stopped two concurrent
+`/redeliver` calls from both reaching `Dispatcher.dispatch` for the same
+batch, or a `/redeliver` call racing the original `/approve` request's
+own still-in-flight delivery, or `/redeliver` firing against a batch
+that was already cleanly `DELIVERED`. Fixed with a second, equally real
+atomic claim -- `ImportBatchRepository.claimForProcessing`, the same
+`WHERE status IN (...)` compare-and-set idiom applied to the *batch*
+this time, not the proposal. `/approve` and `/redeliver` share one
+`processDelivery` method gated by this claim, differing only in which
+batch statuses are eligible to claim from: `/approve` only from
+`PENDING` (fresh off proposal approval); `/redeliver` from `APPROVED`
+(recovering a batch stuck there by a genuine process crash, not just an
+exception -- see below), `DELIVERY_FAILED`, or `PROCESSING_ERROR --
+deliberately never from `DELIVERED`, since redelivering something
+already successfully delivered is exactly the duplicate-delivery risk
+this whole mechanism exists to prevent.
+
+**Drift failures left the batch at a misleading, apparently-successful
+status.** A canonical-model-version mismatch or a changed source file
+used to throw before the batch status was ever touched beyond the
+unconditional `APPROVED` write earlier in the request -- meaning the
+database would show a plain `APPROVED` batch that actually never got
+anywhere near validation or delivery, indistinguishable from one
+legitimately mid-flight. Added distinct `SOURCE_CHANGED` and
+`CONFIG_CHANGED` statuses, set before the exception is thrown in either
+case -- something a future Step 8 queue can show precisely, rather than
+an ambiguous `APPROVED` a reviewer might read as "this is fine, just
+slow."
+
+**The source-file time-of-check/time-of-use window was real, if
+narrow.** The hash was checked once, before `ProposalValidationService`
+ever calls `read_rows` -- a file replaced *during* those reads (not just
+before them) would go undetected. The complete fix is an immutable,
+content-addressed copy of the source file at batch-creation time --
+explicitly not attempted here, consistent with how the same review
+correctly framed it as future work, not a near-term blocker. The cheap
+interim measure the review suggested *is* implemented: hash again
+immediately after all rows are read, before dispatch, and treat a
+mismatch the same as the pre-read case (`SOURCE_CHANGED`, refuse to
+dispatch). Narrows the window; doesn't close it entirely.
+
+**`DeliveryConfig` had no invariant checks at all.** A `delivery:` block
+with `maxAttempts: 0`, a negative delay, an unrecognized backoff string,
+an out-of-range HTTP status code, or the same code listed as both
+retryable and terminal would all have been accepted silently and only
+caused a problem at actual delivery time, against a real batch. Added a
+compact constructor enforcing all of the above, plus a
+`maxAttempts <= 20` ceiling specifically to keep
+`Dispatcher`'s exponential-backoff shift calculation
+(`initialDelaySeconds * (1L << (attempt - 1))`) from ever overflowing --
+malformed config now fails at config-load time, the same way any other
+bad `canonical-models/*.yaml` file does (the registry keeps the previous
+good version and logs the failure), not silently until someone actually
+tries to use it. `DeliveryConfigTest` covers every one of these
+invariants directly -- pure logic, no live DB or HTTP needed, exactly
+the kind of test this project can and should write immediately rather
+than deferring.
+
+**Added a stable idempotency key to every delivery**, per the review's
+suggestion: `mappingProposalId + ":" + sha256(payload)`, sent as an
+`Idempotency-Key` header alongside the existing batch/proposal-id
+headers. This doesn't complete the receiver-side dedup story (that
+needs the receiver to actually honor it, and a proper transactional
+outbox on this side remains deferred, per below) -- but it's a cheap,
+real step toward it: the same proposal redelivered with unchanged data
+always produces the same key, giving any receiver that wants to dedupe
+something concrete to key on, today, without waiting for the fuller
+infrastructure.
+
+### Explicitly deferred, with reasoning
+
+**A full transactional outbox and receiver-side idempotency
+enforcement.** The batch-level atomic claim closes *this system's* half
+of "don't process the same delivery twice" -- it doesn't, and can't by
+itself, guarantee the receiving service won't double-write on a network-
+level retry it can't distinguish from a fresh request. The idempotency
+key above is real progress toward that, not a substitute for it. Proper
+infrastructure (write intent to an outbox table durably, dispatch
+asynchronously, retry from the outbox rather than inline with the
+request) remains a distinct, larger piece of work, consistent with
+every prior round's framing of this same gap.
+
+**The complete fix for the source-file TOCTOU window** (an immutable,
+content-addressed copy of the file, taken once at batch creation and
+always read from that copy thereafter, never the mutable original path)
+remains unbuilt. The hash-twice interim measure narrows the window
+without closing it, exactly as scoped.
+
+**Streaming, page-by-page validation.** `ProposalValidationService`
+still accumulates every row into one in-memory list across all pages
+before validating any of them -- paginated I/O, not streaming
+validation. Fine for fixtures measured in single-digit rows; a real
+scalability concern for a large workbook, not a correctness one at
+current scale. Deferred consistent with how the review itself framed
+it.
+
+**Durable, row-level validation-report storage; client-config
+version-pinning; the all-or-nothing vs. valid-rows-only delivery policy
+decision; full concurrency/HTTP integration tests.** All previously
+identified, all still genuinely deferred for the same reasons stated in
+the Step 7.1 section above -- repeating them here would just be
+restating, not adding anything. Worth flagging the review's specific
+added emphasis, though: durable validation reports are framed this round
+as needed *early* in Step 8, not just eventually -- the review UI
+genuinely cannot show a reviewer what happened to a past proposal
+without them. That's real signal about sequencing Step 8's own work,
+not a new item.
+
+### What actually held up this round
+
+The review explicitly confirmed several Step 7.1 fixes as fully correct
+on re-inspection, worth naming since they were exactly the highest-risk
+pieces last time: the atomic proposal claim, the missing-secret
+fail-fast, HTTP timeouts, interrupt handling, and -- specifically called
+out as "reasonable" -- the deliberate choice *not* to reject a primitive
+mapping with neither a source column nor a constant, which a different
+reviewer suggestion would have broken. Good confirmation that the
+earlier pushback in this document was the right call, not just an
+assertion that went unchecked.
+

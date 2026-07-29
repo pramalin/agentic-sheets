@@ -56,4 +56,43 @@ public class ImportBatchRepository {
     public void updateStatus(long id, String status) {
         jdbcTemplate.update("UPDATE import_batch SET status = ?, updated_at = now() WHERE id = ?", status, id);
     }
+
+    /**
+     * Atomically claims a batch for delivery processing -- {@code WHERE
+     * status IN (...)} makes this a compare-and-set, the same idiom as
+     * {@link MappingProposalRepository#claim}, applied to the piece that
+     * one wasn't protecting. An external review correctly caught that
+     * the atomic proposal claim only protected the one-time
+     * PENDING->APPROVED transition; nothing stopped two concurrent
+     * {@code /redeliver} calls (or a {@code /redeliver} racing the
+     * original {@code /approve} request's own in-flight delivery) from
+     * both reaching {@code Dispatcher.dispatch} for the same batch,
+     * since {@code /redeliver} only checked the *proposal's* status
+     * (permanently {@code APPROVED} once approved), never the batch's.
+     *
+     * @param eligibleFromStatuses the batch statuses this call is
+     * allowed to claim from -- different for {@code /approve} (fresh
+     * off proposal approval, so just {@code PENDING}) than for
+     * {@code /redeliver} (retrying after a recorded failure, so
+     * {@code APPROVED}/{@code DELIVERY_FAILED}/{@code PROCESSING_ERROR},
+     * deliberately excluding {@code DELIVERED} -- redelivering something
+     * already successfully delivered is exactly the duplicate-delivery
+     * risk this method exists to prevent)
+     * @return true if this call won the claim and the batch is now
+     * {@code PROCESSING}; false if it wasn't in an eligible state --
+     * already being processed by a concurrent request, already
+     * delivered, or something else entirely
+     */
+    public boolean claimForProcessing(long id, java.util.Set<String> eligibleFromStatuses) {
+        java.util.List<String> statuses = java.util.List.copyOf(eligibleFromStatuses);
+        String placeholders = String.join(",", java.util.Collections.nCopies(statuses.size(), "?"));
+        java.util.List<Object> args = new java.util.ArrayList<>();
+        args.add(id);
+        args.addAll(statuses);
+        int updated = jdbcTemplate.update(
+                "UPDATE import_batch SET status = 'PROCESSING', updated_at = now() "
+                        + "WHERE id = ? AND status IN (" + placeholders + ")",
+                args.toArray());
+        return updated == 1;
+    }
 }
