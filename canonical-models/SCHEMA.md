@@ -179,11 +179,32 @@ built against fields that no longer exist or mean something different now.
 ## Why this matters beyond tidiness
 
 A sum type isn't just documentation — it's an assertion the system can
-enforce mechanically at three points: (1) when the agent proposes a
-mapping, the structured-output schema it's bound to only has slots for
-one variant's fields at a time, not all variants' fields unioned together
-with nulls; (2) the deterministic validator rejects a proposal that fills
-in fields from two variants at once, or from none; (3) exhaustive
-pattern-matching over variants (Java 21 sealed-interface `switch`) means
-adding a new variant later is a compile error everywhere the old code
-didn't handle it, not a silent runtime gap.
+enforce mechanically at three points, though as of Step 6 only the first
+is real and the other two are still ahead:
+
+1. **The agent's prompt only shows one variant's fields at a time under
+   each variant name** (see `CanonicalModelPromptRenderer`) — this
+   shapes what the agent is likely to propose, but it is prompt
+   *context*, not a schema constraint. The agent's actual structured
+   output binds to a fixed, generic Java record
+   (`MappingProposal.FieldMapping`), not to a schema derived from this
+   file, so nothing at the Spring AI layer itself stops the agent from
+   returning a nonexistent variant name or filling in both
+   `selectedVariant` and a `variantValueMap` at once.
+   `MappingProposalStructuralValidator` closes most of that gap
+   immediately after decoding, before persistence — but it's a
+   post-hoc check, not a schema the model was constrained to produce
+   in the first place. (An earlier version of this document claimed
+   the agent "is bound to" this ADT via structured output; an external
+   review of Step 6 correctly caught that as overclaiming what the
+   code actually does — see `mapping-notes.md`'s "Step 6.1 hardening"
+   section.)
+2. **Step 7's deterministic validator** will reject an *approved*
+   proposal that would construct a value filling in fields from two
+   variants at once, or from none — the real enforcement point, once
+   it exists.
+3. **Exhaustive pattern-matching over variants** (Java 21 sealed-interface
+   `switch`, already true today in `CanonicalPaths` and the earlier
+   `Validator` sketch) means adding a new variant later is a compile
+   error everywhere the old code didn't handle it, not a silent runtime
+   gap — this part is real now, independent of Step 7.

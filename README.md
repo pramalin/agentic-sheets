@@ -30,16 +30,27 @@ below.
   and sum types (tagged variants) — not a flat field list.** The system
   defines this format once; every team supplies a configuration in it,
   not code. See `canonical-models/SCHEMA.md`.
-- **One config, three uses.** A canonical model's ADT is simultaneously
-  the mapping target, the structured-output schema the agent is bound to,
-  and the wire contract the team's service receives.
-- **The agent's output is generic, not typed per canonical model.**
-  There's no compile-time Java class for "a Holdings row" — canonical
-  models load from YAML at runtime, so `MappingProposal` is a flattened
-  list of `(canonicalFieldPath, source, confidence, notes)` entries, the
-  same shape regardless of which model is being mapped.
-  `CanonicalModelPromptRenderer` walks any model's ADT into the same
-  flattened path scheme the proposal references back.
+- **One config, three roles — but the agent's raw output isn't ADT-bound
+  yet.** A canonical model's ADT is the mapping target shown to the
+  agent as prompt text, the contract Step 7's deterministic validator
+  will check an *approved* proposal against, and the wire format the
+  team's service receives. What it is *not*, currently, is the
+  structured-output schema itself: Spring AI binds the response to the
+  fixed `MappingProposal` Java record, not to a schema generated from
+  the runtime canonical model — there's no compile-time Java type for
+  "a Holdings row" to bind to, since canonical models load from YAML at
+  runtime. `MappingProposal` is deliberately generic instead: a
+  flattened list of `(canonicalFieldPath, source, confidence, notes)`
+  entries, the same shape regardless of which model is being mapped.
+  `MappingProposalStructuralValidator` checks that output against the
+  actual ADT immediately after decoding, before persistence — catching
+  a nonexistent field path, an invented source column, or an invalid
+  variant name — but this is a lighter check than a fully
+  ADT-constrained response schema would be, and Step 7's validator is
+  where real enforcement against constructed canonical *rows* happens.
+  An external review of Step 6 caught the original wording here
+  ("the agent is bound to the ADT") overclaiming this; see
+  `mapping-notes.md`'s "Step 6.1 hardening" section for the fuller story.
 - **A sum type's variant can be resolved two different ways, and the
   agent has to pick the right one, not default to either.** Confirmed
   live in Step 6: `selectedVariant` when a whole file is one fixed
@@ -118,18 +129,24 @@ curl -s -X POST "http://localhost:8081/internal/mapping/propose?modelId=Holdings
 ```
 
 If you already ran `docker compose up` before this change, the `postgres-data`
-volume already exists and initialized *without* the orchestration schema --
-Postgres only runs `docker-entrypoint-initdb.d` scripts against a brand
-new, empty data directory. Either `docker compose down -v` first (destroys
-the volume, re-initializes cleanly) or apply `db/init/01-orchestration-schema.sql`
+volume already exists and initialized *without* the current orchestration
+schema -- Postgres only runs `docker-entrypoint-initdb.d` scripts against
+a brand new, empty data directory. This applies again as of Step 6.1's
+`import_batch` schema change (added `worksheet`, widened the unique
+constraint) -- either `docker compose down -v` first (destroys the
+volume, re-initializes cleanly; there's nothing in it worth keeping at
+this stage) or apply the current `db/init/01-orchestration-schema.sql`
 to the running container by hand.
 
 ## API endpoints (internal, for now)
 
-Everything below is unauthenticated and meant for local development /
-manual verification, not a public API -- there's no `/api` versioning or
-access control yet, deliberately, since nothing here is exposed outside
-`docker compose`'s own network today.
+Everything below is unauthenticated and intended only for local
+development / manual verification, not a public API -- there's no
+`/api` versioning or access control yet. `compose.yaml` publishes them
+to host ports (8081, 5432) for exactly that manual verification, which
+also means they're reachable from the host and potentially other
+machines depending on your Docker and firewall configuration -- don't
+expose these ports on an untrusted network.
 
 | Endpoint | Method | Purpose |
 |---|---|---|
@@ -160,10 +177,14 @@ access control yet, deliberately, since nothing here is exposed outside
       First capability: explore a spreadsheet
       (`list_worksheets`/`describe_table`/`read_rows`) — no mapping logic
       yet, just prove the connection.
-- [x] **Step 6** — Column-mapping inference: agent output bound to a
-      canonical model's ADT via structured output, scored against
-      `client-configs` and the field synonyms in each canonical model.
-      Persisted as a `mapping_proposal`. Not committed anywhere.
+- [x] **Step 6** — Column-mapping inference: render the selected
+      canonical ADT and client conventions into the agent's prompt; bind
+      the response to the generic `MappingProposal` structured-output
+      type (not a schema derived from the ADT — see the design
+      principles above); check it against the actual ADT with
+      `MappingProposalStructuralValidator` before persisting. Persisted
+      as a `mapping_proposal`. No canonical-row validation or delivery
+      yet — that's Step 7.
 - [ ] **Step 7** — Deterministic validator + dispatcher: validate an
       approved proposal against its ADT, serialize it, and call the
       team's configured `target` (REST or MCP, per `transport`), with

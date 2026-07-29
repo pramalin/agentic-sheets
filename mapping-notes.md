@@ -240,3 +240,139 @@ Not yet tried live: `holdings_metlife_20260201.xlsx`, which exercises
 JPMC's deliberately-easy file tests. Worth doing before treating Step 6
 as proven beyond the easy case.
 
+## Step 6.1 hardening (external review)
+
+An external review (ChatGPT, reviewing the checked-in repo statically)
+went through Step 6 in real depth and caught several things worth
+crediting directly rather than folding in quietly. Two full review
+rounds — the second specifically checking whether the first round's
+documentation fixes actually landed, and correctly finding they hadn't
+gone far enough (the README still contradicted itself in a different
+place). That second-pass rigor is exactly the kind of review that's
+actually useful. What follows is what got fixed now, and — just as
+important — what didn't, with the reasoning either way.
+
+### Fixed
+
+**The structured-output/ADT-binding claim was genuinely wrong, not just
+imprecisely worded.** The design docs said the agent "is bound to" the
+canonical ADT via structured output. What actually happens: Spring AI
+binds the response to the fixed `MappingProposal` Java record; the ADT
+is rendered as prompt *text* by `CanonicalModelPromptRenderer`, nothing
+more. Fixed two ways: (1) corrected the claim everywhere it appeared —
+README's design principles, the Step 6 roadmap line, `SCHEMA.md`'s "why
+this matters" section — to describe what's actually true now versus
+what Step 7 will make true; (2) added
+`MappingProposalStructuralValidator`, run immediately after decoding and
+before persistence, which checks a proposal's `canonicalFieldPath`
+values are real paths in the resolved ADT, `sourceColumn` values were
+actually observed columns, `selectedVariant`/`variantValueMap` are
+mutually exclusive and reference real variant names, confidence is in
+`[0.0, 1.0]`, and there are no duplicate field paths. A
+`MappingProposalValidationException` on failure means a structurally
+broken proposal is rejected (422) rather than silently persisted.
+
+**The config-reload race was a real bug, not a hypothetical one.** The
+controller resolved a `CanonicalModel` to create the `import_batch`,
+then called `MappingProposalService` with just the model ID — which
+independently re-resolved it from the registry inside the service. Since
+the registry reloads on a schedule, a reload landing between those two
+calls could make the prompt actually shown to the agent disagree with
+the `config_version` recorded alongside the resulting proposal. Fixed by
+resolving `CanonicalModel` and `ClientConfig` exactly once in the
+controller and threading both through as parameters — no second
+registry lookup anywhere in the request.
+
+**`import_batch`'s identity was missing `worksheet`, and the dedupe
+logic had a real race.** The original unique key was just
+`(source_filename, content_hash)` — two different worksheets in the same
+workbook, or the same file resubmitted for a different model/client,
+would collide onto one batch, silently misattributing a proposal to the
+wrong model or client in its recorded metadata. Fixed by adding a
+`worksheet` column and widening the identity to
+`(source_filename, content_hash, worksheet, model_id, client_id,
+config_version)`. Separately, the original `findOrCreate` was a
+select-then-insert, which lets two concurrent requests race each other
+with one failing on the constraint instead of both cleanly resolving to
+the same row — replaced with a single atomic
+`INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING id`.
+
+**`FileHasher` read the whole workbook into memory and only guarded
+against literal `../` in the path string.** Fixed to hash via a
+buffered `DigestInputStream` instead of `readAllBytes`, and to resolve
+both the workspace root and the target file through `toRealPath()`
+before comparing — that's what actually closes off a symlink pointing
+outside the mounted root, which string-level `normalize()` alone
+doesn't catch.
+
+**The prompt didn't say the spreadsheet content was untrusted.** The
+`describe_table` result (including sample cell values) was concatenated
+directly into the user prompt with no framing. A malicious or just
+weird cell value containing instruction-like text had no explicit
+signal telling the model to treat it as data, not guidance. Fixed by
+delimiting the source table clearly and stating explicitly, in the
+system prompt, that everything inside those delimiters is untrusted
+data to be mapped, never instructions to follow.
+
+### Explicitly deferred, with reasoning
+
+**Full per-model dynamic JSON-schema generation**, so the agent's
+structured-output call itself is constrained by field-path enums,
+`oneOf` on `sourceColumn`/`sourceConstant`, variant-name enums, and so
+on — not just checked after the fact. This is a real, valuable
+enhancement, and the review's suggested shape for it
+(`MappingPlanSchemaFactory`) is sound. It's also a genuinely large
+feature — a schema-generation subsystem, not a quick fix — and it would
+substantially duplicate logic Step 7's deterministic validator already
+needs to build anyway (both need "does this reference a real path,
+does this variant name actually exist" logic against the same ADT).
+The scoped alternative landed instead — a lightweight post-decode
+structural check — closes most of the practical risk (a human reviewer
+still sees every proposal before anything is approved) without
+building that subsystem twice. Worth revisiting if Step 7's validator
+ends up needing schema-generation machinery anyway, at which point
+Step 6 could reuse it rather than duplicate it.
+
+**Giving the agent access to banner/pre-header content.** The review
+correctly predicted a real gap: `describe_table` doesn't expose the
+rows above the detected header, so the agent is told to use
+`sourceConstant` for banner-derived values (like MetLife's as-of-date)
+without actually being able to see what's in the banner. This needs a
+change to `sheets-reader-mcp` itself — a `preambleRows` field on
+`TableDescription`, or a dedicated tool — which is a different repo and
+a real design decision (how many rows, what if the "banner" isn't
+uniformly structured), not something to bolt on here. Deferred until
+the MetLife fixture is actually tried, since that's when this gap
+becomes concrete rather than theoretical.
+
+**An llmsim-style deterministic mock test harness and Testcontainers-based
+Postgres integration tests**, matching how `sheets-reader-mcp` tests its
+own MCP surface without depending on live, nondeterministic model
+responses in CI. This is the right long-term answer to "Step 6 lacks
+tests at its actual boundary" — `MappingProposalService`,
+`MappingController`, batch dedup, and reload-during-inference are all
+genuinely untested right now beyond live manual curl checks. Building
+that harness is real infrastructure work (a scripted fake model
+response flow, a Testcontainers-backed Postgres for repository tests),
+not a quick addition. `MappingProposalStructuralValidator` at least got
+proper unit tests now, since that logic is pure and testable without
+either piece of infrastructure.
+
+**Full inference provenance** (LLM provider/model ID, prompt-template
+version, schema version, config hashes, MCP table-description hash,
+token usage, latency, failure category). Valuable for debugging and
+reproducibility, genuinely more schema and capture logic than fits in
+this pass. `config_version` already gives partial provenance; the rest
+is real future work, not done here.
+
+**Explicit-by-name MCP client selection** instead of
+`SpreadsheetExplorerService` taking "the first configured client." Still
+correct as flagged, still only matters once a second MCP server exists
+— no behavior change needed while there's exactly one.
+
+**Deciding whether repeated inference should be idempotent (one proposal
+per batch) or produce multiple numbered attempts.** This is a real
+product/UX question that affects how Step 8's review UI presents
+proposals to a human, not just how they're stored — better decided
+alongside that UI than forced now.
+

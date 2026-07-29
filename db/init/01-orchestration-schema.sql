@@ -15,6 +15,14 @@ CREATE TABLE import_batch (
     client_id           TEXT NOT NULL,
     source_filename     TEXT NOT NULL,
     content_hash        TEXT NOT NULL,
+    -- Added after Step 6's external review caught a real bug: without
+    -- this, two different worksheets in the same workbook -- or the same
+    -- file submitted a second time for a different model/client -- would
+    -- collide onto the same batch, silently attaching a proposal to a
+    -- batch whose recorded model_id/client_id didn't match what was
+    -- actually mapped. Filename + content hash alone identify a *file*,
+    -- not a unit of work.
+    worksheet           TEXT NOT NULL,
     config_version      INTEGER NOT NULL,
     -- Informal for now (PENDING / MAPPED / APPROVED / REJECTED /
     -- DELIVERED / DELIVERY_FAILED), not a DB-level enum or CHECK
@@ -23,11 +31,11 @@ CREATE TABLE import_batch (
     status              TEXT NOT NULL DEFAULT 'PENDING',
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- Dedupe key for the Step 9 inbox scanner: same filename + same
-    -- content hash means "already processed, skip"; same filename with a
-    -- different hash means the client corrected the file, so it's a new
-    -- batch.
-    UNIQUE (source_filename, content_hash)
+    -- Full identity, not just the file: same file + same worksheet +
+    -- same model + same client + same config version means "already
+    -- processed, reuse the batch." Any of those differing is a distinct
+    -- unit of work, even against the identical bytes.
+    UNIQUE (source_filename, content_hash, worksheet, model_id, client_id, config_version)
 );
 
 CREATE INDEX idx_import_batch_status ON import_batch (status);
