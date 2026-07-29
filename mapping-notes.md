@@ -185,3 +185,58 @@ system of orchestration, not a system of record.
    approved/rejected — but that's UI work for Step 8, not a config
    question.
 
+## Step 6 build notes
+
+The mapping agent is live and confirmed working against the real JPMC
+fixture — structured output binding, `CanonicalModelPromptRenderer`'s
+ADT-to-text walk (including the `AssetClass` sum type), and the
+`synonyms:` block added to the config format specifically to serve this
+step all check out end to end. Two things surfaced during live testing
+that weren't obvious from the design alone, both fixed and worth keeping
+as a record of why the code looks the way it does:
+
+**A sum type's variant needs two resolution modes, not one.** The first
+version of `MappingProposal.FieldMapping` had a single `selectedVariant`
+field. Against the real JPMC file, the agent correctly recognized that
+`asset_class` varies row by row (`Equity` for some rows, `Fixed Income`
+for others) — but there was nowhere in the output schema to express
+that, so `selectedVariant` came back empty with the reasoning explained
+only in free-text `conversionNotes`. That's a real structural gap in the
+proposal shape, not a prompting problem: a single per-column variant
+choice only makes sense when a whole file is one fixed variant. Fixed by
+adding `variantValueMap` (raw source value → variant name) as the
+second mode, with the system prompt explicit about when to use which.
+Confirmed live afterward: `currency` (every row is `USD` in this file)
+correctly used `selectedVariant`, while `asset_class` (genuinely mixed)
+correctly used `variantValueMap` — the model chose the right mode on its
+own once the schema actually had room for the distinction, it wasn't
+guessing.
+
+**`client_id` needed to be explicitly ruled out, not just left
+unprompted.** Even though `client_id` is always derived from the
+filename (confirmed convention, see the "checked in the javadoc
+updates" round) and is passed into `propose()` as a known parameter, the
+agent still proposed a mapping for it on the first live run —
+`sourceConstant: "jpmc"`, confidence 0.6, "inferred from the file
+source." Not wrong, exactly, but the system already knows this with
+certainty, and letting the agent re-derive a fact it's already been
+handed wastes a mapping slot and gives a falsely-low confidence for
+something that isn't actually uncertain. Fixed by telling the system
+prompt explicitly that the client is already resolved and any
+`client_id`-named field should be excluded from `fieldMappings`
+entirely — confirmed live: it disappeared from the output completely,
+not just given a mapping and ignored downstream.
+
+Both of these are the same underlying lesson: when something surprising
+shows up in a live LLM response, check whether the *output schema* gives
+the model room to say the right thing before assuming it's a prompting
+problem. The first fix was structural (a missing field), the second was
+informational (a missing fact) — worth telling apart, since they look
+similar in the response text but need different fixes.
+
+Not yet tried live: `holdings_metlife_20260201.xlsx`, which exercises
+`sourceConstant` (banner-derived `as_of_date`), a genuinely missing
+`custodian`, and an unmapped `Trader Notes` column — none of which
+JPMC's deliberately-easy file tests. Worth doing before treating Step 6
+as proven beyond the easy case.
+

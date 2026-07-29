@@ -33,6 +33,21 @@ below.
 - **One config, three uses.** A canonical model's ADT is simultaneously
   the mapping target, the structured-output schema the agent is bound to,
   and the wire contract the team's service receives.
+- **The agent's output is generic, not typed per canonical model.**
+  There's no compile-time Java class for "a Holdings row" — canonical
+  models load from YAML at runtime, so `MappingProposal` is a flattened
+  list of `(canonicalFieldPath, source, confidence, notes)` entries, the
+  same shape regardless of which model is being mapped.
+  `CanonicalModelPromptRenderer` walks any model's ADT into the same
+  flattened path scheme the proposal references back.
+- **A sum type's variant can be resolved two different ways, and the
+  agent has to pick the right one, not default to either.** Confirmed
+  live in Step 6: `selectedVariant` when a whole file is one fixed
+  variant (e.g. every row is `USD`); `variantValueMap` when the variant
+  genuinely depends on each row's own data (e.g. a column with both
+  `Equity` and `Fixed Income` rows). Getting this wrong looked, at
+  first, like a formatting quirk (an unresolved empty `selectedVariant`)
+  rather than the real structural gap it was — see `mapping-notes.md`.
 - **Configuration is parsed exactly once, into a typed object, by exactly
   one component.** This is a direct response to a real failure mode:
   configuration that's "not constant at all," ending up treated as a raw
@@ -44,7 +59,7 @@ below.
 ## Repository layout
 
 ```
-compose.yaml         Postgres + backend; frontend service arrives at Step 8
+compose.yaml         Postgres, sheets-mcp, backend; frontend service arrives at Step 8
 .env.example                 Postgres credentials -- copy to .env
 db/init/                      Plain SQL orchestration schema (Step 4)
 backend/
@@ -108,6 +123,24 @@ Postgres only runs `docker-entrypoint-initdb.d` scripts against a brand
 new, empty data directory. Either `docker compose down -v` first (destroys
 the volume, re-initializes cleanly) or apply `db/init/01-orchestration-schema.sql`
 to the running container by hand.
+
+## API endpoints (internal, for now)
+
+Everything below is unauthenticated and meant for local development /
+manual verification, not a public API -- there's no `/api` versioning or
+access control yet, deliberately, since nothing here is exposed outside
+`docker compose`'s own network today.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/actuator/health` | GET | Overall + `db` health |
+| `/internal/canonical/models` | GET | Canonical models currently loaded |
+| `/internal/canonical/clients` | GET | Client source-conventions currently loaded |
+| `/internal/explore/tools` | GET | Tools `sheets-mcp` exposes (proves the MCP connection) |
+| `/internal/explore/worksheets?path=` | GET | `list_worksheets` on a file in the mounted workspace |
+| `/internal/explore/table?path=&worksheet=` | GET | `describe_table` — headers, inferred types, samples |
+| `/internal/explore/rows?path=&worksheet=&offset=&limit=` | GET | `read_rows` — paginated row data |
+| `/internal/mapping/propose?modelId=&clientId=&path=&worksheet=` | POST | Runs the mapping agent; creates/reuses an `import_batch`, persists a `mapping_proposal` |
 
 ## Roadmap
 
