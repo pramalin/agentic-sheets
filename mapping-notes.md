@@ -584,3 +584,198 @@ through `CanonicalValueJson` at the API boundary
 reflects what was actually delivered, not an internal implementation
 detail.
 
+## Step 7.1 hardening (second external review)
+
+A second external review (ChatGPT, static repo review, same rigor as
+the Step 6.1 round) went through Step 7 and caught several real
+problems -- and, worth being precise about, one suggestion I disagreed
+with and didn't implement. Same approach as last time: verify each claim
+against the actual code, fix what's genuinely broken, push back
+explicitly where a suggestion would break something already deliberately
+built and tested, rather than complying by default.
+
+### Fixed
+
+**Approval wasn't atomic or idempotent -- a real, not hypothetical,
+double-delivery risk.** The original `/approve` did `findById` +
+check-status-is-PENDING in application code, then a separate, plain
+`updateStatus` call -- check-then-act, not compare-and-set. Two
+concurrent requests could both read PENDING before either write landed,
+both proceed to validate and dispatch, and deliver the same batch
+twice. Fixed with `MappingProposalRepository.claim`, a single
+`UPDATE ... WHERE status = 'PENDING'` whose affected-row-count *is* the
+race protection -- if it's zero, someone else already claimed it.
+
+**A failure partway through validate-and-dispatch left things
+permanently stuck.** The proposal became APPROVED *before* validation
+and delivery ran, with no try/catch around either. Any unexpected
+exception (a malformed URI, a serialization failure, anything not
+already handled inside `Dispatcher`'s own retry loop) left the proposal
+APPROVED with no way to retry through the same endpoint, since it was
+no longer PENDING. Fixed by separating the concepts: approval (a
+one-time, permanent human decision, claimed atomically) from
+validate-and-dispatch (which can legitimately need retrying). A new
+`/proposals/{id}/redeliver` endpoint re-runs validate-and-dispatch
+against an already-approved proposal without re-claiming it. An
+unexpected exception now moves the *batch* (not the proposal) to a new
+`PROCESSING_ERROR` status and rethrows, rather than leaving the batch
+in the ambiguous `APPROVED` state it was in before the exception --
+`/redeliver` has a well-defined thing to retry.
+
+**The source file wasn't re-verified at approval.** The batch stores a
+content hash computed at `/propose` time, but `/approve` never
+recomputed it -- a file replaced between proposing and approving would
+get the old proposal silently applied to new data. Fixed: `/approve`
+and `/redeliver` both recompute the hash via the same `FileHasher` and
+reject with a clear `SOURCE_CHANGED` message if it doesn't match.
+
+**`conversionNotes` was descriptive, not executable -- a real
+silent-corruption risk, not just an inconsistency.** The clearest
+concrete case: PIMCO's market rate is stored as a percentage ("5.375")
+but the canonical field expects the fraction (0.05375) -- documented as
+a known design decision all the way back when `market_rate_book_value.
+yaml` was first written. A note saying "divide by 100" never actually
+divided anything; `CanonicalRowBuilder` only ever did direct primitive
+parsing. The row would pass validation and get delivered *wrong*, with
+nothing catching it -- worse than an outright validation failure,
+because it looks like success. Fixed with a deliberately narrow typed
+transformation: `MappingProposal.TransformationStep` (a flat
+`{type, multiplier}` record, not a sealed-interface hierarchy -- see
+its javadoc for why a flat shape was chosen specifically to avoid
+needing to verify Spring AI's polymorphic-JSON-schema behavior, an
+unfamiliar-API risk this project has been burned by more than once this
+year), whitelisted and applied by `CanonicalRowBuilder`, checked at
+both the structural-validation and row-construction layers, only
+`"scale"` implemented (the one concretely-motivated case), and only on
+NUMBER fields. The system prompt now tells the agent this capability
+exists -- without that, it would have no way to know to use it.
+
+**Retry classification never actually consulted `retryableStatusCodes`.**
+The original code checked `terminalStatusCodes`, then fell through to
+retryable for *everything* else unconditionally -- an unclassified
+redirect, an auth failure a model's config forgot to list as terminal,
+anything -- got retried regardless of the configured retryable list.
+Extracted into `Dispatcher.classify`, a pure, directly-testable function
+(`DispatcherClassifyTest`) implementing the real three-way-plus-default
+decision: explicit terminal wins, explicit retryable is honored, and
+anything genuinely unclassified falls back to a status-code-range
+default (5xx retryable, everything else terminal) rather than either
+"retry forever" or "always safe."
+
+**A missing secret produced an empty bearer credential instead of
+failing.** `Authorization: Bearer ` (with nothing after it) would
+actually get sent to the target. Fixed: checked before any HTTP call,
+returns `CONFIGURATION_ERROR` with a clear message naming the missing
+environment variable.
+
+**No HTTP timeouts.** A nonresponsive target could block the approval
+request indefinitely. Added a 10s connect timeout and 30s per-request
+timeout.
+
+**Interrupt handling restored the thread's interrupt flag but kept
+retrying anyway.** Fixed to return immediately (a new `INTERRUPTED`
+outcome) rather than falling through into another sleep-and-retry cycle.
+
+**Two structural-validator gaps, both agreed with and fixed**: a
+`variantValueMap` with no `sourceColumn` to actually read a row's value
+from (previously only caught at row-construction time, now caught
+before persistence too), and a sum type field with a mapping entry
+present but neither `selectedVariant` nor `variantValueMap` set. The
+second one is safe to reject structurally in a way the analogous
+primitive case isn't -- see below.
+
+**Delivery-log provenance was incomplete.** `delivery_log` only recorded
+`import_batch_id`, but a batch can have more than one `mapping_proposal`
+over its lifetime (exactly the `/redeliver` scenario this round
+introduced). Added `mapping_proposal_id`, `NOT NULL`, to every delivery
+attempt.
+
+**Attempt-count inconsistency for the not-implemented path.** Logged
+`attempt_number = 1` but returned `attempts = 0` in the response --
+small, but the kind of thing that becomes confusing in operational
+metrics or a future UI. Now consistent.
+
+### Explicitly disagreed with, and why
+
+**The review suggested the structural validator reject a primitive
+mapping with neither `sourceColumn` nor `sourceConstant`.** Not
+implemented -- doing so would break a real, already-tested, already
+twice-observed-live-and-correct behavior. `custodian` and the
+`FixedIncome` sub-fields legitimately have neither, at low confidence,
+when the source genuinely doesn't have that data -- confirmed live with
+both the JPMC and MetLife fixtures, and there's a dedicated test
+(`allowsNeitherSourceColumnNorConstantForAGenuinelyUnavailableField`)
+guarding exactly this. The asymmetry with sum type fields (where
+"neither mode set" *is* now rejected) is intentional, not an
+inconsistency worth resolving the same way: omitting a mapping entry
+entirely is how any field -- primitive or sum type -- says "no data for
+this." A sum type field that *has* a mapping entry but can't actually
+be resolved either way is always malformed, because there's no
+legitimate reason to propose an entry you can't resolve. A primitive
+field that has neither a column nor a constant is exactly what "I
+looked, there's genuinely nothing here" looks like, and CanonicalRowBuilder
+already turns that into a hard row-level error for any *required*
+field regardless -- optional fields are the only case where "neither"
+is legitimately fine, and that's deliberate, not a gap.
+
+### Explicitly deferred, with reasoning
+
+**Client configuration is still not version-pinned.** The canonical
+model version-drift check (from Step 6.1) has no `ClientConfig`
+equivalent -- `client-configs/*.yaml` has no version or hash concept at
+all yet, so there's nothing to pin against. A client's `dateFormat`
+changing between proposal and approval could silently change how the
+same source value gets interpreted. Fixing this properly means adding a
+content-hash concept to `ClientConfig` (parser changes, a persisted
+hash column) -- real, buildable work, deliberately not bundled into an
+already-large pass. Flagged clearly rather than silently left
+unaddressed.
+
+**All-or-nothing vs. valid-rows-only delivery policy.** Currently
+always dispatches whatever subset of rows passed validation, reporting
+the rest as errors -- a real product decision (some receiving services
+need atomic batches, others are fine with partial delivery), not an
+accidental default. Needs to become a canonical-model or
+delivery-target config option, and a review UI needs to show a reviewer
+which policy applies *before* they approve. Not resolved here, matching
+how the similar "one proposal per batch or multiple numbered attempts"
+question was left open in Step 6.1 -- both are UI/product decisions
+better made together with Step 8 than forced in isolation now.
+
+**Durable, row-level validation-report storage.** `ValidationReport`
+currently only lives in the HTTP response and application logs --
+there's no database table recording per-row construction results,
+errors, or which validation run produced them. A real gap for Step 8,
+which will need durable access to exactly this data to show a reviewer
+what happened, not just what's currently true. Real schema/feature work
+on its own, deferred rather than bundled in.
+
+**A transactional outbox, idempotency keys sent to the receiving
+service, and moving delivery off the request thread entirely.** The
+atomic-claim and `/redeliver` fixes close the *this system's* half of
+the idempotency problem (won't claim or process the same proposal
+twice) but don't give the *receiving* service anything to dedupe a
+retried delivery against beyond the `X-Import-Batch-Id`/
+`X-Mapping-Proposal-Id` headers already being sent. A proper
+idempotency key plus an outbox pattern (write the intent to deliver
+durably, dispatch asynchronously, retry from the outbox rather than
+inline with the request) is real infrastructure, appropriately a
+distinct piece of work once delivery moves off the synchronous request
+path -- already flagged as a known simplification when `Dispatcher` was
+first built.
+
+**Concurrency and integration tests** (two simultaneous approvals
+resolving to one delivery, a changed workbook actually blocking
+approval end-to-end, recovery after a simulated process failure) need
+either Testcontainers-backed Postgres or a scripted fake HTTP receiver
+capable of returning a specific status sequence -- both real
+infrastructure additions, consistent with what Step 6.1 already
+identified as missing and didn't build then either.  What *did* get
+added this round: `DispatcherClassifyTest` covers the retry-
+classification logic directly as a pure function, and
+`CanonicalRowBuilderTest`/`MappingProposalStructuralValidatorTest` cover
+the transformation and structural-validation additions -- real coverage
+of the deterministic logic, just not of concurrency or live HTTP
+behavior, which need infrastructure this project has consistently
+deferred building speculatively ahead of an actual need.
+

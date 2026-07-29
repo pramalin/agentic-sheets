@@ -50,7 +50,7 @@ public class ProposalValidationService {
         // would fail validation on a required field the proposal was
         // explicitly told to omit.
         mappingsByPath.put("client_id",
-                new MappingProposal.FieldMapping("client_id", null, client.clientId(), null, null, 1.0,
+                new MappingProposal.FieldMapping("client_id", null, client.clientId(), null, null, null, 1.0,
                         "resolved externally, not from the agent's proposal"));
 
         List<CanonicalValue> validRows = new ArrayList<>();

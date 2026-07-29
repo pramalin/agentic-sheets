@@ -39,19 +39,24 @@ class CanonicalRowBuilderTest {
     }
 
     private MappingProposal.FieldMapping column(String path, String sourceColumn) {
-        return new MappingProposal.FieldMapping(path, sourceColumn, null, null, null, 0.9, "test");
+        return new MappingProposal.FieldMapping(path, sourceColumn, null, null, null, null, 0.9, "test");
+    }
+
+    private MappingProposal.FieldMapping columnScaled(String path, String sourceColumn, String multiplier) {
+        return new MappingProposal.FieldMapping(path, sourceColumn, null, null, null,
+                List.of(new MappingProposal.TransformationStep("scale", multiplier)), 0.9, "test");
     }
 
     private MappingProposal.FieldMapping constant(String path, String value) {
-        return new MappingProposal.FieldMapping(path, null, value, null, null, 0.9, "test");
+        return new MappingProposal.FieldMapping(path, null, value, null, null, null, 0.9, "test");
     }
 
     private MappingProposal.FieldMapping selectedVariant(String path, String variant) {
-        return new MappingProposal.FieldMapping(path, null, null, variant, null, 0.9, "test");
+        return new MappingProposal.FieldMapping(path, null, null, variant, null, null, 0.9, "test");
     }
 
     private MappingProposal.FieldMapping variantMap(String path, String sourceColumn, Map<String, String> map) {
-        return new MappingProposal.FieldMapping(path, sourceColumn, null, null, map, 0.9, "test");
+        return new MappingProposal.FieldMapping(path, sourceColumn, null, null, map, null, 0.9, "test");
     }
 
     @Test
@@ -268,7 +273,7 @@ class CanonicalRowBuilderTest {
                 column("account_id", "Account"),
                 column("security_id", "CUSIP"),
                 // asset_class mapping present but neither selectedVariant nor variantValueMap set
-                new MappingProposal.FieldMapping("asset_class", "Class", null, null, null, 0.5, "unresolved"),
+                new MappingProposal.FieldMapping("asset_class", "Class", null, null, null, null, 0.5, "unresolved"),
                 column("quantity", "Quantity"),
                 column("market_value", "Market Value"),
                 selectedVariant("currency", "USD"));
@@ -279,5 +284,74 @@ class CanonicalRowBuilderTest {
 
         assertThat(result.isValid()).isFalse();
         assertThat(result.errors()).anyMatch(e -> e.contains("neither selectedVariant nor variantValueMap"));
+    }
+
+    @Test
+    void appliesAScaleTransformationToConvertAPercentageIntoAFraction() throws Exception {
+        // The exact real risk an external review caught: a source value
+        // like "5.375" meaning 5.375% needs to become the canonical
+        // fraction 0.05375, and a free-text conversionNotes saying so
+        // never actually executes anything -- this is what makes it
+        // actually happen.
+        Map<String, MappingProposal.FieldMapping> mappings = byPath(
+                column("as_of_date", "As Of Date"),
+                constant("client_id", "jpmc"),
+                column("account_id", "Account"),
+                column("security_id", "CUSIP"),
+                selectedVariant("asset_class", "Equity"),
+                column("quantity", "Quantity"),
+                columnScaled("market_value", "Market Rate (%)", "0.01"),
+                selectedVariant("currency", "USD"));
+        Map<String, String> row = Map.of("As Of Date", "2026-01-15", "Account", "A", "CUSIP", "B",
+                "Quantity", "1", "Market Rate (%)", "5.375");
+
+        CanonicalRowBuilder.Result result = builder.build(holdings().root(), mappings, JPMC, row);
+
+        assertThat(result.isValid()).as("errors: %s", result.errors()).isTrue();
+        RecordValue record = (RecordValue) result.value();
+        assertThat(((NumberValue) record.fields().get("market_value")).value())
+                .isEqualByComparingTo(new BigDecimal("0.05375"));
+    }
+
+    @Test
+    void rejectsAScaleTransformationOnANonNumberField() throws Exception {
+        Map<String, MappingProposal.FieldMapping> mappings = byPath(
+                new MappingProposal.FieldMapping("as_of_date", "As Of Date", null, null, null,
+                        List.of(new MappingProposal.TransformationStep("scale", "0.01")), 0.9, "bogus"),
+                constant("client_id", "jpmc"),
+                column("account_id", "Account"),
+                column("security_id", "CUSIP"),
+                selectedVariant("asset_class", "Equity"),
+                column("quantity", "Quantity"),
+                column("market_value", "Market Value"),
+                selectedVariant("currency", "USD"));
+        Map<String, String> row = Map.of("As Of Date", "2026-01-15", "Account", "A", "CUSIP", "B",
+                "Quantity", "1", "Market Value", "1");
+
+        CanonicalRowBuilder.Result result = builder.build(holdings().root(), mappings, JPMC, row);
+
+        assertThat(result.isValid()).isFalse();
+        assertThat(result.errors()).anyMatch(e -> e.contains("as_of_date") && e.contains("only NUMBER fields"));
+    }
+
+    @Test
+    void rejectsAnUnrecognizedTransformationType() throws Exception {
+        Map<String, MappingProposal.FieldMapping> mappings = byPath(
+                column("as_of_date", "As Of Date"),
+                constant("client_id", "jpmc"),
+                column("account_id", "Account"),
+                column("security_id", "CUSIP"),
+                selectedVariant("asset_class", "Equity"),
+                column("quantity", "Quantity"),
+                new MappingProposal.FieldMapping("market_value", "Market Value", null, null, null,
+                        List.of(new MappingProposal.TransformationStep("frobnicate", "1")), 0.9, "bogus"),
+                selectedVariant("currency", "USD"));
+        Map<String, String> row = Map.of("As Of Date", "2026-01-15", "Account", "A", "CUSIP", "B",
+                "Quantity", "1", "Market Value", "1");
+
+        CanonicalRowBuilder.Result result = builder.build(holdings().root(), mappings, JPMC, row);
+
+        assertThat(result.isValid()).isFalse();
+        assertThat(result.errors()).anyMatch(e -> e.contains("unrecognized transformation type"));
     }
 }

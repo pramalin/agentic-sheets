@@ -25,7 +25,8 @@ CREATE TABLE import_batch (
     worksheet           TEXT NOT NULL,
     config_version      INTEGER NOT NULL,
     -- Informal for now (PENDING / MAPPED / APPROVED / REJECTED /
-    -- VALIDATION_FAILED / DELIVERED / DELIVERY_FAILED), not a DB-level enum or CHECK
+    -- VALIDATION_FAILED / PROCESSING_ERROR / DELIVERED /
+    -- DELIVERY_FAILED), not a DB-level enum or CHECK
     -- constraint -- easier to iterate on the state machine in application
     -- code while this is still actively evolving.
     status              TEXT NOT NULL DEFAULT 'PENDING',
@@ -80,13 +81,21 @@ CREATE INDEX idx_mapping_memory_lookup
 CREATE TABLE delivery_log (
     id                  BIGSERIAL PRIMARY KEY,
     import_batch_id     BIGINT NOT NULL REFERENCES import_batch (id),
+    -- Added after an external review of Step 7 correctly caught that a
+    -- batch can have more than one mapping_proposal over its lifetime
+    -- (re-approval after a failed delivery, via /redeliver), and the log
+    -- didn't record which specific proposal a given delivery attempt
+    -- actually came from.
+    mapping_proposal_id BIGINT NOT NULL REFERENCES mapping_proposal (id),
     attempt_number      INTEGER NOT NULL,
     transport           TEXT NOT NULL,           -- 'rest' | 'mcp'
-    -- SUCCESS / RETRYABLE_FAILURE / TERMINAL_FAILURE / NOT_IMPLEMENTED,
-    -- per each canonical model's target.delivery classification
-    -- (retryableStatusCodes / terminalStatusCodes) -- NOT_IMPLEMENTED is
-    -- for a transport/auth combination Step 7 doesn't actually dispatch
-    -- yet (mcp transport, oauth2-client-credentials/mtls auth).
+    -- SUCCESS / RETRYABLE_FAILURE / TERMINAL_FAILURE / NOT_IMPLEMENTED /
+    -- CONFIGURATION_ERROR, per each canonical model's target.delivery
+    -- classification (retryableStatusCodes / terminalStatusCodes).
+    -- NOT_IMPLEMENTED is for a transport/auth combination Step 7 doesn't
+    -- actually dispatch yet (mcp transport, oauth2-client-credentials/
+    -- mtls auth). CONFIGURATION_ERROR is for a resolvable-but-wrong
+    -- setup (e.g. a missing secret) caught before any network call.
     outcome              TEXT NOT NULL,
     status_code          INTEGER,
     error_message        TEXT,
@@ -94,3 +103,4 @@ CREATE TABLE delivery_log (
 );
 
 CREATE INDEX idx_delivery_log_batch ON delivery_log (import_batch_id);
+CREATE INDEX idx_delivery_log_proposal ON delivery_log (mapping_proposal_id);

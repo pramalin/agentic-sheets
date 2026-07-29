@@ -58,13 +58,13 @@ class ProposalValidationServiceTest {
         // actually produces per MappingProposalService's system prompt.
         MappingProposal proposal = new MappingProposal(
                 List.of(
-                        new MappingProposal.FieldMapping("as_of_date", "As Of Date", null, null, null, 0.95, ""),
-                        new MappingProposal.FieldMapping("account_id", "Account", null, null, null, 0.95, ""),
-                        new MappingProposal.FieldMapping("security_id", "CUSIP", null, null, null, 0.95, ""),
-                        new MappingProposal.FieldMapping("asset_class", "Class", null, "Equity", null, 0.9, ""),
-                        new MappingProposal.FieldMapping("quantity", "Quantity", null, null, null, 0.95, ""),
-                        new MappingProposal.FieldMapping("market_value", "Market Value", null, null, null, 0.95, ""),
-                        new MappingProposal.FieldMapping("currency", null, null, "USD", null, 0.95, "")),
+                        new MappingProposal.FieldMapping("as_of_date", "As Of Date", null, null, null, null, 0.95, ""),
+                        new MappingProposal.FieldMapping("account_id", "Account", null, null, null, null, 0.95, ""),
+                        new MappingProposal.FieldMapping("security_id", "CUSIP", null, null, null, null, 0.95, ""),
+                        new MappingProposal.FieldMapping("asset_class", "Class", null, "Equity", null, null, 0.9, ""),
+                        new MappingProposal.FieldMapping("quantity", "Quantity", null, null, null, null, 0.95, ""),
+                        new MappingProposal.FieldMapping("market_value", "Market Value", null, null, null, null, 0.95, ""),
+                        new MappingProposal.FieldMapping("currency", null, null, "USD", null, null, 0.95, "")),
                 List.of(),
                 "test");
 

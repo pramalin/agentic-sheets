@@ -151,6 +151,74 @@ class MappingProposalStructuralValidatorTest {
         assertThat(problems).isEmpty();
     }
 
+    @Test
+    void rejectsAVariantValueMapWithNoDiscriminatorSourceColumn() throws Exception {
+        MappingProposal proposal = withOneMapping(
+                fm("asset_class", null, null, null, Map.of("Equity", "Equity"), 0.9));
+
+        List<String> problems = validator.validate(proposal, holdings(), JPMC_COLUMNS);
+
+        assertThat(problems).anyMatch(p -> p.contains("no sourceColumn"));
+    }
+
+    @Test
+    void rejectsASumTypeFieldWithAMappingEntryButNeitherResolutionMode() throws Exception {
+        // Unlike a primitive field, omitting the mapping entirely is how
+        // a sum type field says "no data for this" -- an entry that
+        // exists but resolves neither way is always malformed, not a
+        // legitimate "genuinely unavailable" signal.
+        MappingProposal proposal = withOneMapping(
+                new MappingProposal.FieldMapping("asset_class", "Class", null, null, null, null, 0.5, "unresolved"));
+
+        List<String> problems = validator.validate(proposal, holdings(), JPMC_COLUMNS);
+
+        assertThat(problems).anyMatch(p -> p.contains("neither selectedVariant nor variantValueMap"));
+    }
+
+    @Test
+    void rejectsAnUnrecognizedTransformationType() throws Exception {
+        MappingProposal proposal = withOneMapping(
+                new MappingProposal.FieldMapping("quantity", "Quantity", null, null, null,
+                        List.of(new MappingProposal.TransformationStep("frobnicate", "1")), 0.9, "test"));
+
+        List<String> problems = validator.validate(proposal, holdings(), JPMC_COLUMNS);
+
+        assertThat(problems).anyMatch(p -> p.contains("unrecognized transformation type"));
+    }
+
+    @Test
+    void rejectsAScaleTransformationOnANonNumberField() throws Exception {
+        MappingProposal proposal = withOneMapping(
+                new MappingProposal.FieldMapping("account_id", "Account", null, null, null,
+                        List.of(new MappingProposal.TransformationStep("scale", "0.01")), 0.9, "test"));
+
+        List<String> problems = validator.validate(proposal, holdings(), JPMC_COLUMNS);
+
+        assertThat(problems).anyMatch(p -> p.contains("only NUMBER fields"));
+    }
+
+    @Test
+    void rejectsAScaleTransformationWithAnUnparseableMultiplier() throws Exception {
+        MappingProposal proposal = withOneMapping(
+                new MappingProposal.FieldMapping("quantity", "Quantity", null, null, null,
+                        List.of(new MappingProposal.TransformationStep("scale", "not-a-number")), 0.9, "test"));
+
+        List<String> problems = validator.validate(proposal, holdings(), JPMC_COLUMNS);
+
+        assertThat(problems).anyMatch(p -> p.contains("unparseable"));
+    }
+
+    @Test
+    void allowsAWellFormedScaleTransformation() throws Exception {
+        MappingProposal proposal = withOneMapping(
+                new MappingProposal.FieldMapping("quantity", "Quantity", null, null, null,
+                        List.of(new MappingProposal.TransformationStep("scale", "0.01")), 0.9, "test"));
+
+        List<String> problems = validator.validate(proposal, holdings(), JPMC_COLUMNS);
+
+        assertThat(problems).isEmpty();
+    }
+
     private MappingProposal withOneMapping(MappingProposal.FieldMapping fm) {
         return new MappingProposal(List.of(fm), List.of(), "test");
     }
@@ -158,6 +226,6 @@ class MappingProposalStructuralValidatorTest {
     private MappingProposal.FieldMapping fm(String path, String sourceColumn, String sourceConstant,
             String selectedVariant, Map<String, String> variantValueMap, double confidence) {
         return new MappingProposal.FieldMapping(
-                path, sourceColumn, sourceConstant, selectedVariant, variantValueMap, confidence, "test note");
+                path, sourceColumn, sourceConstant, selectedVariant, variantValueMap, null, confidence, "test note");
     }
 }

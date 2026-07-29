@@ -15,11 +15,11 @@ public class DeliveryLogRepository {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    public void record(long importBatchId, int attemptNumber, String transport, String outcome,
+    public void record(long importBatchId, long mappingProposalId, int attemptNumber, String transport, String outcome,
             Integer statusCode, String errorMessage) {
         jdbcTemplate.update(
-                "INSERT INTO delivery_log (import_batch_id, attempt_number, transport, outcome, status_code, error_message) "
-                        + "VALUES (?, ?, ?, ?, ?, ?)",
-                importBatchId, attemptNumber, transport, outcome, statusCode, errorMessage);
+                "INSERT INTO delivery_log (import_batch_id, mapping_proposal_id, attempt_number, transport, outcome, status_code, error_message) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                importBatchId, mappingProposalId, attemptNumber, transport, outcome, statusCode, errorMessage);
     }
 }

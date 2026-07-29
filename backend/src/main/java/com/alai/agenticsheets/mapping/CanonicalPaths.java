@@ -30,6 +30,7 @@ public final class CanonicalPaths {
 
     private final Set<String> allPaths = new LinkedHashSet<>();
     private final Map<String, Set<String>> variantsByPath = new LinkedHashMap<>();
+    private final Map<String, PrimitiveType.Kind> primitiveKindByPath = new LinkedHashMap<>();
 
     private CanonicalPaths() {
     }
@@ -56,11 +57,20 @@ public final class CanonicalPaths {
         return variantsByPath.getOrDefault(path, Set.of());
     }
 
+    /** @return the primitive kind at this path, or null if the path
+      * isn't a primitive field (e.g. it's a sum type field itself). */
+    public PrimitiveType.Kind primitiveKindAt(String path) {
+        return primitiveKindByPath.get(path);
+    }
+
     private void walk(String path, CanonicalType type) {
         switch (type) {
             case OptionType o -> walk(path, o.inner());
 
-            case PrimitiveType p -> allPaths.add(path);
+            case PrimitiveType p -> {
+                allPaths.add(path);
+                primitiveKindByPath.put(path, p.kind());
+            }
 
             case SumType s -> {
                 allPaths.add(path);

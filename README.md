@@ -132,17 +132,20 @@ curl -s -X POST "http://localhost:8081/internal/mapping/propose?modelId=Holdings
 # Step 7: approve the proposal returned above (use its mappingProposalId),
 # then validate + dispatch to the local fake-target
 curl -s -X POST "http://localhost:8081/internal/mapping/proposals/1/approve" | jq
+
+# Step 7.1: if delivery failed transiently, retry without re-approving
+curl -s -X POST "http://localhost:8081/internal/mapping/proposals/1/redeliver" | jq
 ```
 
 If you already ran `docker compose up` before this change, the `postgres-data`
 volume already exists and initialized *without* the current orchestration
 schema -- Postgres only runs `docker-entrypoint-initdb.d` scripts against
-a brand new, empty data directory. This applies again as of Step 6.1's
-`import_batch` schema change (added `worksheet`, widened the unique
-constraint) -- either `docker compose down -v` first (destroys the
-volume, re-initializes cleanly; there's nothing in it worth keeping at
-this stage) or apply the current `db/init/01-orchestration-schema.sql`
-to the running container by hand.
+a brand new, empty data directory. This applies again as of Step 7.1's
+`delivery_log` schema change (added `mapping_proposal_id`) -- either
+`docker compose down -v` first (destroys the volume, re-initializes
+cleanly; there's nothing in it worth keeping at this stage) or apply the
+current `db/init/01-orchestration-schema.sql` to the running container
+by hand.
 
 ## API endpoints (internal, for now)
 
@@ -164,7 +167,8 @@ expose these ports on an untrusted network.
 | `/internal/explore/table?path=&worksheet=` | GET | `describe_table` — headers, inferred types, samples |
 | `/internal/explore/rows?path=&worksheet=&offset=&limit=` | GET | `read_rows` — paginated row data |
 | `/internal/mapping/propose?modelId=&clientId=&path=&worksheet=` | POST | Runs the mapping agent; creates/reuses an `import_batch`, persists a `mapping_proposal` |
-| `/internal/mapping/proposals/{id}/approve?reviewedBy=` | POST | Approves a pending proposal, validates it against the ADT, dispatches valid rows |
+| `/internal/mapping/proposals/{id}/approve?reviewedBy=` | POST | Approves a pending proposal (atomically claimed), validates it against the ADT, dispatches valid rows |
+| `/internal/mapping/proposals/{id}/redeliver` | POST | Re-runs validation + dispatch for an already-approved proposal -- for retrying after a transient failure |
 | `/internal/fake-target/{service}` | POST | Local-testing-only stand-in for a team's receiving service (see `FakeTargetController`) |
 
 ## Roadmap
@@ -206,17 +210,34 @@ expose these ports on an untrusted network.
       `delivery_log`. No review UI yet — approval is a plain endpoint
       call (`/proposals/{id}/approve`), same "manual now, automatic
       later" pattern as Step 6.
-- [ ] **Step 8** — Review web UI, built as embeddable Angular Elements
-      (custom elements) from the start — a real requirement (teams want
-      to embed review in their own applications, not be redirected to a
-      separate site) landed before this step had any code, so it shapes
-      the build rather than getting retrofitted after. Queue, review
-      screen (source columns + samples + proposed field + confidence,
-      editable), approve/edit/reject, plus a delivery-status view for
-      Step 7's outcomes. Needs real token-based auth (validating an
-      identity the host application already has, not a separate login)
-      before this is embeddable in anyone's actual product — see
-      `ui-notes.md` for the full reasoning and open questions.
+- [x] **Step 7.1** — Approval/delivery reliability hardening, after a
+      second external review: atomic proposal claiming
+      (compare-and-set, closing a real double-delivery race), a new
+      `/proposals/{id}/redeliver` endpoint so a failure mid-flight
+      doesn't leave things permanently stuck, source-file re-verification
+      at approval, a typed `scale` transformation (closing a real silent
+      data-corruption risk — `conversionNotes` was never actually
+      executed), retry classification that actually honors
+      `retryableStatusCodes` (it previously didn't), HTTP timeouts,
+      missing-secret fail-fast, and `delivery_log` proposal-level
+      provenance. See `mapping-notes.md` for what was fixed, what was
+      explicitly declined (one review suggestion would have broken an
+      already-tested, deliberate design choice), and what's still
+      deferred (client-config version-pinning, an all-or-nothing vs.
+      valid-rows-only delivery policy, durable validation-report
+      storage).
+- [ ] **Step 8** — Review web UI, built as standards-based Web
+      Components (Lit, not Angular or React as the implementation) from
+      the start — folding `agentic-sheets` into a product for unknown
+      future adopters means committing to either full framework as the
+      embeddable implementation imposes a real, unnecessary runtime cost
+      on every adopter who doesn't already use it. Queue, review screen
+      (source columns + samples + proposed field + confidence, editable),
+      approve/edit/reject, plus a delivery-status view for Step 7's
+      outcomes. Needs real token-based auth, likely supporting multiple
+      identity providers rather than one — see `ui-notes.md` for the
+      full reasoning and the bigger open questions (auth federation,
+      multi-tenancy, deployment model) this raises.
 - [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
       (same filename + same hash → skip; same filename + different hash
       → new batch), filename parsing

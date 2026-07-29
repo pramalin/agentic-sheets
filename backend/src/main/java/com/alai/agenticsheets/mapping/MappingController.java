@@ -3,6 +3,8 @@ package com.alai.agenticsheets.mapping;
 import com.alai.agenticsheets.canonical.CanonicalModel;
 import com.alai.agenticsheets.canonical.CanonicalModelRegistry;
 import com.alai.agenticsheets.canonical.ClientConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -24,10 +26,24 @@ import java.util.List;
  * plain endpoint call rather than a click -- Step 9's scheduled scanner
  * will call {@code /propose} automatically instead of a human hitting
  * it; approval, by design, always needs a human, automated or not.
+ *
+ * {@code /approve} and {@code /redeliver} are deliberately separate:
+ * approving is a one-time human decision (claimed atomically, see
+ * {@link MappingProposalRepository#claim}, and permanent once it
+ * happens), while validate-and-dispatch can legitimately need retrying
+ * (a transient delivery failure, or an unexpected exception mid-flight)
+ * without re-litigating whether a human already approved this. An
+ * external review of Step 7 correctly caught that the original
+ * single-endpoint design conflated the two: an exception partway through
+ * validate-and-dispatch left the proposal permanently APPROVED with no
+ * way to retry through the same endpoint, since it was no longer
+ * PENDING.
  */
 @RestController
 @RequestMapping("/internal/mapping")
 public class MappingController {
+
+    private static final Logger log = LoggerFactory.getLogger(MappingController.class);
 
     private final MappingProposalService proposalService;
     private final ImportBatchRepository importBatchRepository;
@@ -77,25 +93,64 @@ public class MappingController {
     }
 
     /**
-     * Approves a pending proposal, then immediately validates it against
-     * the ADT and dispatches whatever rows pass. Refuses to proceed if
-     * the canonical model has moved to a different version since this
-     * proposal was created -- see {@code mapping-notes.md}'s Step 7
-     * notes for why re-validating against a config that may no longer
-     * match what was actually proposed isn't safe to do silently.
+     * Approves a pending proposal -- atomically claimed, see
+     * {@link MappingProposalRepository#claim} -- then immediately
+     * validates and dispatches. Refuses to proceed if the canonical
+     * model has moved to a different version, or the source file's
+     * content has changed, since this proposal was created.
      */
     @PostMapping("/proposals/{id}/approve")
     public ApproveResponse approve(
             @PathVariable long id,
             @RequestParam(defaultValue = "manual-api-call") String reviewedBy) {
-        StoredMappingProposal stored = mappingProposalRepository.findById(id);
-        if (!"PENDING".equals(stored.status())) {
+        // Atomic compare-and-set, not check-then-act -- see the
+        // repository method's javadoc for the race this closes. Not
+        // reading the proposal first: an earlier version fetched it for
+        // a "not PENDING (status: X)" error message, but X was always
+        // the *pre-claim* status -- always "PENDING" in the exact
+        // concurrent-race case that message exists to explain, since
+        // this read necessarily happens before either request's claim
+        // attempt. Misleading, not just imprecise. Claim first; only
+        // look up the current status if it's actually needed to explain
+        // a failure.
+        if (!mappingProposalRepository.claim(id, reviewedBy)) {
+            String currentStatus = mappingProposalRepository.findById(id).status();
             throw new IllegalStateException(
-                    "proposal " + id + " is not PENDING (status: " + stored.status() + ")");
+                    "proposal " + id + " could not be claimed -- current status is " + currentStatus
+                            + ", not PENDING (already approved, possibly by a concurrent request racing this one, "
+                            + "or never PENDING to begin with)");
         }
 
+        StoredMappingProposal stored = mappingProposalRepository.findById(id);
         ImportBatch batch = importBatchRepository.findById(stored.importBatchId());
+        importBatchRepository.updateStatus(batch.id(), "APPROVED");
 
+        return validateAndDispatch(id, stored, batch);
+    }
+
+    /**
+     * Re-runs validation and dispatch for an already-approved proposal
+     * -- for retrying after a transient delivery failure, or after an
+     * unexpected exception left the batch in {@code PROCESSING_ERROR}.
+     * Does not re-claim or re-check approval status: once a human has
+     * approved something, that decision doesn't need repeating just
+     * because delivery needs another attempt. Still re-verifies the
+     * canonical model version and source file hash, same as
+     * {@code /approve} -- both can still have drifted between attempts.
+     */
+    @PostMapping("/proposals/{id}/redeliver")
+    public ApproveResponse redeliver(@PathVariable long id) {
+        StoredMappingProposal stored = mappingProposalRepository.findById(id);
+        if (!"APPROVED".equals(stored.status())) {
+            throw new IllegalStateException(
+                    "proposal " + id + " is not APPROVED (status: " + stored.status()
+                            + ") -- only an already-approved proposal can be redelivered");
+        }
+        ImportBatch batch = importBatchRepository.findById(stored.importBatchId());
+        return validateAndDispatch(id, stored, batch);
+    }
+
+    private ApproveResponse validateAndDispatch(long proposalId, StoredMappingProposal stored, ImportBatch batch) {
         CanonicalModel currentModel = registry.get(batch.modelId());
         if (currentModel.version() != stored.configVersion()) {
             throw new IllegalStateException(
@@ -104,24 +159,48 @@ public class MappingController {
                             + " -- refusing to validate against a config that may no longer match what was "
                             + "proposed. Re-run /propose against the current config before approving.");
         }
-        ClientConfig client = registry.getClient(batch.clientId());
 
-        mappingProposalRepository.updateStatus(id, "APPROVED", reviewedBy);
-        importBatchRepository.updateStatus(batch.id(), "APPROVED");
-
-        ValidationReport validationReport = validationService.validate(currentModel, client, batch, stored.proposal());
-
-        if (validationReport.validRows().isEmpty()) {
-            importBatchRepository.updateStatus(batch.id(), "VALIDATION_FAILED");
-            return new ApproveResponse(batch.id(), id, ValidationSummary.from(validationReport), null);
+        // An external review correctly caught that the source file was
+        // never re-verified at approval time -- only hashed once, at
+        // /propose. Someone could replace the file between proposing and
+        // approving, and the approval would silently apply the mapping
+        // to different data than what was actually reviewed.
+        String currentHash = fileHasher.sha256(batch.sourceFilename());
+        if (!currentHash.equals(batch.contentHash())) {
+            throw new IllegalStateException(
+                    "SOURCE_CHANGED: the file '" + batch.sourceFilename() + "' has different content now than "
+                            + "when this batch was created (expected hash " + batch.contentHash() + ", observed "
+                            + currentHash + ") -- refusing to approve a mapping against data that isn't what was "
+                            + "actually reviewed. Re-run /propose against the current file.");
         }
 
-        DispatchResult dispatchResult = dispatcher.dispatch(batch.id(), currentModel.target(), validationReport.validRows());
-        String finalStatus = dispatchResult.outcome() == DispatchResult.Outcome.SUCCESS
-                ? "DELIVERED" : "DELIVERY_FAILED";
-        importBatchRepository.updateStatus(batch.id(), finalStatus);
+        ClientConfig client = registry.getClient(batch.clientId());
 
-        return new ApproveResponse(batch.id(), id, ValidationSummary.from(validationReport), dispatchResult);
+        try {
+            ValidationReport validationReport = validationService.validate(currentModel, client, batch, stored.proposal());
+
+            if (validationReport.validRows().isEmpty()) {
+                importBatchRepository.updateStatus(batch.id(), "VALIDATION_FAILED");
+                return new ApproveResponse(batch.id(), proposalId, ValidationSummary.from(validationReport), null);
+            }
+
+            DispatchResult dispatchResult = dispatcher.dispatch(
+                    batch.id(), proposalId, currentModel.target(), validationReport.validRows());
+            String finalStatus = dispatchResult.outcome() == DispatchResult.Outcome.SUCCESS
+                    ? "DELIVERED" : "DELIVERY_FAILED";
+            importBatchRepository.updateStatus(batch.id(), finalStatus);
+
+            return new ApproveResponse(batch.id(), proposalId, ValidationSummary.from(validationReport), dispatchResult);
+        } catch (RuntimeException e) {
+            // The proposal stays APPROVED -- that's a permanent record
+            // of the human decision, not something to revert. The batch
+            // moves to a distinct, clearly-recoverable state instead, so
+            // /redeliver has something well-defined to retry rather than
+            // this exception leaving things stuck with no path forward.
+            log.error("validate-and-dispatch failed unexpectedly for proposal {} (batch {})", proposalId, batch.id(), e);
+            importBatchRepository.updateStatus(batch.id(), "PROCESSING_ERROR");
+            throw e;
+        }
     }
 
     @ExceptionHandler(MappingProposalValidationException.class)
@@ -134,6 +213,25 @@ public class MappingController {
     public ResponseEntity<ValidationErrorResponse> handleIllegalState(IllegalStateException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ValidationErrorResponse(List.of(e.getMessage())));
+    }
+
+    /**
+     * Safety net for anything not already handled above. Added after a
+     * live concurrency test surfaced a bare Spring Boot default error
+     * page (no useful detail at all) for an exception thrown inside
+     * {@link #validateAndDispatch}. The full detail still needs the
+     * server log (this only has the exception's own message, not a
+     * stack trace) -- but a structured 500 with at least the message is
+     * still strictly better than Spring's default HTML error page,
+     * which was actively getting in the way of diagnosing what had
+     * actually gone wrong from the client side.
+     */
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ValidationErrorResponse> handleUnexpected(Exception e) {
+        log.error("unhandled exception in MappingController", e);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(new ValidationErrorResponse(List.of(
+                        e.getClass().getSimpleName() + ": " + e.getMessage())));
     }
 
     public record ProposeResponse(long importBatchId, long mappingProposalId, MappingProposal proposal) {

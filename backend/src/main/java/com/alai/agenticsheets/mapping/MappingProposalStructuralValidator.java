@@ -65,6 +65,10 @@ public class MappingProposalStructuralValidator {
             if (hasSelectedVariant && hasVariantMap) {
                 problems.add("'" + path + "' sets both selectedVariant and variantValueMap");
             }
+            if (hasVariantMap && !hasColumn) {
+                problems.add("'" + path + "' has a variantValueMap but no sourceColumn to read each row's "
+                        + "value from -- variantValueMap always needs a discriminator column");
+            }
             if (hasSelectedVariant || hasVariantMap) {
                 if (!paths.isSumTypePath(path)) {
                     problems.add("'" + path + "' sets a variant but is not a sum type field");
@@ -81,6 +85,37 @@ public class MappingProposalStructuralValidator {
                                         + "', not one of " + validVariants);
                             }
                         }
+                    }
+                }
+            } else if (paths.isSumTypePath(path)) {
+                // A mapping entry exists for this sum type field, but it
+                // resolves neither way -- unlike a primitive field, this
+                // is never a legitimate "genuinely unavailable" signal:
+                // omitting the mapping entirely is how a sum type field
+                // says "no data for this," the same as any other field.
+                // Proposing an entry that can't actually be resolved is
+                // always a malformed proposal.
+                problems.add("'" + path + "' is a sum type field with a mapping entry but neither "
+                        + "selectedVariant nor variantValueMap set");
+            }
+
+            if (fm.transformations() != null) {
+                for (MappingProposal.TransformationStep step : fm.transformations()) {
+                    if (!"scale".equals(step.type())) {
+                        problems.add("'" + path + "' proposes an unrecognized transformation type '"
+                                + step.type() + "' -- only 'scale' is currently implemented");
+                        continue;
+                    }
+                    if (paths.primitiveKindAt(path) != com.alai.agenticsheets.canonical.PrimitiveType.Kind.NUMBER) {
+                        problems.add("'" + path + "' proposes a 'scale' transformation, but only NUMBER "
+                                + "fields support one");
+                        continue;
+                    }
+                    try {
+                        new java.math.BigDecimal(step.multiplier() == null ? "" : step.multiplier().trim());
+                    } catch (NumberFormatException e) {
+                        problems.add("'" + path + "' has a 'scale' transformation with an unparseable "
+                                + "multiplier '" + step.multiplier() + "'");
                     }
                 }
             }

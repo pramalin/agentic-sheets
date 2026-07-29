@@ -39,6 +39,20 @@ public record MappingProposal(
      * "FixedIncome"}) when the variant genuinely depends on each row's
      * own data, which is the common case for a column like "Asset
      * Class" holding different values per row.
+     *
+     * {@code transformations} is empty for the common case (the raw
+     * value is already in the canonical field's expected unit/shape).
+     * Added after an external review correctly identified a real
+     * silent-corruption risk: {@code conversionNotes} is free text a
+     * human reads, never interpreted by {@link CanonicalRowBuilder} --
+     * so a note saying "divide by 100" (e.g. PIMCO's market rate stored
+     * as a percentage like "5.375" needing to become the canonical
+     * fraction 0.05375) never actually happened, and the wrong value
+     * would pass validation and get delivered. Deliberately scoped to
+     * one transformation type ({@code scale}) rather than a general
+     * transformation DSL -- that's the one concretely-motivated case;
+     * see {@code mapping-notes.md}'s Step 7.1 notes for what's
+     * deliberately not built yet (trim/replace/lookup) and why.
      */
     public record FieldMapping(
             String canonicalFieldPath,
@@ -46,7 +60,36 @@ public record MappingProposal(
             String sourceConstant,
             String selectedVariant,
             Map<String, String> variantValueMap,
+            List<TransformationStep> transformations,
             double confidence,
             String conversionNotes) {
+    }
+
+    /**
+     * A single, LLM-proposable but deterministically-interpreted
+     * transformation step. Deliberately a flat record with a string
+     * {@code type} discriminator, not a sealed-interface hierarchy --
+     * Spring AI's structured output binds directly to
+     * {@link MappingProposal} via a fixed-schema Java record (see the
+     * README's design principles on why the agent's output isn't
+     * ADT-bound), and a flat shape is trivial to bind reliably the same
+     * way every other field on {@link FieldMapping} already is; a
+     * polymorphic sealed-interface field would need Jackson
+     * discriminator configuration this project hasn't verified works
+     * correctly with Spring AI's schema generation, and this project has
+     * already been burned enough times this year guessing at unfamiliar
+     * framework behavior instead of checking it.
+     *
+     * {@link CanonicalRowBuilder} whitelists and interprets {@code type}
+     * itself -- an unrecognized type, or a type applied to a field kind
+     * it doesn't make sense for, is a validation error, never silently
+     * ignored or silently applied.
+     *
+     * Only {@code "scale"} is currently implemented: {@code multiplier}
+     * is a decimal string multiplied into an already-parsed
+     * {@code NUMBER} value (e.g. {@code multiplier: "0.01"} to convert a
+     * percentage like {@code "5.375"} into the fraction {@code 0.05375}).
+     */
+    public record TransformationStep(String type, String multiplier) {
     }
 }

@@ -7,5 +7,5 @@ package com.alai.agenticsheets.mapping;
   * {@code maxAttempts} ran out). */
 public record DispatchResult(Outcome outcome, int attempts, Integer lastStatusCode, String message) {
 
-    public enum Outcome { SUCCESS, TERMINAL_FAILURE, RETRIES_EXHAUSTED, NOT_IMPLEMENTED }
+    public enum Outcome { SUCCESS, TERMINAL_FAILURE, RETRIES_EXHAUSTED, NOT_IMPLEMENTED, CONFIGURATION_ERROR, INTERRUPTED }
 }

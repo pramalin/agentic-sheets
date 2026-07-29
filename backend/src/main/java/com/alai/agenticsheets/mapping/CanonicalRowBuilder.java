@@ -94,6 +94,12 @@ public class CanonicalRowBuilder {
             }
             return new AbsentValue();
         }
+        MappingProposal.FieldMapping fm = mappingsByPath.get(path);
+        if (fm != null && fm.transformations() != null && !fm.transformations().isEmpty() && p.kind() != PrimitiveType.Kind.NUMBER) {
+            errors.add("'" + path + "' proposes a transformation, but only NUMBER fields support one (this "
+                    + "field is " + p.kind() + ")");
+            return new AbsentValue();
+        }
         return switch (p.kind()) {
             case STRING -> new StringValue(raw);
             case BOOLEAN -> {
@@ -104,12 +110,15 @@ public class CanonicalRowBuilder {
                 yield new AbsentValue();
             }
             case NUMBER -> {
+                BigDecimal value;
                 try {
-                    yield new NumberValue(new BigDecimal(raw.trim()));
+                    value = new BigDecimal(raw.trim());
                 } catch (NumberFormatException e) {
                     errors.add("'" + path + "' value '" + raw + "' is not a valid number");
                     yield new AbsentValue();
                 }
+                BigDecimal transformed = applyTransformations(path, value, mappingsByPath.get(path), errors);
+                yield transformed == null ? new AbsentValue() : new NumberValue(transformed);
             }
             case DATE -> {
                 LocalDate parsed = tryParseDate(raw.trim(), client);
@@ -122,6 +131,38 @@ public class CanonicalRowBuilder {
                 yield new DateValue(parsed);
             }
         };
+    }
+
+    /**
+     * Applies whitelisted, deterministically-interpreted transformations
+     * to an already-parsed number -- see {@link MappingProposal.TransformationStep}'s
+     * javadoc for why this exists (a real silent-corruption risk an
+     * external review correctly caught: {@code conversionNotes} is free
+     * text nothing ever executes). Only {@code "scale"} is recognized;
+     * anything else, or a transformation proposed on a field it wasn't
+     * checked here, is a validation error, never silently ignored.
+     */
+    private BigDecimal applyTransformations(String path, BigDecimal value, MappingProposal.FieldMapping fm,
+            List<String> errors) {
+        if (fm == null || fm.transformations() == null || fm.transformations().isEmpty()) {
+            return value;
+        }
+        BigDecimal result = value;
+        for (MappingProposal.TransformationStep step : fm.transformations()) {
+            if (!"scale".equals(step.type())) {
+                errors.add("'" + path + "' proposes an unrecognized transformation type '" + step.type()
+                        + "' -- only 'scale' is currently implemented");
+                return null;
+            }
+            try {
+                result = result.multiply(new BigDecimal(step.multiplier().trim()));
+            } catch (NumberFormatException | NullPointerException e) {
+                errors.add("'" + path + "' has a 'scale' transformation with an unparseable multiplier '"
+                        + step.multiplier() + "'");
+                return null;
+            }
+        }
+        return result;
     }
 
     private LocalDate tryParseDate(String raw, ClientConfig client) {
