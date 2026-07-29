@@ -234,11 +234,14 @@ problem. The first fix was structural (a missing field), the second was
 informational (a missing fact) — worth telling apart, since they look
 similar in the response text but need different fixes.
 
-Not yet tried live: `holdings_metlife_20260201.xlsx`, which exercises
-`sourceConstant` (banner-derived `as_of_date`), a genuinely missing
-`custodian`, and an unmapped `Trader Notes` column — none of which
-JPMC's deliberately-easy file tests. Worth doing before treating Step 6
-as proven beyond the easy case.
+`holdings_metlife_20260201.xlsx` — which exercises `sourceConstant`
+(banner-derived `as_of_date`), a genuinely missing `custodian`, and an
+unmapped `Trader Notes` column, none of which JPMC's deliberately-easy
+file tests — was tried live after this round of hardening. See the
+"MetLife verification" section below for the results; short version:
+the missing-field and unmapped-column cases came back exactly right,
+and the banner-content gap this document already predicted was
+confirmed for real rather than just reasoned about.
 
 ## Step 6.1 hardening (external review)
 
@@ -375,4 +378,74 @@ per batch) or produce multiple numbered attempts.** This is a real
 product/UX question that affects how Step 8's review UI presents
 proposals to a human, not just how they're stored — better decided
 alongside that UI than forced now.
+
+## MetLife verification
+
+Tried the fixture flagged as untested throughout Step 6/6.1 —
+`holdings_metlife_20260201.xlsx`, the one built specifically to exercise
+`sourceConstant`, a genuinely missing field, and an unmapped column, none
+of which JPMC's easy file tests. Results:
+
+**Confirmed the predicted gap, not just theorized it.** `describe_table`'s
+response has `headerRowIndex: 1` and goes straight into `columns` — the
+row-0 banner ("MetLife Holdings Extract — Report Date: 02/01/2026")
+isn't present anywhere in what the agent sees. The external review's
+prediction that `sourceConstant` couldn't be reliably resolved without
+exposing pre-header content was exactly right, now confirmed live
+rather than just reasoned about.
+
+**The agent's actual response to that gap is worth understanding
+precisely.** It didn't fail or leave `as_of_date` unmapped — it parsed
+the date straight out of the *filename string* instead
+(`holdings_metlife_20260201.xlsx` → `2026-02-01`), landing on the
+correct value with confidence 0.6 and an honest note about where it
+came from. That's good calibration (it correctly flagged this as less
+certain than a direct column match), but the mechanism is fragile in a
+way the correct value obscures: it only works because this fixture's
+filename date happens to agree with the banner's date. A real client
+could resubmit a corrected file under a new filename with the *same*
+underlying as-of-date, or use a naming convention that doesn't encode a
+date at all, and this fallback would silently produce a wrong or
+missing answer with no signal that anything was off. Worth being clear
+about when `sheets-reader-mcp` eventually exposes banner content: that's
+not just a nice-to-have, it's removing a fallback that currently only
+looks correct by fixture coincidence.
+
+**`custodian` and `Trader Notes` both came back exactly right** —
+`custodian` at confidence 0 with "No custodian/custodian bank column
+present in this sheet," `Trader Notes` correctly landing in
+`unmappedSourceColumns` rather than being forced into a mapping.
+
+**New minor gap, not previously visible with JPMC's simpler file**:
+`asset_class`'s `variantValueMap` included `Cash` and `Alternative`,
+which never appeared in the 3 sampled rows (only `Equity` and
+`Fixed Income` did). `MappingProposalStructuralValidator` doesn't catch
+this — it checks that `variantValueMap` *values* are real variant
+names (they are), not that the *keys* correspond to values actually
+observed in the source data. Harmless in this case (extra unused
+lookup entries), but worth tightening if it turns out to generalize
+into fabricating variants that don't exist in a client's actual data
+rather than just ones absent from a 3-row sample. Would need the
+validator to see observed source cell *values*, not just column
+headers — currently only has the latter.
+
+**New behavior worth noting for Step 7**: for `asset_class.FixedIncome.
+maturity_date` and `.coupon_rate`, with no dedicated source column
+available, the agent attempted to parse them out of the free-text
+`Sec Name` column instead (e.g. "FHLB Note 4.25% 2027" → coupon_rate
+4.25, maturity year 2027), at appropriately low confidence (0.4-0.45)
+with explicit caveats about incompleteness. Reasonable behavior for a
+proposal a human reviews before anything happens — but it means the
+*same* source column can legitimately feed multiple different
+canonical fields via different extraction logic, not a strict
+one-column-to-one-field mapping. Step 7's row-construction logic needs
+to handle "parse this cell two different ways depending on which
+canonical field is being derived from it," not just "copy this
+column's value."
+
+**The structural validator handled a genuinely more complex case
+correctly** — this proposal has 13 field mappings including two
+data-dependent variant resolutions, a banner-derived constant, and two
+free-text-extraction attempts, and passed validation cleanly. First
+live confirmation of the validator beyond its own unit tests.
 
