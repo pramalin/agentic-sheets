@@ -449,3 +449,110 @@ data-dependent variant resolutions, a banner-derived constant, and two
 free-text-extraction attempts, and passed validation cleanly. First
 live confirmation of the validator beyond its own unit tests.
 
+## Step 7 build notes
+
+**Real bug caught while writing tests, before it ever hit a live
+run.** `CanonicalRowBuilder` treats `client_id` as a required ADT field
+with no special case -- correctly so, since it doesn't know anything
+about the mapping pipeline's own conventions. But `MappingProposalService`
+explicitly tells the agent to never propose a mapping for `client_id`
+(the Step 6 fix from a few rounds back). Put those two correct decisions
+together unmodified and every single row would fail validation on a
+field the proposal was deliberately told to omit. Fixed in
+`ProposalValidationService`: inject a synthetic `client_id` mapping
+(`sourceConstant` = the already-known `client.clientId()`) before
+building any row. `ProposalValidationServiceTest` is a direct regression
+test for this -- a proposal with no `client_id` entry, validated
+successfully. Worth naming as a pattern: two independently-correct
+pieces of code can still combine into a bug at the seam between them;
+writing the test came before running against real data specifically
+because unit tests forced spelling out "here's a real proposal shape"
+in a way manual curl testing hadn't yet.
+
+**Scope decisions, stated plainly:**
+
+- **Batch-level dispatch, not row-level.** One HTTP call per batch, with
+  the payload being a JSON array of every row that passed validation.
+  Matches `delivery_log`'s existing shape (one row per delivery
+  *attempt*, not per canonical row) and is simpler than N separate calls
+  with N separate retry states. Rows that fail validation are excluded
+  from the payload and reported back in `ValidationReport`, not silently
+  dropped -- partial delivery of the rows that *are* valid seemed more
+  useful than blocking everything on one bad row, but this is a real
+  product choice, not an obviously-correct one.
+- **REST + api-key only, for real.** `transport: mcp` would need
+  creating an MCP client connection to an arbitrary team-specified
+  endpoint at dispatch time -- a materially different feature from the
+  static, compose-time-configured connection this project already has to
+  `sheets-reader-mcp`, and one this project isn't going to guess at
+  implementing given how many times guessing at an unfamiliar API shape
+  has gone wrong this session. `oauth2-client-credentials` and `mtls`
+  are real auth flows, also not guessed at. All three fail fast with an
+  explicit "not yet implemented" error (recorded in `delivery_log` too,
+  so it's not invisible) rather than pretending to try or silently
+  sending something unauthenticated.
+- **`java.net.http.HttpClient`, not a Spring HTTP abstraction.**
+  Deliberate: needs no new dependency, and its API has been stable since
+  JDK 11 -- the safest possible choice after this session's repeated
+  experience of guessing wrong about framework API shapes that turned
+  out to have changed between versions (Jackson 2→3, the MCP client's
+  eager initialization, `@ComponentScan` not overriding
+  `@SpringBootApplication`'s implicit scan). Core JDK API isn't immune
+  to that risk, but it's about as low as this kind of risk gets.
+- **Synchronous, blocking dispatch.** A retry loop with backoff blocks
+  the HTTP thread handling the `/approve` request for however long
+  retries take. Fine for a manually-triggered, single-operator
+  prototype; a production version would want this running async off a
+  queue instead of inline with the approval call. Not built now --
+  stated here so it isn't quietly assumed to be fine at a larger scale.
+- **A local `/internal/fake-target` endpoint**, purely for testing --
+  `holdings.yaml`'s `target.endpoint` points at it so Step 7's dispatch
+  path is actually exercisable without external infrastructure or a
+  second running service. Clearly marked as testing-only in its own
+  javadoc; a real team's target lives entirely outside this project, and
+  this endpoint is not a model for how one should be built.
+- **Fail closed on a config version mismatch.** `/approve` refuses to
+  proceed if the canonical model has moved to a different version since
+  the proposal was created (the exact race Step 6.1 fixed for the
+  propose path -- this closes the same class of gap on the approve
+  path). Rather than silently validating against whatever the registry
+  currently holds, it returns a clear 409 telling the caller to re-run
+  `/propose` against the current config. A real historical-version store
+  (keeping old `CanonicalModel`s retrievable by version, not just the
+  latest) would be the more complete fix; not built now, since it's a
+  real feature (versioned config storage), not a quick addition.
+- **Sum type values serialize as a discriminated object** --
+  `{"type": "<VariantName>", ...fields}` -- since JSON has no native sum
+  type. Documented in `SCHEMA.md`'s "Target service" section too, since
+  it's part of the wire contract a receiving service needs to know, not
+  just an implementation detail.
+- **Date output doesn't yet honor a primitive's declared `format`.**
+  `CanonicalValueJson` always serializes a `DateValue` via
+  `LocalDate.toString()` (ISO-8601). Every current canonical model's
+  Date fields use the default `yyyy-MM-dd`, which happens to coincide
+  with ISO, so this hasn't mattered in practice yet -- but it's a real
+  gap if a team ever configures a different output format.
+
+### Live confirmation: the full pipeline works end to end
+
+First real run of `propose` → `approve` → validate → construct →
+serialize → dispatch, all the way through, against the JPMC fixture. All
+four rows validated with zero errors: `client_id` injection worked
+correctly (confirming the fix above), both `Equity` and `FixedIncome`
+variants resolved correctly via `variantValueMap` (including
+`FixedIncome`'s unmapped `maturity_date`/`coupon_rate`/`credit_rating`
+correctly coming through as absent rather than errors, since JPMC's file
+never had that data), `currency` resolved the same way, and
+`custodian`'s string value carried through untouched. Dispatch reached
+the local fake-target on the first attempt (200, no retries needed) and
+`delivery_log` recorded it.
+
+One easily-misread detail: numbers like `unit_cost: 280` and
+`market_value: 926500` show up without decimal places even though the
+source cells were `280.00` and `926500.00`. Not a bug -- `BigDecimal`
+preserves whatever scale the raw text from `read_rows` actually had, and
+Apache POI trims trailing zeros when formatting a numeric cell as text.
+The scale difference is a property of the source data's own text
+representation passing through unchanged, not something this code does
+to the numbers.
+

@@ -8,10 +8,17 @@ version: 1
 # already runs MCP infrastructure. delivery: shown explicitly here as an
 # example override; market_rate_book_value.yaml omits it entirely to show
 # the all-defaults case.
+#
+# endpoint below points at this project's own /internal/fake-target for
+# Step 7 testing purposes ONLY -- see FakeTargetController's javadoc.
+# Replace with the real holdings-writer endpoint before this config is
+# ever used for anything real; a team's target lives entirely outside
+# agentic-sheets, this system has no knowledge of what's actually on the
+# other end.
 target:
   service: holdings-writer
   transport: rest
-  endpoint: https://REPLACE-ME.internal/ingest/holdings
+  endpoint: http://localhost:8081/internal/fake-target/holdings
   auth:
     type: api-key
     secretRef: HOLDINGS_WRITER_API_KEY

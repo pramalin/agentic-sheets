@@ -78,8 +78,8 @@ backend/
   src/main/java/com/alai/agenticsheets/
     canonical/                CanonicalModelRegistry and the ADT type model (Step 4)
     spreadsheet/               MCP client wiring to sheets-reader-mcp (Step 5)
-    mapping/                   Mapping agent: ADT-to-prompt rendering, structured
-                                output, import_batch/mapping_proposal persistence (Step 6)
+    mapping/                   Mapping agent (Step 6); deterministic ADT validation
+                                (CanonicalRowBuilder) and dispatch (Dispatcher) (Step 7)
 canonical-models/
   SCHEMA.md                  The ADT configuration format itself
   holdings.yaml               Canonical model: holdings/positions
@@ -126,6 +126,10 @@ curl -s "http://localhost:8081/internal/explore/rows?path=holdings_jpmc_20260115
 
 # Step 6: mapping agent (needs OPENAI_API_KEY set in .env)
 curl -s -X POST "http://localhost:8081/internal/mapping/propose?modelId=Holdings&clientId=jpmc&path=holdings_jpmc_20260115.xlsx&worksheet=Holdings" | jq
+
+# Step 7: approve the proposal returned above (use its mappingProposalId),
+# then validate + dispatch to the local fake-target
+curl -s -X POST "http://localhost:8081/internal/mapping/proposals/1/approve" | jq
 ```
 
 If you already ran `docker compose up` before this change, the `postgres-data`
@@ -158,6 +162,8 @@ expose these ports on an untrusted network.
 | `/internal/explore/table?path=&worksheet=` | GET | `describe_table` — headers, inferred types, samples |
 | `/internal/explore/rows?path=&worksheet=&offset=&limit=` | GET | `read_rows` — paginated row data |
 | `/internal/mapping/propose?modelId=&clientId=&path=&worksheet=` | POST | Runs the mapping agent; creates/reuses an `import_batch`, persists a `mapping_proposal` |
+| `/internal/mapping/proposals/{id}/approve?reviewedBy=` | POST | Approves a pending proposal, validates it against the ADT, dispatches valid rows |
+| `/internal/fake-target/{service}` | POST | Local-testing-only stand-in for a team's receiving service (see `FakeTargetController`) |
 
 ## Roadmap
 
@@ -185,11 +191,19 @@ expose these ports on an untrusted network.
       `MappingProposalStructuralValidator` before persisting. Persisted
       as a `mapping_proposal`. No canonical-row validation or delivery
       yet — that's Step 7.
-- [ ] **Step 7** — Deterministic validator + dispatcher: validate an
-      approved proposal against its ADT, serialize it, and call the
-      team's configured `target` (REST or MCP, per `transport`), with
-      retry/rejection classification per `target.delivery`. Outcome
-      recorded in `delivery_log`.
+- [x] **Step 7** — Deterministic validator + dispatcher: given an
+      approved proposal, construct each source row into an actual
+      `CanonicalValue` and validate it against the ADT
+      (`CanonicalRowBuilder`), serialize the rows that pass, and call
+      the team's configured `target`. Only `transport: rest` with
+      `auth.type: api-key` is actually implemented — `mcp` transport and
+      `oauth2-client-credentials`/`mtls` auth parse and validate
+      correctly but dispatch fails fast with a clear not-yet-implemented
+      error rather than a guessed-at flow. Retry/rejection
+      classification per `target.delivery`, outcome recorded in
+      `delivery_log`. No review UI yet — approval is a plain endpoint
+      call (`/proposals/{id}/approve`), same "manual now, automatic
+      later" pattern as Step 6.
 - [ ] **Step 8** — Review web UI (Angular) — queue, review screen
       (source columns + samples + proposed field + confidence, editable),
       approve/edit/reject, plus a delivery-status view for Step 7's

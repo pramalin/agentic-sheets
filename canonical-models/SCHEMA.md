@@ -130,11 +130,24 @@ classify by.
 
 `transport` is chosen per team, not globally — a team that already runs
 MCP infrastructure gets a tool call; a team that just wants a webhook
-gets a plain REST `POST`. Either way, the request body's shape *is* this
-file's `root` type, rendered as JSON — the ADT config is simultaneously
-the mapping target, the structured-output schema the agent is bound to,
-and the wire contract the team's service receives. One definition, three
-uses.
+gets a plain REST `POST`. Either way, the delivered payload's shape *is*
+this file's `root` type, rendered as JSON — one team's config
+simultaneously defines the mapping target, informs the agent's prompt
+(as text, not as the agent's own structured-output schema — see the
+README's design principles and `mapping-notes.md`'s "Step 6.1
+hardening" for why that distinction matters), and the wire contract the
+team's service receives once Step 7's validator confirms a row actually
+satisfies it.
+
+The delivered payload is a JSON array of every row in the batch that
+passed validation — one delivery call per batch, not one per row (only
+`transport: rest` is actually implemented as of Step 7; `transport: mcp`
+parses and validates correctly but dispatch itself isn't built yet, see
+`mapping-notes.md`). A sum type field has no native JSON representation,
+so each one becomes a discriminated object:
+`{"type": "<VariantName>", ...that variant's own fields}`. A receiving
+service needs to know this convention, not just this document's readers
+— it's part of the wire contract, not an implementation detail.
 
 Every delivery includes the originating `import_batch` id (as a header for
 REST, as a tool argument for MCP) so the team's service can deduplicate a
@@ -146,7 +159,10 @@ For this iteration, `secretRef` names an OS environment variable, sourced
 from a `.env` file loaded via `docker-compose`'s `env_file` — the same
 pattern `sheets-reader-mcp` already uses. Not an external secret manager
 (Vault, AWS Secrets Manager, ...) yet; revisit if/when that's actually
-needed rather than building it speculatively now.
+needed rather than building it speculatively now. Only `auth.type:
+api-key` is implemented as of Step 7 — `oauth2-client-credentials` and
+`mtls` parse correctly but dispatch fails fast with a clear
+not-yet-implemented error rather than attempting a guessed-at flow.
 
 ## Loading & reload
 

@@ -36,4 +36,24 @@ public class ImportBatchRepository {
                         + "RETURNING id",
                 Long.class, modelId, clientId, sourceFilename, contentHash, worksheet, configVersion);
     }
+
+    public ImportBatch findById(long id) {
+        return jdbcTemplate.queryForObject(
+                "SELECT id, model_id, client_id, source_filename, content_hash, worksheet, config_version, status "
+                        + "FROM import_batch WHERE id = ?",
+                (rs, rowNum) -> new ImportBatch(
+                        rs.getLong("id"),
+                        rs.getString("model_id"),
+                        rs.getString("client_id"),
+                        rs.getString("source_filename"),
+                        rs.getString("content_hash"),
+                        rs.getString("worksheet"),
+                        rs.getInt("config_version"),
+                        rs.getString("status")),
+                id);
+    }
+
+    public void updateStatus(long id, String status) {
+        jdbcTemplate.update("UPDATE import_batch SET status = ?, updated_at = now() WHERE id = ?", status, id);
+    }
 }

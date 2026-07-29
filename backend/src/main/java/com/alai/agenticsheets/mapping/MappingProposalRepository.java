@@ -30,4 +30,22 @@ public class MappingProposalRepository {
                         + "VALUES (?, ?, ?::jsonb) RETURNING id",
                 Long.class, importBatchId, configVersion, json);
     }
+
+    public StoredMappingProposal findById(long id) {
+        return jdbcTemplate.queryForObject(
+                "SELECT id, import_batch_id, config_version, proposal, status FROM mapping_proposal WHERE id = ?",
+                (rs, rowNum) -> new StoredMappingProposal(
+                        rs.getLong("id"),
+                        rs.getLong("import_batch_id"),
+                        rs.getInt("config_version"),
+                        jsonMapper.readValue(rs.getString("proposal"), MappingProposal.class),
+                        rs.getString("status")),
+                id);
+    }
+
+    public void updateStatus(long id, String status, String reviewedBy) {
+        jdbcTemplate.update(
+                "UPDATE mapping_proposal SET status = ?, reviewed_by = ?, reviewed_at = now() WHERE id = ?",
+                status, reviewedBy, id);
+    }
 }

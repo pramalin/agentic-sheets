@@ -25,7 +25,7 @@ CREATE TABLE import_batch (
     worksheet           TEXT NOT NULL,
     config_version      INTEGER NOT NULL,
     -- Informal for now (PENDING / MAPPED / APPROVED / REJECTED /
-    -- DELIVERED / DELIVERY_FAILED), not a DB-level enum or CHECK
+    -- VALIDATION_FAILED / DELIVERED / DELIVERY_FAILED), not a DB-level enum or CHECK
     -- constraint -- easier to iterate on the state machine in application
     -- code while this is still actively evolving.
     status              TEXT NOT NULL DEFAULT 'PENDING',
@@ -82,9 +82,11 @@ CREATE TABLE delivery_log (
     import_batch_id     BIGINT NOT NULL REFERENCES import_batch (id),
     attempt_number      INTEGER NOT NULL,
     transport           TEXT NOT NULL,           -- 'rest' | 'mcp'
-    -- SUCCESS / RETRYABLE_FAILURE / TERMINAL_FAILURE, per each canonical
-    -- model's target.delivery classification (retryableStatusCodes /
-    -- terminalStatusCodes).
+    -- SUCCESS / RETRYABLE_FAILURE / TERMINAL_FAILURE / NOT_IMPLEMENTED,
+    -- per each canonical model's target.delivery classification
+    -- (retryableStatusCodes / terminalStatusCodes) -- NOT_IMPLEMENTED is
+    -- for a transport/auth combination Step 7 doesn't actually dispatch
+    -- yet (mcp transport, oauth2-client-credentials/mtls auth).
     outcome              TEXT NOT NULL,
     status_code          INTEGER,
     error_message        TEXT,
