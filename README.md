@@ -51,6 +51,7 @@ backend/
   pom.xml, Dockerfile
   src/main/java/com/alai/agenticsheets/
     canonical/                CanonicalModelRegistry and the ADT type model (Step 4)
+    spreadsheet/               MCP client wiring to sheets-reader-mcp (Step 5)
 canonical-models/
   SCHEMA.md                  The ADT configuration format itself
   holdings.yaml               Canonical model: holdings/positions
@@ -70,16 +71,27 @@ mapping-notes.md              The reasoning behind every mapping decision above,
 ## Prerequisites
 
 - Docker Engine + Docker Compose
+- [`sheets-reader-mcp`](https://github.com/pramalin/sheets-reader-mcp)
+  checked out as a sibling directory (e.g. `~/sources/agentic-sheets` and
+  `~/sources/sheets-reader-mcp`) -- `compose.yaml`'s `sheets-mcp` service
+  builds it via a relative path. Point that path at wherever you actually
+  keep it if your layout differs.
 
 ## Getting started
 
 ```bash
 cp .env.example .env
 docker compose up -d --build
-docker compose ps                                # postgres and backend should both report healthy
+docker compose ps                                # postgres, sheets-mcp, and backend should all report healthy
 curl -f http://localhost:8081/actuator/health     # {"status":"UP", ..., "db":{"status":"UP"}}
 curl -s http://localhost:8081/internal/canonical/models | jq   # both canonical models loaded
 curl -s http://localhost:8081/internal/canonical/clients | jq  # jpmc, metlife, pimco
+
+# Step 5: MCP client wiring to sheets-reader-mcp
+curl -s http://localhost:8081/internal/explore/tools | jq
+curl -s "http://localhost:8081/internal/explore/worksheets?path=holdings_jpmc_20260115.xlsx" | jq
+curl -s "http://localhost:8081/internal/explore/table?path=holdings_jpmc_20260115.xlsx&worksheet=Holdings" | jq
+curl -s "http://localhost:8081/internal/explore/rows?path=holdings_jpmc_20260115.xlsx&worksheet=Holdings&offset=0&limit=2" | jq
 ```
 
 If you already ran `docker compose up` before this change, the `postgres-data`
@@ -97,13 +109,13 @@ to the running container by hand.
       Boot 4.1.0 + Spring AI 2.0.0, matching `sheets-reader-mcp`'s stack.
 - [x] **Step 3** — Wire the backend into `compose.yaml`; verify
       `docker compose up` end to end.
-- [ ] **Step 4** — `CanonicalModelRegistry`: parse `canonical-models/*.yaml`
+- [x] **Step 4** — `CanonicalModelRegistry`: parse `canonical-models/*.yaml`
       and `client-configs/*.yaml` into typed, validated objects (atomic,
       fail-safe reload). Orchestration Postgres schema via a plain SQL
       init script: `import_batch`, `mapping_proposal`, `mapping_memory`,
       `delivery_log`. No canonical *target* tables here — those belong to
-      each team's own service. *(this commit, pending verification)*
-- [ ] **Step 5** — Spring AI MCP client wired to `sheets-reader-mcp`.
+      each team's own service.
+- [x] **Step 5** — Spring AI MCP client wired to `sheets-reader-mcp`.
       First capability: explore a spreadsheet
       (`list_worksheets`/`describe_table`/`read_rows`) — no mapping logic
       yet, just prove the connection.

@@ -12,6 +12,22 @@ spring:
     url: jdbc:postgresql://${AGENTIC_SHEETS_DB_HOST:localhost}:${AGENTIC_SHEETS_DB_PORT:5432}/${POSTGRES_DB:agentic_sheets}
     username: ${POSTGRES_USER:agentic_sheets}
     password: ${POSTGRES_PASSWORD:}
+  ai:
+    mcp:
+      client:
+        enabled: true
+        name: agentic-sheets-backend
+        version: 1.0.0
+        request-timeout: 30s
+        type: SYNC
+        streamable-http:
+          connections:
+            sheets-reader:
+              # Base URL only -- endpoint below supplies the /mcp path,
+              # matching sheets-reader-mcp's own server.streamable-http
+              # config.
+              url: ${SHEETS_READER_MCP_URL:http://sheets-mcp:8080}
+              endpoint: /mcp
 
 agentic-sheets:
   canonical-models-dir: ${AGENTIC_SHEETS_CANONICAL_MODELS_DIR:/config/canonical-models}

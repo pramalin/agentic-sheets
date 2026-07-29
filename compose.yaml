@@ -21,6 +21,27 @@ services:
       timeout: 3s
       retries: 10
 
+  sheets-mcp:
+    # Assumes sheets-reader-mcp is checked out as a sibling directory,
+    # e.g. ~/sources/agentic-sheets and ~/sources/sheets-reader-mcp --
+    # matching how this project has actually been developed so far. If
+    # your layout differs, override with a different relative path or
+    # point this at a published image instead.
+    build: ../sheets-reader-mcp
+    environment:
+      - SHEETS_READER_WORKSPACE_ROOT=/workspace
+    volumes:
+      # This project's own sample fixtures double as sheets-reader-mcp's
+      # mounted workspace -- Step 5's "prove the connection" check reads
+      # the real holdings_jpmc/metlife and rate_reset_pimco files, not
+      # synthetic ones.
+      - ./sample-input:/workspace:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ./backend
     ports:
@@ -31,6 +52,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-agentic_sheets}
       - POSTGRES_USER=${POSTGRES_USER:-agentic_sheets}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      - SHEETS_READER_MCP_URL=http://sheets-mcp:8080
     volumes:
       # Mounted, not baked into the image -- configuration here is
       # expected to change often (see mapping-notes.md), and the
@@ -40,6 +62,8 @@ services:
       - ./client-configs:/config/client-configs:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      sheets-mcp:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]

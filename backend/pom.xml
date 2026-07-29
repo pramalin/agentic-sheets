@@ -20,17 +20,31 @@
     <version>0.1.0-SNAPSHOT</version>
     <name>agentic-sheets-backend</name>
     <description>
-        Spring Boot backend for agentic-sheets. Step 4: CanonicalModelRegistry
-        (parses canonical-models/*.yaml and client-configs/*.yaml into typed,
-        validated objects) plus a JDBC connection to the orchestration
-        Postgres schema. Spring AI (MCP client, tool-calling agent) arrives
-        in Step 5; repository/DAO code for the orchestration tables arrives
-        when something actually needs to read or write them.
+        Spring Boot backend for agentic-sheets. Step 5: a Spring AI MCP
+        client wired to sheets-reader-mcp, proving the connection with
+        direct tool calls (list_worksheets/describe_table/read_rows) --
+        no LLM/agent reasoning yet, that arrives in Step 6 once there's an
+        actual mapping decision for a model to make.
     </description>
 
     <properties>
         <java.version>21</java.version>
+        <!-- Matches sheets-reader-mcp's own pinned version — the release
+             notes both projects target Boot 4.1.0 specifically. -->
+        <spring-ai.version>2.0.0</spring-ai.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <dependency>
@@ -41,6 +55,15 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- MCP client only — no chat model dependency yet. Step 5 calls
+             sheets-reader-mcp's tools directly to prove the connection;
+             there's no mapping decision for an LLM to make until Step 6,
+             so there's no reason to require an API key this early. -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-mcp-client</artifactId>
         </dependency>
 
         <!-- Plain JDBC, not JPA/Hibernate — Step 4 only needs the
