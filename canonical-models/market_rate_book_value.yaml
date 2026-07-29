@@ -37,3 +37,13 @@ types:
       GBP: { kind: record, fields: {} }
 
 root: Entry
+
+synonyms:
+  as_of_date: [report date, valuation date, as of, statement date]
+  instrument_id: [instrument, cusip, isin, identifier, instrument id]
+  description: [desc, description, instrument name]
+  market_rate: [rate, market rate, reset rate, current rate]
+  book_value: [book value, book val, carrying value, bv]
+  effective_date: [effective date, reset date, rate effective]
+  currency: [currency, ccy, curr]
+

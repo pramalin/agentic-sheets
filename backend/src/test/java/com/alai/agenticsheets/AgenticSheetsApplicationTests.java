@@ -36,12 +36,22 @@ import static org.mockito.Mockito.mock;
  * not that any tool call succeeds -- {@code SpreadsheetExplorerServiceTest}
  * already covers that behavior with proper mocking, and Step 5's
  * `/internal/explore/*` checks already covered it live.
+ *
+ * Step 6 adds a similar-shaped risk: {@code spring.ai.openai.api-key}
+ * defaults to blank (see application.yml), and some Spring AI
+ * autoconfiguration validates that eagerly at bean-creation time even
+ * though no network call happens until a chat request is actually made.
+ * A placeholder value here sidesteps that without needing to know (and
+ * possibly guess wrong, as happened twice already this session with
+ * component-scan exclusion) which autoconfiguration class would need
+ * excluding instead.
  */
 @SpringBootTest(properties = {
         "spring.autoconfigure.exclude="
                 + "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration,"
                 + "org.springframework.boot.autoconfigure.jdbc.DataSourceHealthContributorAutoConfiguration,"
-                + "org.springframework.ai.mcp.client.common.autoconfigure.McpClientAutoConfiguration"
+                + "org.springframework.ai.mcp.client.common.autoconfigure.McpClientAutoConfiguration",
+        "spring.ai.openai.api-key=sk-test-placeholder-never-called"
 })
 class AgenticSheetsApplicationTests {
 

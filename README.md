@@ -52,6 +52,8 @@ backend/
   src/main/java/com/alai/agenticsheets/
     canonical/                CanonicalModelRegistry and the ADT type model (Step 4)
     spreadsheet/               MCP client wiring to sheets-reader-mcp (Step 5)
+    mapping/                   Mapping agent: ADT-to-prompt rendering, structured
+                                output, import_batch/mapping_proposal persistence (Step 6)
 canonical-models/
   SCHEMA.md                  The ADT configuration format itself
   holdings.yaml               Canonical model: holdings/positions
@@ -76,6 +78,9 @@ mapping-notes.md              The reasoning behind every mapping decision above,
   `~/sources/sheets-reader-mcp`) -- `compose.yaml`'s `sheets-mcp` service
   builds it via a relative path. Point that path at wherever you actually
   keep it if your layout differs.
+- An OpenAI API key, for Step 6's mapping agent (`OPENAI_API_KEY` in
+  `.env`). Everything else in this project runs fine without one --
+  `/internal/mapping/propose` is the only thing that needs it.
 
 ## Getting started
 
@@ -92,6 +97,9 @@ curl -s http://localhost:8081/internal/explore/tools | jq
 curl -s "http://localhost:8081/internal/explore/worksheets?path=holdings_jpmc_20260115.xlsx" | jq
 curl -s "http://localhost:8081/internal/explore/table?path=holdings_jpmc_20260115.xlsx&worksheet=Holdings" | jq
 curl -s "http://localhost:8081/internal/explore/rows?path=holdings_jpmc_20260115.xlsx&worksheet=Holdings&offset=0&limit=2" | jq
+
+# Step 6: mapping agent (needs OPENAI_API_KEY set in .env)
+curl -s -X POST "http://localhost:8081/internal/mapping/propose?modelId=Holdings&clientId=jpmc&path=holdings_jpmc_20260115.xlsx&worksheet=Holdings" | jq
 ```
 
 If you already ran `docker compose up` before this change, the `postgres-data`
@@ -119,7 +127,7 @@ to the running container by hand.
       First capability: explore a spreadsheet
       (`list_worksheets`/`describe_table`/`read_rows`) — no mapping logic
       yet, just prove the connection.
-- [ ] **Step 6** — Column-mapping inference: agent output bound to a
+- [x] **Step 6** — Column-mapping inference: agent output bound to a
       canonical model's ADT via structured output, scored against
       `client-configs` and the field synonyms in each canonical model.
       Persisted as a `mapping_proposal`. Not committed anywhere.

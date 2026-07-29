@@ -48,6 +48,10 @@ class CanonicalModelParserTest {
                 .containsKeys("maturity_date", "coupon_rate", "credit_rating");
 
         assertThat(holding.fields().get("custodian")).isInstanceOf(OptionType.class);
+
+        assertThat(model.synonyms().get("market_value"))
+                .containsExactly("market value", "mkt val", "mv", "current value", "value");
+        assertThat(model.synonyms()).doesNotContainKey("client_id"); // no synonyms declared for this field
     }
 
     @Test
@@ -130,6 +134,23 @@ class CanonicalModelParserTest {
 
         assertThatThrownBy(() -> parser.parse(bad))
                 .isInstanceOf(CanonicalConfigException.class);
+    }
+
+    @Test
+    void absentSynonymsBlockParsesToEmptyMapNotNull(@org.junit.jupiter.api.io.TempDir Path tmp) throws Exception {
+        Path file = tmp.resolve("no-synonyms.yaml");
+        Files.writeString(file, minimalModel("""
+                types:
+                  Thing:
+                    kind: record
+                    fields:
+                      x: String
+                root: Thing
+                """));
+
+        CanonicalModel model = parser.parse(file);
+
+        assertThat(model.synonyms()).isNotNull().isEmpty();
     }
 
     /** Wraps a `types:`/`root:` fragment with the minimum required

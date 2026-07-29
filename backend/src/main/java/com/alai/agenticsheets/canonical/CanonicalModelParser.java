@@ -61,7 +61,38 @@ public class CanonicalModelParser {
                     "root '" + rootName + "' must be a record type (one canonical row), not a sum: " + file);
         }
 
-        return new CanonicalModel(modelId, version, target, root, file);
+        Map<String, List<String>> synonyms = parseSynonyms(doc.get("synonyms"), file);
+
+        return new CanonicalModel(modelId, version, target, root, synonyms, file);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, List<String>> parseSynonyms(Object raw, Path file) {
+        if (raw == null) {
+            return Map.of();
+        }
+        if (!(raw instanceof Map)) {
+            throw new CanonicalConfigException("'synonyms' must be a mapping of field path to a list of strings: " + file);
+        }
+        Map<String, Object> rawMap = (Map<String, Object>) raw;
+        Map<String, List<String>> result = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : rawMap.entrySet()) {
+            if (!(entry.getValue() instanceof List)) {
+                throw new CanonicalConfigException(
+                        "synonyms for '" + entry.getKey() + "' must be a list of strings: " + file);
+            }
+            List<?> rawList = (List<?>) entry.getValue();
+            List<String> values = new java.util.ArrayList<>();
+            for (Object v : rawList) {
+                if (!(v instanceof String s)) {
+                    throw new CanonicalConfigException(
+                            "synonyms for '" + entry.getKey() + "' contains a non-string entry: " + file);
+                }
+                values.add(s);
+            }
+            result.put(entry.getKey(), List.copyOf(values));
+        }
+        return Map.copyOf(result);
     }
 
     // --- Type resolution -----------------------------------------------

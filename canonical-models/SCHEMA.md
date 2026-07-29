@@ -53,6 +53,24 @@ time (decimal separator, thousands separator, a default currency) as more
 client quirks show up, but nothing here needs the record/sum machinery
 the canonical models do.
 
+## Synonyms
+
+Optional top-level block, keyed by field path (dot-separated for a sum
+type variant's fields, e.g. `asset_class.FixedIncome.maturity_date`):
+
+```yaml
+synonyms:
+  market_value: [mkt val, mv, current value, value]
+  as_of_date: [report date, valuation date, as of, statement date]
+```
+
+Deliberately a flat map, not nested inside `types:` — it's metadata about
+matching, not part of the type structure itself, and keeping it separate
+means adding or editing synonyms never touches the ADT a value actually
+has to conform to. Consumed by the mapping agent (Step 6) as additional
+context when proposing which source column maps to which canonical
+field; absent entirely for a model that doesn't need it.
+
 ## Document shape
 
 ```yaml

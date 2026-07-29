@@ -53,6 +53,7 @@ services:
       - POSTGRES_USER=${POSTGRES_USER:-agentic_sheets}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       - SHEETS_READER_MCP_URL=http://sheets-mcp:8080
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     volumes:
       # Mounted, not baked into the image -- configuration here is
       # expected to change often (see mapping-notes.md), and the
@@ -60,6 +61,10 @@ services:
       # on the host actually changes what the running container sees.
       - ./canonical-models:/config/canonical-models:ro
       - ./client-configs:/config/client-configs:ro
+      # Same directory sheets-mcp treats as its workspace -- Step 6's
+      # /internal/mapping/propose needs real file bytes to hash for
+      # import_batch dedupe, not just sheets-mcp's parsed view of them.
+      - ./sample-input:/workspace:ro
     depends_on:
       postgres:
         condition: service_healthy

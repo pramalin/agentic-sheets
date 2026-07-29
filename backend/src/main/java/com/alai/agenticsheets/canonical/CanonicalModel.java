@@ -1,6 +1,8 @@
 package com.alai.agenticsheets.canonical;
 
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 
 /**
  * One entry in {@link CanonicalModelRegistry} -- the parsed, validated
@@ -17,11 +19,17 @@ import java.nio.file.Path;
  * when it's created, and part of the {@code mapping_memory} cache key,
  * so a later config change doesn't retroactively affect work already in
  * flight.
+ *
+ * {@code synonyms} is keyed by field path (dot-separated for a sum
+ * type's variant fields) -- optional matching hints for the mapping
+ * agent, never empty-vs-null ambiguous (an absent {@code synonyms:}
+ * block in the source YAML parses to an empty map, not null).
  */
 public record CanonicalModel(
         String modelId,
         int version,
         TargetConfig target,
         CanonicalType root,
+        Map<String, List<String>> synonyms,
         Path sourceFile) {
 }

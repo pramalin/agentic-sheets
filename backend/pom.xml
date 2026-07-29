@@ -66,6 +66,17 @@
             <artifactId>spring-ai-starter-mcp-client</artifactId>
         </dependency>
 
+        <!-- Step 6: the mapping agent. Only the dependency here and a
+             couple of spring.ai.openai.* properties in application.yml
+             are OpenAI-specific — MappingProposalService itself is
+             written against Spring AI's provider-agnostic ChatClient, so
+             swapping providers later means changing this artifact and
+             those properties, not the mapping logic. -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-openai</artifactId>
+        </dependency>
+
         <!-- Plain JDBC, not JPA/Hibernate — Step 4 only needs the
              orchestration schema to exist and be reachable (surfaced via
              actuator's db health indicator). Real repository/DAO code for

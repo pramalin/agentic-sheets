@@ -80,3 +80,19 @@ types:
       CAD: { kind: record, fields: {} }
 
 root: Holding
+
+# Field-path -> matching hints for the mapping agent (Step 6). Not part
+# of the ADT itself -- see canonical-models/SCHEMA.md's "Synonyms"
+# section for why this stays a separate, flat block.
+synonyms:
+  as_of_date: [report date, valuation date, as of, statement date]
+  account_id: [account, acct, acct no, account number, portfolio, portfolio id]
+  security_id: [cusip, isin, sedol, security id, sec id, identifier]
+  security_description: [description, security name, sec name, name]
+  quantity: [shares, units, qty, position size, par value]
+  unit_cost: [cost, unit cost, cost/unit, cost basis, avg cost]
+  market_price: [price, market price, mkt price, unit price]
+  market_value: [market value, mkt val, mv, current value, value]
+  currency: [currency, ccy, curr]
+  custodian: [custodian, custodian bank, bank]
+

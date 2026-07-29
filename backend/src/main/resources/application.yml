@@ -28,12 +28,29 @@ spring:
               # config.
               url: ${SHEETS_READER_MCP_URL:http://sheets-mcp:8080}
               endpoint: /mcp
+    openai:
+      # Blank by default rather than a fake placeholder -- if this is
+      # actually blank at runtime (not during `mvn test`, where
+      # AgenticSheetsApplicationTests overrides it), the mapping agent's
+      # first real call fails with a clear "invalid API key" error, not a
+      # silent no-op.
+      api-key: ${OPENAI_API_KEY:}
+      # Model intentionally not set here at all -- the starter's own
+      # maintained default applies. An empty-string override would be
+      # worse than no override (passes "" as the model to the API), and
+      # a hardcoded model string here would just go stale over time.
+      # Override via the standard Spring relaxed-binding env var if a
+      # specific model is ever needed: SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL.
 
 agentic-sheets:
   canonical-models-dir: ${AGENTIC_SHEETS_CANONICAL_MODELS_DIR:/config/canonical-models}
   client-configs-dir: ${AGENTIC_SHEETS_CLIENT_CONFIGS_DIR:/config/client-configs}
   canonical:
     reload-interval-ms: ${AGENTIC_SHEETS_CANONICAL_RELOAD_MS:300000}
+  # Step 6: read-only access to the same directory sheets-mcp treats as
+  # its workspace, so the mapping trigger can hash a source file's actual
+  # bytes for import_batch dedupe -- see FileHasher.
+  workspace-root: ${AGENTIC_SHEETS_WORKSPACE_ROOT:/workspace}
 
 management:
   endpoints:
