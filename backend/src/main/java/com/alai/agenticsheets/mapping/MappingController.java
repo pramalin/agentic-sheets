@@ -5,7 +5,6 @@ import com.alai.agenticsheets.canonical.CanonicalModelRegistry;
 import com.alai.agenticsheets.canonical.ClientConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -31,23 +30,20 @@ import java.util.Set;
  * history) and the other terminal decision a human can make
  * ({@code /proposals/{id}/reject}).
  *
- * {@code /approve} and {@code /redeliver} are deliberately separate:
- * approving is a one-time human decision (claimed atomically, see
- * {@link MappingProposalRepository#claim}, and permanent once it
- * happens), while validate-and-dispatch can legitimately need retrying
- * (a transient delivery failure, or an unexpected exception mid-flight)
- * without re-litigating whether a human already approved this.
- *
- * Both endpoints share {@link #processDelivery}, which claims the
- * *batch* atomically before doing anything else -- see
- * {@link ImportBatchRepository#claimForProcessing}. Everything after
- * that claim runs inside one try/catch, deliberately -- a fourth-round
- * external review correctly caught that an earlier version left
- * {@code registry.get()}, the pre-read hash check, and
- * {@code registry.getClient()} outside the try block, so an exception
- * there left the batch stuck in {@code PROCESSING} with no eligible
- * status set (for either {@code /approve} or {@code /redeliver})
- * including {@code PROCESSING} to reclaim it from.
+ * Three exclusive batch operations -- proposing, approving+delivering,
+ * redelivering -- all share the same atomic-claim idiom
+ * ({@link ImportBatchRepository#claimForProcessing}): claim the batch
+ * into a transitional status (PROPOSING or PROCESSING) *before* the
+ * slow part (an LLM call, or an HTTP dispatch) starts, not after. A
+ * fifth-round external review correctly caught that {@code /propose}
+ * was the one operation *not* following this pattern -- it created a
+ * new proposal without ever claiming the batch first, which meant (a)
+ * a slow LLM call left the batch unprotected the whole time it ran, and
+ * (b) a batch left in a non-PENDING status by a prior rejection or
+ * failure never got reset, so the *new* proposal it produced could
+ * never actually be approved -- {@code /approve}'s own batch claim only
+ * accepts PENDING, and the proposal was already permanently APPROVED by
+ * the time that claim failed, with no path forward at all.
  */
 @RestController
 @RequestMapping("/internal/mapping")
@@ -55,28 +51,35 @@ public class MappingController {
 
     private static final Logger log = LoggerFactory.getLogger(MappingController.class);
 
-    /** Fresh off proposal approval -- the batch should still be
-      * whatever {@code findOrCreate} left it as (PENDING; nothing sets
-      * it otherwise before this point). */
+    /** Batch states safe to start a *new* proposal from. PENDING is a
+      * freshly-created batch with no proposal yet; REJECTED/
+      * VALIDATION_FAILED/SOURCE_CHANGED/CONFIG_CHANGED/PROPOSING_ERROR
+      * are all "something didn't go through, try again" states this
+      * project's own error messages already told callers to re-run
+      * /propose from. Deliberately excludes DELIVERY_FAILED and
+      * PROCESSING_ERROR -- per the review, those already have a correct
+      * recovery path (/redeliver, retrying the *existing* approved
+      * proposal), and a reviewer wanting a genuinely different mapping
+      * for either should get there through an explicit revision
+      * mechanism (not yet built) rather than a fresh /propose call that
+      * silently orphans the already-approved one. */
+    private static final Set<String> ELIGIBLE_FOR_PROPOSE =
+            Set.of("PENDING", "REJECTED", "VALIDATION_FAILED", "SOURCE_CHANGED", "CONFIG_CHANGED", "PROPOSING_ERROR");
+
+    /** Fresh off proposal approval -- the batch should be PENDING,
+      * maintained as an invariant by {@link #propose} itself now (every
+      * successful proposal leaves the batch PENDING; nothing else
+      * touches a PENDING-proposal/PENDING-batch pair in between). */
     private static final Set<String> ELIGIBLE_FOR_APPROVE = Set.of("PENDING");
 
     /** Retrying after a recorded failure, or recovering a batch stuck at
       * APPROVED by a genuine process crash -- deliberately excludes
       * DELIVERED (redelivering something already successfully delivered
       * is exactly the duplicate-delivery risk this whole mechanism
-      * exists to prevent) and PROCESSING (a batch legitimately being
-      * worked on right now by another request; see
-      * {@code /batches/{id}/recover-stuck-processing} for the one
-      * sanctioned way out of a genuinely stuck PROCESSING batch). */
+      * exists to prevent) and PROCESSING/PROPOSING (a batch legitimately
+      * being worked on right now by another request). */
     private static final Set<String> ELIGIBLE_FOR_REDELIVER =
             Set.of("APPROVED", "DELIVERY_FAILED", "PROCESSING_ERROR");
-
-    /** Batch states in which starting a brand new proposal doesn't make
-      * sense -- DELIVERED because the work is already done, PROCESSING
-      * because a delivery is actively in flight right now. Every other
-      * status (including terminal-looking ones like REJECTED or
-      * DELIVERY_FAILED) is fair game for a fresh proposal attempt. */
-    private static final Set<String> BLOCKS_NEW_PROPOSAL = Set.of("DELIVERED", "PROCESSING");
 
     private final MappingProposalService proposalService;
     private final ImportBatchRepository importBatchRepository;
@@ -111,14 +114,15 @@ public class MappingController {
 
     /**
      * Creates or reuses an import_batch, then either returns the
-     * existing PENDING proposal for it (if one exists) or asks the
-     * agent for a new one. An external review correctly caught that
-     * this used to call the model and insert a new proposal
-     * unconditionally on every call, with no check for an existing
-     * PENDING proposal -- two calls against the same batch created two
-     * PENDING proposals racing each other, only one of which could ever
-     * actually be approved through to delivery, with the other left
-     * recorded as if it simply never got processed.
+     * existing PENDING proposal for it (fast path, no model call) or
+     * claims the batch into {@code PROPOSING} *before* calling the
+     * model and asks for a new one. Claiming first, not after, is what
+     * closes the race a fifth-round external review found: without it,
+     * a slow LLM call left the batch fully exposed to a concurrent
+     * {@code /approve} or {@code /redeliver} the entire time it ran.
+     * On success, the batch always ends up back at {@code PENDING} --
+     * that invariant (PENDING proposal implies PENDING batch) is what
+     * lets {@code /approve}'s own claim stay simple.
      */
     @PostMapping("/propose")
     public ProposeResponse propose(
@@ -135,15 +139,6 @@ public class MappingController {
         String contentHash = fileHasher.sha256(path);
         long batchId = importBatchRepository.findOrCreate(
                 model.modelId(), clientId, path, contentHash, worksheet, model.version());
-        ImportBatch batch = importBatchRepository.findById(batchId);
-
-        if (BLOCKS_NEW_PROPOSAL.contains(batch.status())) {
-            throw new IllegalStateException(
-                    "batch " + batchId + " is " + batch.status() + " -- refusing to create another proposal "
-                            + ("DELIVERED".equals(batch.status())
-                                    ? "(this data has already been delivered)"
-                                    : "(a delivery is currently in progress for this batch)"));
-        }
 
         Optional<StoredMappingProposal> existingPending = mappingProposalRepository.findPendingByBatchId(batchId);
         if (existingPending.isPresent()) {
@@ -151,22 +146,25 @@ public class MappingController {
             return new ProposeResponse(batchId, existing.id(), existing.proposal());
         }
 
-        MappingProposal proposal = proposalService.propose(model, client, path, worksheet);
-        long proposalId;
-        try {
-            proposalId = mappingProposalRepository.save(batchId, model.version(), proposal);
-        } catch (DuplicateKeyException e) {
-            // Lost a race to a concurrent /propose call for the same
-            // batch -- the partial unique index on (import_batch_id)
-            // WHERE status = 'PENDING' is the actual backstop here, this
-            // is just returning whichever proposal actually won instead
-            // of surfacing a confusing constraint-violation error for
-            // what's really just "someone else got there first."
-            StoredMappingProposal winner = mappingProposalRepository.findPendingByBatchId(batchId).orElseThrow(() -> e);
-            return new ProposeResponse(batchId, winner.id(), winner.proposal());
+        if (!importBatchRepository.claimForProcessing(batchId, ELIGIBLE_FOR_PROPOSE, "PROPOSING")) {
+            ImportBatch current = importBatchRepository.findById(batchId);
+            throw new IllegalStateException(
+                    "batch " + batchId + " could not be claimed for proposing -- current status is "
+                            + current.status() + ", not one of " + ELIGIBLE_FOR_PROPOSE
+                            + " (already being processed concurrently, already delivered, or a state that needs "
+                            + "/redeliver instead of a fresh proposal)");
         }
 
-        return new ProposeResponse(batchId, proposalId, proposal);
+        try {
+            MappingProposal proposal = proposalService.propose(model, client, path, worksheet);
+            long proposalId = mappingProposalRepository.save(batchId, model.version(), proposal);
+            importBatchRepository.updateStatus(batchId, "PENDING");
+            return new ProposeResponse(batchId, proposalId, proposal);
+        } catch (RuntimeException e) {
+            log.error("propose failed unexpectedly for batch {}", batchId, e);
+            importBatchRepository.updateStatusIfCurrent(batchId, "PROPOSING", "PROPOSING_ERROR");
+            throw e;
+        }
     }
 
     /**
@@ -184,16 +182,20 @@ public class MappingController {
     /**
      * Everything a review screen needs about one proposal: the proposal
      * itself, its batch, every validation attempt, and every delivery
-     * attempt -- durable history a reviewer can see after the fact, not
-     * just whatever the triggering request's own response happened to
-     * contain.
+     * attempt this specific proposal produced -- not the batch's whole
+     * delivery history, which could include attempts from a different,
+     * earlier proposal against the same batch (reject, re-propose,
+     * approve a different one). An external review correctly caught
+     * that this used to look up delivery attempts by batch ID, so
+     * proposal B's detail view could show proposal A's delivery
+     * attempts.
      */
     @GetMapping("/proposals/{id}")
     public ProposalDetail detail(@PathVariable long id) {
         StoredMappingProposal proposal = mappingProposalRepository.findById(id);
         ImportBatch batch = importBatchRepository.findById(proposal.importBatchId());
         List<ValidationRun> validationRuns = validationRunRepository.findByProposalId(id);
-        List<DeliveryLogEntry> deliveryLog = deliveryLogRepository.findByBatchId(batch.id());
+        List<DeliveryLogEntry> deliveryLog = deliveryLogRepository.findByProposalId(id);
         return new ProposalDetail(proposal, batch, validationRuns, deliveryLog);
     }
 
@@ -201,6 +203,22 @@ public class MappingController {
      * Approves a pending proposal -- atomically claimed, see
      * {@link MappingProposalRepository#claim} -- then immediately
      * validates and dispatches.
+     *
+     * The proposal claim and the batch claim inside {@link
+     * #processDelivery} are two separate statements, not one database
+     * transaction -- a fifth-round external review suggested wrapping
+     * them together so either both succeed or both roll back. Not done:
+     * {@link #propose} now maintains "a PENDING proposal implies a
+     * PENDING batch" as an invariant (every successful proposal leaves
+     * the batch at PENDING, and nothing else touches that pairing
+     * in between, since proposing, approving, and redelivering all now
+     * claim the batch exclusively before acting on it). Given that
+     * invariant holds, the batch claim right after a successful proposal
+     * claim should never actually fail under normal operation -- there's
+     * no longer a window where the two can disagree. This is reasoned
+     * confidence, not a proof; if a future case surfaces where they
+     * still can disagree, wrapping both in one transaction is the
+     * strictly safer fallback and should be revisited then.
      */
     @PostMapping("/proposals/{id}/approve")
     public ApproveResponse approve(
@@ -270,17 +288,27 @@ public class MappingController {
     }
 
     /**
-     * Manually recovers a batch genuinely stuck in {@code PROCESSING}
-     * (the process died before {@link #processDelivery}'s catch block
-     * could run) back to {@code PROCESSING_ERROR}, making it eligible
-     * for {@code /redeliver}. Deliberately a manual, explicit operation
-     * rather than an automatic time-based reclaim -- an external review
-     * correctly noted that a timeout-based automatic reclaim risks
-     * misjudging a legitimately slow (but still active) delivery
-     * attempt as stuck, recreating the exact concurrent-delivery race
-     * this whole mechanism exists to prevent. A human deciding "yes,
-     * this is actually stuck" is safer than a guessed threshold, for
-     * a prototype at this scale.
+     * BREAK-GLASS OPERATION -- not an ordinary review-screen action, and
+     * Step 8b's UI should not expose this as a routine button. Manually
+     * recovers a batch stuck in {@code PROCESSING} back to {@code
+     * PROCESSING_ERROR}, making it eligible for {@code /redeliver}.
+     *
+     * This cannot tell the difference between "the previous process
+     * genuinely died" and "the previous request is just slow" -- an
+     * external review correctly flagged that calling this against a
+     * merely-slow (not actually dead) request recreates exactly the
+     * concurrent-delivery race the atomic claim exists to prevent: the
+     * "recovered" batch becomes claimable again while the original
+     * request is still running toward it. Only use this after
+     * separately confirming the process that claimed the batch is
+     * actually gone (a crashed container, a killed process) -- never as
+     * a first response to "this seems to be taking a while." The shared
+     * API key that authenticates this call is not a distinct
+     * administrative role; anyone who can call any {@code /internal/**}
+     * endpoint can call this one too. A real processing lease
+     * (timestamp + token, reclaimed only after a calibrated staleness
+     * window) remains the long-term fix -- deferred, see
+     * {@code mapping-notes.md}.
      */
     @PostMapping("/batches/{id}/recover-stuck-processing")
     public void recoverStuckProcessing(@PathVariable long id) {
@@ -308,7 +336,7 @@ public class MappingController {
      * bug, not a style preference.
      */
     private ApproveResponse processDelivery(long proposalId, StoredMappingProposal stored, Set<String> eligibleFromStatuses) {
-        if (!importBatchRepository.claimForProcessing(stored.importBatchId(), eligibleFromStatuses)) {
+        if (!importBatchRepository.claimForProcessing(stored.importBatchId(), eligibleFromStatuses, "PROCESSING")) {
             ImportBatch current = importBatchRepository.findById(stored.importBatchId());
             throw new IllegalStateException(
                     "batch " + stored.importBatchId() + " could not be claimed for processing -- current status is "

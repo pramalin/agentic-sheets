@@ -24,10 +24,10 @@ CREATE TABLE import_batch (
     -- not a unit of work.
     worksheet           TEXT NOT NULL,
     config_version      INTEGER NOT NULL,
-    -- Informal for now (PENDING / MAPPED / APPROVED / REJECTED /
-    -- PROCESSING / VALIDATION_FAILED / PROCESSING_ERROR /
-    -- SOURCE_CHANGED / CONFIG_CHANGED / DELIVERED / DELIVERY_FAILED),
-    -- not a DB-level enum or CHECK
+    -- Informal for now (PENDING / MAPPED / PROPOSING / PROPOSING_ERROR /
+    -- APPROVED / REJECTED / PROCESSING / VALIDATION_FAILED /
+    -- PROCESSING_ERROR / SOURCE_CHANGED / CONFIG_CHANGED / DELIVERED /
+    -- DELIVERY_FAILED), not a DB-level enum or CHECK
     -- constraint -- easier to iterate on the state machine in application
     -- code while this is still actively evolving.
     status              TEXT NOT NULL DEFAULT 'PENDING',

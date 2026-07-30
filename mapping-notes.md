@@ -1077,3 +1077,117 @@ bug -- return the existing PENDING proposal, block new ones against
 real product design work, appropriately left for whenever Step 8b's
 actual review screen surfaces a concrete need for it, not guessed at now.
 
+## Step 7.4 hardening (fifth external review)
+
+A fifth external review found the real gap left by Step 7.3's own fix:
+closing "two proposals can race for one batch" wasn't the same as
+making a *replacement* proposal actually approvable. `/propose` allowed
+a fresh proposal from `REJECTED`, `VALIDATION_FAILED`,
+`DELIVERY_FAILED`, and `PROCESSING_ERROR` batch states, but never reset
+the batch back to `PENDING` -- so the new proposal's own `/approve` call
+would claim the *proposal* successfully (permanently, by design), then
+fail to claim the *batch* (still stuck at whatever non-PENDING status
+it was re-proposed from), leaving a proposal recorded as
+human-approved that was never actually validated or delivered, with no
+path forward at all.
+
+### Fixed
+
+**`/propose` now follows the exact same atomic-claim-before-the-slow-
+part pattern already used for delivery**, generalized rather than
+duplicated: `ImportBatchRepository.claimForProcessing` now takes the
+target status as a parameter (previously hardcoded to `PROCESSING`),
+so the identical method claims a batch into `PROPOSING` before the LLM
+call starts, the same way it already claimed into `PROCESSING` before
+a delivery attempt starts. This closes two things at once: the
+lifecycle bug (a successful proposal now unconditionally leaves the
+batch back at `PENDING`, maintaining "PENDING proposal implies PENDING
+batch" as a real invariant, not just an assumption), and a related race
+the review also caught -- a slow LLM call previously left the batch
+completely unprotected the whole time it ran, so a concurrent
+`/redeliver` could act on the batch mid-proposal. Claiming first closes
+both.
+
+**Which batch states allow a fresh proposal was also narrowed**,
+matching the review's specific recommendation: `PENDING`, `REJECTED`,
+`VALIDATION_FAILED` are eligible (plus `SOURCE_CHANGED`/
+`CONFIG_CHANGED`/`PROPOSING_ERROR`, since this project's own earlier
+error messages already told callers to re-run `/propose` from exactly
+those two drift states, and a failed proposal attempt should obviously
+be retriable) -- `DELIVERY_FAILED` and `PROCESSING_ERROR` are
+deliberately *not* eligible, since those already have a correct
+recovery path (`/redeliver`, retrying the existing approved proposal),
+and generating a genuinely different mapping for either should go
+through an explicit revision mechanism later, not a fresh `/propose`
+call that silently orphans the already-approved proposal.
+
+**A real, unplanned benefit of claiming before the LLM call**: two
+concurrent `/propose` requests against the same batch now cause *at
+most one* LLM invocation, not just at most one persisted proposal. The
+loser is rejected at the claim step, before ever reaching the model --
+strictly better than the previous design, which called the model first
+and only prevented the *save* from duplicating, wasting a real LLM call
+on whichever request lost.
+
+**`GET /proposals/{id}` no longer leaks another proposal's delivery
+history.** It looked up delivery attempts by batch ID, but a batch can
+legitimately accumulate several historical proposals (reject,
+re-propose, approve a different one) -- proposal B's detail view could
+show delivery attempts that actually came from proposal A. Added
+`DeliveryLogRepository.findByProposalId`, scoped correctly this time.
+
+**The manual recovery endpoint is now explicitly documented as a
+break-glass operation**, per the review's specific caution: it can't
+distinguish "the previous process genuinely died" from "the previous
+request is just slow," and calling it against a merely-slow request
+recreates the exact concurrent-delivery race the atomic claim exists to
+prevent. The javadoc now says plainly: confirm the previous process is
+actually gone before calling this, never as a first response to
+slowness, and Step 8b's UI should not expose it as an ordinary
+review-screen action.
+
+### Explicitly disagreed with, and why
+
+**The review suggested wrapping the proposal claim and the batch claim
+in `/approve` inside one database transaction**, so either both succeed
+or both roll back. Not implemented: with `/propose` now maintaining
+"PENDING proposal implies PENDING batch" as a real invariant (every
+successful proposal leaves the batch at PENDING, and proposing,
+approving, and redelivering all now claim the batch exclusively before
+touching it), the batch claim immediately following a successful
+proposal claim shouldn't actually be able to fail under normal
+operation anymore -- there's no remaining window where the two
+disagree. This is reasoned confidence based on the invariant now
+holding, not a formal proof, and explicitly weaker than a real
+transaction would be. If a future case surfaces where the two claims
+*do* still disagree, wrapping both in one transaction is the strictly
+safer fallback and should be revisited then rather than argued around
+again.
+
+### Explicitly deferred, with reasoning
+
+**A real processing lease** (timestamp + token, reclaimed only after a
+calibrated staleness window) for genuine crash recovery, instead of the
+break-glass manual endpoint. Same reasoning as Step 7.3: getting a
+staleness threshold right requires calibrating against worst-case
+legitimate operation duration, and a wrong calibration risks silently
+recreating the exact race this mechanism exists to prevent. The manual
+endpoint remains the safer stand-in until this gets built properly.
+
+**A separate administrative role** distinct from the shared API key,
+so the break-glass recovery endpoint isn't callable by anything that
+can call any other `/internal/**` endpoint. Real access-control work,
+appropriately out of scope for a single-shared-secret auth story sized
+for one organization's integrated UI (see `ui-notes.md`).
+
+**State-machine and concurrency tests** for the new propose/reject/
+re-propose/approve lifecycle, and for the claim-before-LLM-call race.
+Same reasoning as every prior round: these need either a live Postgres
+(Testcontainers, not yet built) or a scripted fake LLM response flow
+(matching `sheets-reader-mcp`'s own llmsim approach, also not yet
+built) to test properly. Not yet verified live either, unlike most of
+the fixes in this document -- the reject -> re-propose -> approve
+sequence this round specifically targets hasn't been run against a
+real batch yet as of this writing. Worth doing before treating this fix
+as more than reasoned-but-unconfirmed.
+

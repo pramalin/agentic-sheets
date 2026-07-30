@@ -83,39 +83,38 @@ public class ImportBatchRepository {
     }
 
     /**
-     * Atomically claims a batch for delivery processing -- {@code WHERE
-     * status IN (...)} makes this a compare-and-set, the same idiom as
-     * {@link MappingProposalRepository#claim}, applied to the piece that
-     * one wasn't protecting. An external review correctly caught that
-     * the atomic proposal claim only protected the one-time
-     * PENDING->APPROVED transition; nothing stopped two concurrent
-     * {@code /redeliver} calls (or a {@code /redeliver} racing the
-     * original {@code /approve} request's own in-flight delivery) from
-     * both reaching {@code Dispatcher.dispatch} for the same batch,
-     * since {@code /redeliver} only checked the *proposal's* status
-     * (permanently {@code APPROVED} once approved), never the batch's.
+     * Atomically claims a batch for some exclusive operation -- {@code
+     * WHERE status IN (...)} makes this a compare-and-set, the same
+     * idiom as {@link MappingProposalRepository#claim}, generalized to
+     * work for more than one kind of exclusive operation. Originally
+     * hardcoded to claim into {@code PROCESSING} specifically (for
+     * delivery); generalized after a fifth-round external review
+     * correctly identified a related but distinct race -- {@code
+     * /propose}'s LLM call could run for a long time with nothing
+     * stopping a concurrent {@code /approve} or {@code /redeliver} from
+     * acting on the same batch meanwhile. Claiming into a
+     * {@code PROPOSING} status *before* that slow call starts, using
+     * this exact same method, closes that race the identical way the
+     * delivery race was already closed.
      *
      * @param eligibleFromStatuses the batch statuses this call is
-     * allowed to claim from -- different for {@code /approve} (fresh
-     * off proposal approval, so just {@code PENDING}) than for
-     * {@code /redeliver} (retrying after a recorded failure, so
-     * {@code APPROVED}/{@code DELIVERY_FAILED}/{@code PROCESSING_ERROR},
-     * deliberately excluding {@code DELIVERED} -- redelivering something
-     * already successfully delivered is exactly the duplicate-delivery
-     * risk this method exists to prevent)
-     * @return true if this call won the claim and the batch is now
-     * {@code PROCESSING}; false if it wasn't in an eligible state --
-     * already being processed by a concurrent request, already
-     * delivered, or something else entirely
+     * allowed to claim from
+     * @param newStatus the status to atomically transition into --
+     * {@code PROCESSING} for delivery, {@code PROPOSING} for mapping
+     * inference
+     * @return true if this call won the claim; false if the batch
+     * wasn't in an eligible state -- already claimed by a concurrent
+     * request, or in a state that isn't safe to start from
      */
-    public boolean claimForProcessing(long id, java.util.Set<String> eligibleFromStatuses) {
+    public boolean claimForProcessing(long id, java.util.Set<String> eligibleFromStatuses, String newStatus) {
         java.util.List<String> statuses = java.util.List.copyOf(eligibleFromStatuses);
         String placeholders = String.join(",", java.util.Collections.nCopies(statuses.size(), "?"));
         java.util.List<Object> args = new java.util.ArrayList<>();
+        args.add(newStatus);
         args.add(id);
         args.addAll(statuses);
         int updated = jdbcTemplate.update(
-                "UPDATE import_batch SET status = 'PROCESSING', updated_at = now() "
+                "UPDATE import_batch SET status = ?, updated_at = now() "
                         + "WHERE id = ? AND status IN (" + placeholders + ")",
                 args.toArray());
         return updated == 1;

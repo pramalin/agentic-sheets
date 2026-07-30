@@ -191,7 +191,7 @@ network, and don't ship the `.env.example` default secret anywhere real.
 | `/internal/mapping/proposals/{id}/approve?reviewedBy=` | POST | Approves a pending proposal (atomically claimed), validates it against the ADT, dispatches valid rows |
 | `/internal/mapping/proposals/{id}/reject?reviewedBy=&reason=` | POST | Rejects a pending proposal (atomically claimed) |
 | `/internal/mapping/proposals/{id}/redeliver` | POST | Re-runs validation + dispatch for an already-approved proposal -- for retrying after a transient failure |
-| `/internal/mapping/batches/{id}/recover-stuck-processing` | POST | Manually recovers a batch stuck in `PROCESSING` by a real process crash, making it eligible for `/redeliver` |
+| `/internal/mapping/batches/{id}/recover-stuck-processing` | POST | **Break-glass only** — manually recovers a batch stuck in `PROCESSING`; only safe after confirming the previous process is actually gone, never for a merely-slow request |
 | `/internal/fake-target/{service}` | POST | Local-testing-only stand-in for a team's receiving service (no auth -- see `FakeTargetController`) |
 
 ## Roadmap
@@ -286,6 +286,26 @@ network, and don't ship the `.env.example` default secret anywhere real.
       partial unique index as a database-level backstop) closing a
       separate bug where repeated `/propose` calls could create
       multiple proposals racing for one batch.
+- [x] **Step 7.4** — A fifth external review found that Step 7.3's
+      "at most one proposal per batch" fix didn't make a *replacement*
+      proposal actually approvable: re-proposing after a rejection or
+      failure never reset the batch back to `PENDING`, so the new
+      proposal could be claimed as `APPROVED` (permanently, by design)
+      but then fail its own batch claim, with no path forward at all.
+      Fixed by generalizing the atomic-claim mechanism (previously
+      hardcoded to claim into `PROCESSING`) to also claim a batch into
+      a new `PROPOSING` status *before* the LLM call starts — the same
+      pattern already used for delivery, applied to proposing too. A
+      real side benefit: two concurrent `/propose` calls now cause at
+      most one LLM invocation, not just at most one saved proposal.
+      Also fixed: `GET /proposals/{id}` no longer leaks another
+      proposal's delivery history (was scoped by batch, now by
+      proposal), and the manual recovery endpoint is now explicitly
+      documented as a break-glass operation, not a routine UI action.
+      See `mapping-notes.md` for the full account, including a
+      reasoned disagreement with one review suggestion (wrapping
+      `/approve`'s two claims in a database transaction) and what's
+      still deferred.
 - [x] **Step 8a** — Backend groundwork the review UI needs to exist at
       all, done ahead of the React app itself: shared-secret auth on
       every `/internal/**` endpoint (`ApiKeyAuthFilter`, a single
