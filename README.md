@@ -11,6 +11,8 @@ and [pramalin/sheets-reader-mcp](https://github.com/pramalin/sheets-reader-mcp),
 which this project depends on directly for spreadsheet access
 (`list_worksheets`, `describe_table`, `read_rows` over MCP).
 
+ agentic-sheets turns minor client-format drift into reviewed runtime mapping data, allowing the canonical contract and downstream services to remain stable without another source-specific micro-release.![agentic-sheets architecture -](docs/images/agentic-sheets-drift-resilient-architecture.svg)
+
 ## Design principles
 
 These came out of a fairly long design conversation, not a spec handed
@@ -71,6 +73,7 @@ below.
 
 ```
 compose.yaml         Postgres, sheets-mcp, backend; frontend service arrives at Step 8
+docs/images/                  Architecture diagram(s) referenced from this README
 .env.example                 Postgres credentials -- copy to .env
 db/init/                      Plain SQL orchestration schema (Step 4)
 backend/

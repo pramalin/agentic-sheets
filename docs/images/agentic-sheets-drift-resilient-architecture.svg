@@ -1,0 +1,200 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
+  <title id="title">agentic-sheets architecture: absorb client spreadsheet drift without micro-releases</title>
+  <desc id="desc">A changing client spreadsheet edge is inspected through a read-only MCP server. A mapping agent, guided by canonical model and client configuration, proposes a mapping for human review. Deterministic code constructs and validates canonical rows, then dispatches them to a stable team-owned service. Minor format drift is handled as reviewed runtime mapping data rather than code releases.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1324"/>
+      <stop offset="1" stop-color="#101a2e"/>
+    </linearGradient>
+    <linearGradient id="adaptive" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#34250e"/>
+      <stop offset="1" stop-color="#242047"/>
+    </linearGradient>
+    <linearGradient id="stable" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#122a49"/>
+      <stop offset="1" stop-color="#103c38"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#7182a8"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#f1a52b"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#38c6a2"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="4" result="blur"/>
+      <feOffset dy="3" result="off"/>
+      <feColorMatrix in="off" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .35 0"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <style>
+      .sans { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif; }
+      .serif { font-family: Georgia, "Times New Roman", serif; }
+      .title { fill:#f4f7fb; font-size:34px; font-weight:700; }
+      .subtitle { fill:#aab6cb; font-size:17px; }
+      .section { fill:#eaf0fa; font-size:18px; font-weight:700; }
+      .label { fill:#e9eef8; font-size:15px; font-weight:700; }
+      .body { fill:#a9b5ca; font-size:12px; }
+      .tiny { fill:#91a0ba; font-size:11px; }
+      .pill { font-size:11px; font-weight:700; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="980" fill="url(#bg)"/>
+
+  <!-- Header -->
+  <text x="60" y="58" class="serif title">agentic-sheets: absorb client format drift without micro-releases</text>
+  <text x="60" y="91" class="sans subtitle">The spreadsheet edge may change. The canonical contract, validator, and downstream service stay stable.</text>
+
+  <!-- Problem/advantage comparison -->
+  <rect x="60" y="120" width="1480" height="108" rx="16" fill="#111b31" stroke="#2d3b5d" stroke-width="1.5"/>
+  <text x="90" y="151" class="sans" font-size="13" font-weight="700" fill="#e9857b">TRADITIONAL SOURCE-SPECIFIC ETL</text>
+  <rect x="90" y="168" width="205" height="38" rx="9" fill="#291b25" stroke="#7a3e49"/>
+  <text x="192" y="192" class="sans" font-size="13" fill="#f0c1c3" text-anchor="middle">column / format drift</text>
+  <line x1="300" y1="187" x2="350" y2="187" stroke="#a65a60" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="360" y="168" width="180" height="38" rx="9" fill="#291b25" stroke="#7a3e49"/>
+  <text x="450" y="192" class="sans" font-size="13" fill="#f0c1c3" text-anchor="middle">patch adapter code</text>
+  <line x1="545" y1="187" x2="595" y2="187" stroke="#a65a60" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="605" y="168" width="175" height="38" rx="9" fill="#291b25" stroke="#7a3e49"/>
+  <text x="692" y="192" class="sans" font-size="13" fill="#f0c1c3" text-anchor="middle">test + deploy</text>
+  <text x="815" y="191" class="sans" font-size="20" font-weight="700" fill="#e9857b">= micro-release</text>
+
+  <line x1="940" y1="145" x2="940" y2="207" stroke="#334469" stroke-width="1.5"/>
+  <text x="975" y="151" class="sans" font-size="13" font-weight="700" fill="#62d3b3">AGENTIC-SHEETS</text>
+  <rect x="975" y="168" width="220" height="38" rx="9" fill="#103b35" stroke="#2aa88d"/>
+  <text x="1085" y="192" class="sans" font-size="13" fill="#c7f4e8" text-anchor="middle">reviewed mapping data</text>
+  <line x1="1200" y1="187" x2="1250" y2="187" stroke="#38c6a2" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
+  <rect x="1260" y="168" width="245" height="38" rx="9" fill="#103b35" stroke="#2aa88d"/>
+  <text x="1382" y="192" class="sans" font-size="13" fill="#c7f4e8" text-anchor="middle">same build · same contract</text>
+
+  <!-- Zone backgrounds -->
+  <rect x="60" y="260" width="370" height="500" rx="20" fill="#101a30" stroke="#35466d" stroke-width="1.5"/>
+  <rect x="455" y="260" width="690" height="500" rx="20" fill="url(#adaptive)" stroke="#70592a" stroke-width="1.5"/>
+  <rect x="1170" y="260" width="370" height="500" rx="20" fill="url(#stable)" stroke="#2a7f78" stroke-width="1.5"/>
+
+  <text x="85" y="298" class="sans section">Changing client edge</text>
+  <text x="480" y="298" class="sans section">Adaptive mapping &amp; governance</text>
+  <text x="1195" y="298" class="sans section">Stable deterministic core</text>
+
+  <!-- Left: drifting files -->
+  <rect x="90" y="325" width="310" height="88" rx="12" fill="#17223f" stroke="#42547f"/>
+  <rect x="108" y="344" width="48" height="52" rx="6" fill="#24335a" stroke="#59709f"/>
+  <path d="M118 356 h21 l7 7 v22 h-28 z M139 356 v9 h9" fill="none" stroke="#b8c8e5" stroke-width="1.5"/>
+  <text x="172" y="352" class="sans label">January file</text>
+  <text x="172" y="374" class="sans body">Account ID · CUSIP · Position Qty</text>
+  <text x="172" y="394" class="sans tiny">ISO date · expected order</text>
+
+  <rect x="90" y="430" width="310" height="88" rx="12" fill="#17223f" stroke="#42547f"/>
+  <rect x="108" y="449" width="48" height="52" rx="6" fill="#24335a" stroke="#59709f"/>
+  <path d="M118 461 h21 l7 7 v22 h-28 z M139 461 v9 h9" fill="none" stroke="#b8c8e5" stroke-width="1.5"/>
+  <text x="172" y="457" class="sans label">February drift</text>
+  <text x="172" y="479" class="sans body">Account · Security Id · Quantity</text>
+  <text x="172" y="499" class="sans tiny">renamed + reordered columns</text>
+
+  <rect x="90" y="535" width="310" height="88" rx="12" fill="#17223f" stroke="#42547f"/>
+  <rect x="108" y="554" width="48" height="52" rx="6" fill="#24335a" stroke="#59709f"/>
+  <path d="M118 566 h21 l7 7 v22 h-28 z M139 566 v9 h9" fill="none" stroke="#b8c8e5" stroke-width="1.5"/>
+  <text x="172" y="562" class="sans label">March drift</text>
+  <text x="172" y="584" class="sans body">banner row · extra column · MM/DD/YYYY</text>
+  <text x="172" y="604" class="sans tiny">same business meaning, different shape</text>
+
+  <line x1="245" y1="624" x2="245" y2="650" stroke="#7182a8" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="90" y="660" width="310" height="70" rx="12" fill="#221747" stroke="#6e56b5" stroke-width="1.5"/>
+  <text x="245" y="687" class="sans label" text-anchor="middle">sheets-reader-mcp</text>
+  <text x="245" y="709" class="sans body" text-anchor="middle">read-only structure, types, samples, rows</text>
+
+  <!-- Center top: control-plane configuration -->
+  <rect x="485" y="325" width="205" height="74" rx="12" fill="#14233e" stroke="#4b6e9e"/>
+  <text x="587" y="350" class="sans label" text-anchor="middle">Canonical ADT</text>
+  <text x="587" y="372" class="sans body" text-anchor="middle">stable fields, records, variants</text>
+  <text x="587" y="390" class="sans tiny" text-anchor="middle">runtime YAML + version</text>
+
+  <rect x="708" y="325" width="205" height="74" rx="12" fill="#14233e" stroke="#4b6e9e"/>
+  <text x="810" y="350" class="sans label" text-anchor="middle">Client conventions</text>
+  <text x="810" y="372" class="sans body" text-anchor="middle">date formats, synonyms, defaults</text>
+  <text x="810" y="390" class="sans tiny" text-anchor="middle">configuration, not adapter code</text>
+
+  <rect x="931" y="325" width="184" height="74" rx="12" fill="#17243a" stroke="#66738e" stroke-dasharray="7 5"/>
+  <text x="1023" y="350" class="sans label" text-anchor="middle">Mapping memory</text>
+  <text x="1023" y="372" class="sans body" text-anchor="middle">reuse approved layouts</text>
+  <text x="1023" y="390" class="sans tiny" text-anchor="middle">Step 10 · planned</text>
+
+  <!-- Input arrow -->
+  <path d="M400 695 H465 Q485 695 485 675 V492" fill="none" stroke="#7182a8" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <rect x="406" y="666" width="115" height="22" rx="11" fill="#15223c" stroke="#42547f"/>
+  <text x="463" y="681" class="sans pill" fill="#b7c4dc" text-anchor="middle">observed shape</text>
+
+  <!-- config arrows -->
+  <line x1="587" y1="399" x2="650" y2="438" stroke="#7182a8" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="810" y1="399" x2="760" y2="438" stroke="#7182a8" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M1023 399 V420 H870 V438" fill="none" stroke="#66738e" stroke-width="1.8" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+
+  <!-- Adaptive flow -->
+  <rect x="500" y="445" width="255" height="92" rx="14" fill="#3b2910" stroke="#f1a52b" stroke-width="2" filter="url(#shadow)"/>
+  <circle cx="532" cy="478" r="16" fill="#f1a52b"/>
+  <path d="M532 467 l3.5 7 7.5 1 -5.5 5.5 1.5 8 -7 -4 -7 4 1.5 -8 -5.5 -5.5 7.5 -1 z" fill="#3b2910"/>
+  <text x="562" y="476" class="sans" font-size="17" font-weight="700" fill="#ffe2a9">Mapping agent</text>
+  <text x="562" y="499" class="sans body" fill="#e8bf77">proposes fields, variants, transforms</text>
+  <text x="562" y="518" class="sans tiny" fill="#d4a85d">non-deterministic · no write or delivery access</text>
+
+  <line x1="755" y1="491" x2="786" y2="491" stroke="#f1a52b" stroke-width="2.5" marker-end="url(#arrowOrange)"/>
+
+  <rect x="795" y="445" width="300" height="92" rx="14" fill="#18223c" stroke="#596b94" stroke-width="1.5"/>
+  <text x="945" y="473" class="sans label" text-anchor="middle">Structural validation + human gate</text>
+  <text x="945" y="496" class="sans body" text-anchor="middle">reject invalid paths, columns, variants, transforms</text>
+  <text x="945" y="517" class="sans tiny" text-anchor="middle">approve / reject now · editable UI planned in Step 8</text>
+
+  <line x1="945" y1="537" x2="945" y2="570" stroke="#f1a52b" stroke-width="2.5" marker-end="url(#arrowOrange)"/>
+  <rect x="835" y="548" width="220" height="23" rx="11.5" fill="#123b34" stroke="#38c6a2"/>
+  <text x="945" y="564" class="sans pill" fill="#c8f3e8" text-anchor="middle">approved mapping becomes runtime data</text>
+
+  <rect x="560" y="580" width="485" height="88" rx="14" fill="#102d2a" stroke="#2aa88d" stroke-width="1.5"/>
+  <text x="802" y="608" class="sans label" text-anchor="middle">Orchestration &amp; audit store</text>
+  <text x="802" y="632" class="sans body" text-anchor="middle">import batch · proposal · validation run · delivery attempts</text>
+  <text x="802" y="653" class="sans tiny" text-anchor="middle">state transitions are atomic; canonical business data is never stored here</text>
+
+  <path d="M1045 624 H1120 Q1145 624 1145 600 V496 H1170" fill="none" stroke="#38c6a2" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
+
+  <!-- Right: deterministic stable core -->
+  <rect x="1200" y="325" width="310" height="96" rx="14" fill="#132b4a" stroke="#4e91d8" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1355" y="354" class="sans label" text-anchor="middle">CanonicalRowBuilder</text>
+  <text x="1355" y="378" class="sans body" text-anchor="middle">typed transforms + ADT construction</text>
+  <text x="1355" y="399" class="sans tiny" text-anchor="middle">every row validated deterministically</text>
+
+  <line x1="1355" y1="421" x2="1355" y2="453" stroke="#7182a8" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="1200" y="463" width="310" height="82" rx="14" fill="#132b4a" stroke="#4e91d8" stroke-width="1.5"/>
+  <text x="1355" y="491" class="sans label" text-anchor="middle">Dispatcher</text>
+  <text x="1355" y="514" class="sans body" text-anchor="middle">retry classification · timeouts · idempotency key</text>
+  <text x="1355" y="534" class="sans tiny" text-anchor="middle">REST + API key implemented</text>
+
+  <line x1="1355" y1="545" x2="1355" y2="577" stroke="#7182a8" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="1200" y="587" width="310" height="106" rx="14" fill="#0f3b35" stroke="#2aa88d" stroke-width="2"/>
+  <text x="1355" y="618" class="sans label" text-anchor="middle">Team-owned service</text>
+  <text x="1355" y="642" class="sans body" text-anchor="middle">stable canonical API / wire contract</text>
+  <text x="1355" y="663" class="sans tiny" text-anchor="middle">team owns its database and persistence</text>
+  <text x="1355" y="683" class="sans tiny" text-anchor="middle">no knowledge of source spreadsheet shape</text>
+
+  <!-- Stability boundary annotation -->
+  <line x1="1160" y1="310" x2="1160" y2="730" stroke="#38c6a2" stroke-width="2" stroke-dasharray="7 7"/>
+  <rect x="1076" y="704" width="168" height="25" rx="12.5" fill="#103b35" stroke="#38c6a2"/>
+  <text x="1160" y="721" class="sans pill" fill="#c8f3e8" text-anchor="middle">stable contract boundary</text>
+
+  <!-- Bottom decision boundary -->
+  <rect x="60" y="790" width="940" height="132" rx="18" fill="#102e29" stroke="#2aa88d" stroke-width="1.5"/>
+  <text x="90" y="826" class="sans" font-size="17" font-weight="700" fill="#8be1c8">Usually handled without a software release</text>
+  <text x="90" y="855" class="sans" font-size="13" fill="#c7eee4">column rename / reorder · extra columns · optional fields · client date formats</text>
+  <text x="90" y="881" class="sans" font-size="13" fill="#c7eee4">banner constants · supported scale / lookup · new mapping for the same canonical meaning</text>
+  <rect x="758" y="816" width="210" height="70" rx="14" fill="#123b34" stroke="#38c6a2"/>
+  <text x="863" y="843" class="sans" font-size="20" font-weight="700" fill="#d0f8ed" text-anchor="middle">NO NEW BUILD</text>
+  <text x="863" y="868" class="sans body" fill="#b8e8dc" text-anchor="middle">review + approve runtime mapping</text>
+
+  <rect x="1025" y="790" width="515" height="132" rx="18" fill="#2a2114" stroke="#b17a2c" stroke-width="1.5"/>
+  <text x="1055" y="826" class="sans" font-size="17" font-weight="700" fill="#f3c66f">Controlled change still required</text>
+  <text x="1055" y="855" class="sans" font-size="13" fill="#e8d1a5">new canonical business field or variant</text>
+  <text x="1055" y="879" class="sans" font-size="13" fill="#e8d1a5">new transformation primitive · new transport / auth capability</text>
+  <text x="1055" y="903" class="sans tiny" fill="#c8ad7d">The architecture removes source-shape releases; it does not hide real contract changes.</text>
+
+  <text x="800" y="957" class="sans" font-size="12" fill="#5f6e8d" text-anchor="middle">github.com/pramalin/agentic-sheets · adaptive edge, deterministic core, team-owned persistence</text>
+</svg>
