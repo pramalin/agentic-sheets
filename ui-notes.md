@@ -81,12 +81,12 @@ the UI is embedded or integrated:
   would call from the outside. Nothing about narrowing Step 8's scope
   changes what that API needs to look like.
 - **Even an integrated UI needs *some* auth story before real approvals
-  happen through it.** Every endpoint is still unauthenticated today --
-  fine for curl-driven manual testing, not fine once a UI puts a click
-  in front of a real person making real approval decisions. Doesn't need
-  the multi-tenant/multi-IDP complexity from the deferred list above,
-  but "no auth at all" isn't a real answer either once Step 8 exists.
-  Worth resolving what a reasonably simple, single-organization auth
-  story looks like when Step 8 actually starts, even if it's just "a
-  single shared credential" or "whatever this org's existing SSO
-  already provides" rather than anything elaborate.
+  happen through it -- now built, in Step 8a.** `ApiKeyAuthFilter`
+  checks a single shared secret (`Authorization: Bearer
+  <AGENTIC_SHEETS_API_KEY>`) on every `/internal/**` request except
+  `/internal/fake-target/**`, failing closed if unconfigured rather than
+  silently allowing everything through. Exactly the "single shared
+  credential" option floated below as sufficient for now -- deliberately
+  not the multi-tenant/multi-IDP complexity the deferred list still
+  describes, since that only applies once there are actual adopters
+  other than whoever runs agentic-sheets itself.

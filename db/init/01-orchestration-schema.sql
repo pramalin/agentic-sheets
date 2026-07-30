@@ -51,14 +51,31 @@ CREATE TABLE mapping_proposal (
     -- pending approval. See SCHEMA.md's "Loading & reload" section.
     config_version      INTEGER NOT NULL,
     proposal            JSONB NOT NULL,
+    -- PENDING / APPROVED / REJECTED, informal for the same reasons as
+    -- import_batch.status above.
     status              TEXT NOT NULL DEFAULT 'PENDING',
     reviewed_by         TEXT,
     reviewed_at         TIMESTAMPTZ,
+    -- Step 8: a human's stated reason for rejecting -- null for an
+    -- approval, or for a proposal nobody has reviewed yet.
+    rejection_reason    TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_mapping_proposal_batch ON mapping_proposal (import_batch_id);
 CREATE INDEX idx_mapping_proposal_status ON mapping_proposal (status);
+
+-- Database-level backstop for "at most one active proposal per batch"
+-- (see MappingController.propose and mapping-notes.md) -- application
+-- code checks for an existing PENDING proposal before inserting a new
+-- one, but this index makes the invariant hold even if that check ever
+-- has a bug or a race the application code doesn't catch. A partial
+-- index (only over PENDING rows) rather than a plain unique constraint
+-- on import_batch_id, since a batch legitimately accumulates many
+-- proposals over time (rejected, then re-proposed) -- only ever one
+-- PENDING at a time.
+CREATE UNIQUE INDEX uq_mapping_proposal_active_batch
+    ON mapping_proposal (import_batch_id) WHERE status = 'PENDING';
 
 CREATE TABLE mapping_memory (
     id                      BIGSERIAL PRIMARY KEY,
@@ -105,3 +122,29 @@ CREATE TABLE delivery_log (
 
 CREATE INDEX idx_delivery_log_batch ON delivery_log (import_batch_id);
 CREATE INDEX idx_delivery_log_proposal ON delivery_log (mapping_proposal_id);
+
+-- Step 8: durable, row-level validation results. Every prior round
+-- (Step 6.1, 7.1, 7.2) flagged this as missing -- ValidationReport
+-- previously only ever existed in the HTTP response and application
+-- logs, so a reviewer looking at a batch after the fact had no way to
+-- see what actually happened during validation, only the batch's
+-- current one-word status. One row per validate() call (both /approve
+-- and /redeliver trigger one), not one row per canonical field or per
+-- source row -- row-level detail lives in row_errors as JSONB, mirroring
+-- how mapping_proposal already stores its whole proposal as JSONB
+-- rather than exploding it into per-field rows.
+CREATE TABLE validation_run (
+    id                  BIGSERIAL PRIMARY KEY,
+    import_batch_id     BIGINT NOT NULL REFERENCES import_batch (id),
+    mapping_proposal_id BIGINT NOT NULL REFERENCES mapping_proposal (id),
+    valid_row_count     INTEGER NOT NULL,
+    invalid_row_count   INTEGER NOT NULL,
+    -- List<ValidationReport.RowError> as JSONB -- [{"rowIndex": 2,
+    -- "problems": ["..."]}, ...]. Empty array, not null, when every row
+    -- passed.
+    row_errors          JSONB NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_validation_run_batch ON validation_run (import_batch_id);
+CREATE INDEX idx_validation_run_proposal ON validation_run (mapping_proposal_id);

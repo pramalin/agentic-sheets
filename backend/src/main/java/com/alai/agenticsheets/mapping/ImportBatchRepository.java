@@ -58,6 +58,31 @@ public class ImportBatchRepository {
     }
 
     /**
+     * Conditional compare-and-set: only overwrites the status if it's
+     * still exactly {@code expectedCurrentStatus}. Added after a
+     * fourth-round external review caught that the generic
+     * catch-and-mark-PROCESSING_ERROR handler in
+     * {@code MappingController.processDelivery} was unconditionally
+     * overwriting a more specific status (SOURCE_CHANGED, CONFIG_CHANGED)
+     * that had already been recorded moments earlier, in the same call,
+     * right before the exception that triggered the catch block. Using
+     * this instead of a plain {@link #updateStatus} in that catch block
+     * means the catch only ever "downgrades" a batch that's still
+     * genuinely {@code PROCESSING} -- something more specific already
+     * recorded stays recorded.
+     *
+     * @return true if the update actually happened (status was indeed
+     * {@code expectedCurrentStatus}); false if it had already moved on
+     * to something else
+     */
+    public boolean updateStatusIfCurrent(long id, String expectedCurrentStatus, String newStatus) {
+        int updated = jdbcTemplate.update(
+                "UPDATE import_batch SET status = ?, updated_at = now() WHERE id = ? AND status = ?",
+                newStatus, id, expectedCurrentStatus);
+        return updated == 1;
+    }
+
+    /**
      * Atomically claims a batch for delivery processing -- {@code WHERE
      * status IN (...)} makes this a compare-and-set, the same idiom as
      * {@link MappingProposalRepository#claim}, applied to the piece that

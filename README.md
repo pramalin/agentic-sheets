@@ -109,6 +109,11 @@ ui-notes.md                   Review UI design decisions -- framework choice, au
 - An OpenAI API key, for Step 6's mapping agent (`OPENAI_API_KEY` in
   `.env`). Everything else in this project runs fine without one --
   `/internal/mapping/propose` is the only thing that needs it.
+- Every `/internal/**` endpoint (except `/internal/fake-target/**`)
+  requires `Authorization: Bearer <AGENTIC_SHEETS_API_KEY>` as of Step 8
+  -- `.env.example` provides a real local-dev value
+  (`dev-local-secret`) so this works out of the box; change it before
+  running anywhere that isn't your own machine.
 
 ## Getting started
 
@@ -116,32 +121,42 @@ ui-notes.md                   Review UI design decisions -- framework choice, au
 cp .env.example .env
 docker compose up -d --build
 docker compose ps                                # postgres, sheets-mcp, and backend should all report healthy
-curl -f http://localhost:8081/actuator/health     # {"status":"UP", ..., "db":{"status":"UP"}}
-curl -s http://localhost:8081/internal/canonical/models | jq   # both canonical models loaded
-curl -s http://localhost:8081/internal/canonical/clients | jq  # jpmc, metlife, pimco
+curl -f http://localhost:8081/actuator/health     # {"status":"UP", ..., "db":{"status":"UP"}} -- no auth needed
+
+# Every /internal/** call below needs this header -- matches
+# AGENTIC_SHEETS_API_KEY's .env.example default.
+AUTH='Authorization: Bearer dev-local-secret'
+
+curl -s -H "$AUTH" http://localhost:8081/internal/canonical/models | jq   # both canonical models loaded
+curl -s -H "$AUTH" http://localhost:8081/internal/canonical/clients | jq  # jpmc, metlife, pimco
 
 # Step 5: MCP client wiring to sheets-reader-mcp
-curl -s http://localhost:8081/internal/explore/tools | jq
-curl -s "http://localhost:8081/internal/explore/worksheets?path=holdings_jpmc_20260115.xlsx" | jq
-curl -s "http://localhost:8081/internal/explore/table?path=holdings_jpmc_20260115.xlsx&worksheet=Holdings" | jq
-curl -s "http://localhost:8081/internal/explore/rows?path=holdings_jpmc_20260115.xlsx&worksheet=Holdings&offset=0&limit=2" | jq
+curl -s -H "$AUTH" http://localhost:8081/internal/explore/tools | jq
+curl -s -H "$AUTH" "http://localhost:8081/internal/explore/worksheets?path=holdings_jpmc_20260115.xlsx" | jq
+curl -s -H "$AUTH" "http://localhost:8081/internal/explore/table?path=holdings_jpmc_20260115.xlsx&worksheet=Holdings" | jq
+curl -s -H "$AUTH" "http://localhost:8081/internal/explore/rows?path=holdings_jpmc_20260115.xlsx&worksheet=Holdings&offset=0&limit=2" | jq
 
 # Step 6: mapping agent (needs OPENAI_API_KEY set in .env)
-curl -s -X POST "http://localhost:8081/internal/mapping/propose?modelId=Holdings&clientId=jpmc&path=holdings_jpmc_20260115.xlsx&worksheet=Holdings" | jq
+curl -s -H "$AUTH" -X POST "http://localhost:8081/internal/mapping/propose?modelId=Holdings&clientId=jpmc&path=holdings_jpmc_20260115.xlsx&worksheet=Holdings" | jq
 
 # Step 7: approve the proposal returned above (use its mappingProposalId),
 # then validate + dispatch to the local fake-target
-curl -s -X POST "http://localhost:8081/internal/mapping/proposals/1/approve" | jq
+curl -s -H "$AUTH" -X POST "http://localhost:8081/internal/mapping/proposals/1/approve" | jq
 
 # Step 7.1: if delivery failed transiently, retry without re-approving
-curl -s -X POST "http://localhost:8081/internal/mapping/proposals/1/redeliver" | jq
+curl -s -H "$AUTH" -X POST "http://localhost:8081/internal/mapping/proposals/1/redeliver" | jq
+
+# Step 8: the review queue, a proposal's full history, and rejecting one
+curl -s -H "$AUTH" "http://localhost:8081/internal/mapping/proposals?status=PENDING" | jq
+curl -s -H "$AUTH" "http://localhost:8081/internal/mapping/proposals/1" | jq
+curl -s -H "$AUTH" -X POST "http://localhost:8081/internal/mapping/proposals/2/reject?reason=wrong+currency+mapping" | jq
 ```
 
 If you already ran `docker compose up` before this change, the `postgres-data`
 volume already exists and initialized *without* the current orchestration
 schema -- Postgres only runs `docker-entrypoint-initdb.d` scripts against
-a brand new, empty data directory. This applies again as of Step 7.1's
-`delivery_log` schema change (added `mapping_proposal_id`) -- either
+a brand new, empty data directory. This applies again as of Step 7.3's
+new `uq_mapping_proposal_active_batch` partial unique index -- either
 `docker compose down -v` first (destroys the volume, re-initializes
 cleanly; there's nothing in it worth keeping at this stage) or apply the
 current `db/init/01-orchestration-schema.sql` to the running container
@@ -149,17 +164,21 @@ by hand.
 
 ## API endpoints (internal, for now)
 
-Everything below is unauthenticated and intended only for local
-development / manual verification, not a public API -- there's no
-`/api` versioning or access control yet. `compose.yaml` publishes them
-to host ports (8081, 5432) for exactly that manual verification, which
-also means they're reachable from the host and potentially other
-machines depending on your Docker and firewall configuration -- don't
-expose these ports on an untrusted network.
+Every `/internal/**` endpoint except `/internal/fake-target/**` requires
+`Authorization: Bearer <AGENTIC_SHEETS_API_KEY>` as of Step 8 (see
+`ApiKeyAuthFilter`) -- a single shared secret appropriate for one
+organization's integrated UI, not the multi-tenant/multiple-identity-
+provider auth an embeddable product would need (see `ui-notes.md`).
+Still not a public API in any other sense -- no `/api` versioning, no
+per-user permissions. `compose.yaml` publishes these to host ports
+(8081, 5432) for manual verification, which also means they're reachable
+from the host and potentially other machines depending on your Docker
+and firewall configuration -- don't expose these ports on an untrusted
+network, and don't ship the `.env.example` default secret anywhere real.
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/actuator/health` | GET | Overall + `db` health |
+| `/actuator/health` | GET | Overall + `db` health -- no auth required |
 | `/internal/canonical/models` | GET | Canonical models currently loaded |
 | `/internal/canonical/clients` | GET | Client source-conventions currently loaded |
 | `/internal/explore/tools` | GET | Tools `sheets-mcp` exposes (proves the MCP connection) |
@@ -167,9 +186,13 @@ expose these ports on an untrusted network.
 | `/internal/explore/table?path=&worksheet=` | GET | `describe_table` — headers, inferred types, samples |
 | `/internal/explore/rows?path=&worksheet=&offset=&limit=` | GET | `read_rows` — paginated row data |
 | `/internal/mapping/propose?modelId=&clientId=&path=&worksheet=` | POST | Runs the mapping agent; creates/reuses an `import_batch`, persists a `mapping_proposal` |
+| `/internal/mapping/proposals?status=&limit=` | GET | The review queue — most recent first, optionally filtered by status |
+| `/internal/mapping/proposals/{id}` | GET | One proposal's full detail: the proposal, its batch, every validation run, every delivery attempt |
 | `/internal/mapping/proposals/{id}/approve?reviewedBy=` | POST | Approves a pending proposal (atomically claimed), validates it against the ADT, dispatches valid rows |
+| `/internal/mapping/proposals/{id}/reject?reviewedBy=&reason=` | POST | Rejects a pending proposal (atomically claimed) |
 | `/internal/mapping/proposals/{id}/redeliver` | POST | Re-runs validation + dispatch for an already-approved proposal -- for retrying after a transient failure |
-| `/internal/fake-target/{service}` | POST | Local-testing-only stand-in for a team's receiving service (see `FakeTargetController`) |
+| `/internal/mapping/batches/{id}/recover-stuck-processing` | POST | Manually recovers a batch stuck in `PROCESSING` by a real process crash, making it eligible for `/redeliver` |
+| `/internal/fake-target/{service}` | POST | Local-testing-only stand-in for a team's receiving service (no auth -- see `FakeTargetController`) |
 
 ## Roadmap
 
@@ -244,20 +267,47 @@ expose these ports on an untrusted network.
       idempotency key sent with every delivery. See `mapping-notes.md`
       for the full account, including what this review confirmed was
       already correct from the previous round.
-- [ ] **Step 8** — Review web UI, built with React, integrated into
-      agentic-sheets itself rather than designed for embedding into
+- [x] **Step 7.3** — A fourth external review caught that Step 7.2's own
+      fix introduced a regression: the atomic batch claim moved to the
+      top of `processDelivery`, but the try/catch didn't move with it,
+      leaving the canonical-model lookup, the pre-read hash check, and
+      the client-config lookup unprotected -- any exception there left
+      a batch stuck in `PROCESSING` with no eligible status set (for
+      either `/approve` or `/redeliver`) able to reclaim it. Fixed by
+      wrapping everything from immediately after the claim onward in
+      one try/catch, with a conditional status update
+      (`updateStatusIfCurrent`) so the catch-all failure handler no
+      longer clobbers a more specific status (`SOURCE_CHANGED`,
+      `CONFIG_CHANGED`) set moments earlier in the same call. Also
+      added: a manual recovery endpoint for a batch genuinely stuck by
+      a real process crash (deliberately not an automatic time-based
+      reclaim — see `mapping-notes.md` for why), and an "at most one
+      active proposal per batch" policy (application-level check plus a
+      partial unique index as a database-level backstop) closing a
+      separate bug where repeated `/propose` calls could create
+      multiple proposals racing for one batch.
+- [x] **Step 8a** — Backend groundwork the review UI needs to exist at
+      all, done ahead of the React app itself: shared-secret auth on
+      every `/internal/**` endpoint (`ApiKeyAuthFilter`, a single
+      secret appropriate for one organization's integrated UI, not
+      multi-tenant complexity), durable row-level validation reports
+      (`validation_run` — flagged repeatedly across Step 7.1/7.2 as
+      needed early, since a reviewer can't see what happened to a past
+      proposal without them), the queue/detail read endpoints
+      (`GET /proposals`, `GET /proposals/{id}`), and a reject endpoint
+      (`POST /proposals/{id}/reject`, same atomic compare-and-set idiom
+      as approve).
+- [ ] **Step 8b** — The review UI itself, built with React, integrated
+      into agentic-sheets rather than designed for embedding into
       third-party applications — the project's main goal is processing
       spreadsheets into canonical data, and a genuinely reusable,
       embeddable review widget is better scoped as its own separate
       project later, built against this project's REST API from the
       outside. Queue, review screen (source columns + samples + proposed
       field + confidence, editable), approve/edit/reject, plus a
-      delivery-status view for Step 7's outcomes. Needs a real auth
-      story before real approvals happen through it — doesn't need the
-      multi-tenant/multi-identity-provider complexity an embeddable
-      product would, just something more than the current
-      unauthenticated endpoints. See `ui-notes.md` for the full
-      reasoning, including what's deferred to the eventual separate
+      delivery-status view for Step 7's outcomes, all against the API
+      Step 8a now provides. See `ui-notes.md` for the full reasoning,
+      including what's deferred to the eventual separate
       embeddable-widget project rather than dropped entirely.
 - [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
       (same filename + same hash → skip; same filename + different hash

@@ -51,6 +51,15 @@ agentic-sheets:
   # its workspace, so the mapping trigger can hash a source file's actual
   # bytes for import_batch dedupe -- see FileHasher.
   workspace-root: ${AGENTIC_SHEETS_WORKSPACE_ROOT:/workspace}
+  # Step 8: shared-secret auth for /internal/** (see ApiKeyAuthFilter).
+  # Unlike OPENAI_API_KEY, there's no cost/billing reason to leave this
+  # blank by default -- it's this project's own secret for its own API,
+  # not a real external credential. .env.example provides a real local-
+  # dev value so `docker compose up` keeps working out of the box; the
+  # filter still fails closed (rejects everything) if this is ever
+  # genuinely blank at runtime, rather than silently allowing requests
+  # through.
+  api-key: ${AGENTIC_SHEETS_API_KEY:}
 
 management:
   endpoints:

@@ -63,6 +63,12 @@ public record DeliveryConfig(
             throw new IllegalArgumentException(
                     "delivery.retryableStatusCodes and terminalStatusCodes must not overlap, both contain " + overlap);
         }
+        // Records are only shallowly immutable -- without this, a caller
+        // could hold onto the List it passed in and mutate it after
+        // construction, silently changing a DeliveryConfig that already
+        // passed validation.
+        retryableStatusCodes = List.copyOf(retryableStatusCodes);
+        terminalStatusCodes = List.copyOf(terminalStatusCodes);
     }
 
     private static void requireValidHttpStatusCodes(List<Integer> codes, String fieldName) {

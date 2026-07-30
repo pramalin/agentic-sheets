@@ -7,5 +7,6 @@ public record StoredMappingProposal(
         long importBatchId,
         int configVersion,
         MappingProposal proposal,
-        String status) {
+        String status,
+        String rejectionReason) {
 }

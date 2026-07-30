@@ -22,4 +22,22 @@ public class DeliveryLogRepository {
                         + "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 importBatchId, mappingProposalId, attemptNumber, transport, outcome, statusCode, errorMessage);
     }
+
+    public java.util.List<DeliveryLogEntry> findByBatchId(long importBatchId) {
+        return jdbcTemplate.query(
+                "SELECT id, import_batch_id, mapping_proposal_id, attempt_number, transport, outcome, "
+                        + "status_code, error_message, attempted_at FROM delivery_log "
+                        + "WHERE import_batch_id = ? ORDER BY attempted_at ASC",
+                (rs, rowNum) -> new DeliveryLogEntry(
+                        rs.getLong("id"),
+                        rs.getLong("import_batch_id"),
+                        rs.getLong("mapping_proposal_id"),
+                        rs.getInt("attempt_number"),
+                        rs.getString("transport"),
+                        rs.getString("outcome"),
+                        (Integer) rs.getObject("status_code"),
+                        rs.getString("error_message"),
+                        rs.getObject("attempted_at", java.time.OffsetDateTime.class)),
+                importBatchId);
+    }
 }

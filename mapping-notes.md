@@ -748,7 +748,9 @@ there's no database table recording per-row construction results,
 errors, or which validation run produced them. A real gap for Step 8,
 which will need durable access to exactly this data to show a reviewer
 what happened, not just what's currently true. Real schema/feature work
-on its own, deferred rather than bundled in.
+on its own, deferred rather than bundled in. *(Built in Step 8a --
+`validation_run`, persisted on every `processDelivery` call regardless
+of outcome. See the Step 8 section below.)*
 
 **A transactional outbox, idempotency keys sent to the receiving
 service, and moving delivery off the request thread entirely.** The
@@ -893,17 +895,16 @@ scalability concern for a large workbook, not a correctness one at
 current scale. Deferred consistent with how the review itself framed
 it.
 
-**Durable, row-level validation-report storage; client-config
-version-pinning; the all-or-nothing vs. valid-rows-only delivery policy
-decision; full concurrency/HTTP integration tests.** All previously
-identified, all still genuinely deferred for the same reasons stated in
-the Step 7.1 section above -- repeating them here would just be
-restating, not adding anything. Worth flagging the review's specific
-added emphasis, though: durable validation reports are framed this round
-as needed *early* in Step 8, not just eventually -- the review UI
-genuinely cannot show a reviewer what happened to a past proposal
-without them. That's real signal about sequencing Step 8's own work,
-not a new item.
+**Client-config version-pinning; the all-or-nothing vs.
+valid-rows-only delivery policy decision; full concurrency/HTTP
+integration tests.** All previously identified, all still genuinely
+deferred for the same reasons stated in the Step 7.1 section above --
+repeating them here would just be restating, not adding anything.
+(Durable, row-level validation-report storage -- the fourth item this
+same list carried in Step 7.1 -- is no longer on it: the review's
+specific added emphasis that this was needed *early* in Step 8, not
+just eventually, turned out right, and it's now built as part of Step
+8a. See the Step 8 section below.)
 
 ### What actually held up this round
 
@@ -916,4 +917,163 @@ mapping with neither a source column nor a constant, which a different
 reviewer suggestion would have broken. Good confirmation that the
 earlier pushback in this document was the right call, not just an
 assertion that went unchecked.
+
+## Step 8a: backend groundwork for the review UI
+
+Split Step 8 into backend groundwork (this) and the actual React app
+(Step 8b, separate work) -- there's no point designing UI screens
+against an API that doesn't exist yet, and this groundwork resolves two
+items multiple prior rounds explicitly flagged as blocking.
+
+**Durable validation reports, finally.** Every one of Step 6.1/7.1/7.2's
+external reviews flagged this in some form -- `ValidationReport` only
+ever lived in the HTTP response and application logs, so nothing
+persisted *why* a batch ended up `VALIDATION_FAILED`, or what a past
+`/redeliver` attempt actually found. `validation_run` now records
+`valid_row_count`/`invalid_row_count`/`row_errors` (JSONB, mirroring how
+`mapping_proposal` already stores its whole proposal rather than
+exploding it into per-field rows) on every single call to `validate()`
+inside `processDelivery`, success or failure. `GET
+/proposals/{id}` returns the full history, not just the most recent
+attempt -- a reviewer can see every time this proposal was validated,
+not just what's currently true.
+
+**A real auth story, appropriately sized.** `ApiKeyAuthFilter` -- one
+shared secret, checked as a bearer token, on every `/internal/**`
+request except `/internal/fake-target/**` (which `Dispatcher` calls
+with a *different* secret simulating a team's own auth -- requiring
+this filter's secret there too would make the backend's own outbound
+delivery calls fail its own inbound check) and `/actuator/**` (health
+checks need to be probed without an application credential). Fails
+closed if unconfigured, deliberately -- a blank secret in a real
+deployment should be loud, not an invisible bypass. This is
+*deliberately* not the multi-tenant, multiple-identity-provider auth
+`ui-notes.md` discusses for the eventual separate embeddable-widget
+project -- Step 8's UI is integrated, single-organization, and that
+requirement doesn't apply here. `.env.example` provides a real local-dev
+default (unlike `OPENAI_API_KEY`, there's no cost/billing reason to
+leave this blank -- it's this project's own secret, not an external
+one), which meant updating every existing curl example in the README to
+carry the header, a bigger documentation footprint than the code change
+itself.
+
+**The read endpoints and reject, the API surface a UI actually needs.**
+`GET /proposals` (the queue, status-filterable), `GET /proposals/{id}`
+(everything about one proposal: the proposal, its batch, every
+validation run, every delivery attempt), and `POST /proposals/{id}/
+reject` (the other terminal human decision, same atomic
+compare-and-set idiom as `claim()` -- `MappingProposalRepository.reject`
+is the exact same pattern, just to `REJECTED` instead of `APPROVED`).
+None of this existed before Step 8a; `/propose` and `/approve` were
+the entire API surface.
+
+**What's still not built, on purpose:** the React app itself (Step 8b);
+"edit" (the third verb in "approve/edit/reject") -- there's no endpoint
+yet for a human correcting a proposal's field mappings before approving,
+since the right shape for that depends on what the actual review screen
+needs to send, better decided once Step 8b is being built against a real
+UI rather than guessed at now; and the still-open `ui-notes.md`
+questions this doesn't touch (multi-tenancy/deployment model, which
+identity provider(s) a *future* embeddable project would need to
+support -- irrelevant to this single-shared-secret auth).
+
+## Step 7.3 hardening (fourth external review)
+
+A fourth external review found something worth naming plainly: Step
+7.2's own fix -- moving the atomic claim in `processDelivery` to happen
+first -- introduced a regression in the exact code written to fix the
+previous round's problem. The claim moved to the top, but the try/catch
+didn't move with it, silently leaving a chunk of real logic (the
+canonical-model lookup, the pre-read hash check, the client-config
+lookup) unprotected between "batch is now PROCESSING" and "anything
+catches a failure." This is the third round in a row where fixing one
+concurrency/reliability issue surfaced a narrower version of a similar
+problem nearby -- worth internalizing as a pattern by now: a fix that
+moves *where* something happens needs the same care applied to
+*everything downstream of it*, not just the specific line that changed.
+
+### Fixed
+
+**A batch could get stuck in `PROCESSING` forever, with no recovery
+path at all.** `registry.get()`, the config-version check + status
+write, the pre-read hash check + status write, and `registry.
+getClient()` all ran *after* `claimForProcessing` succeeded but
+*before* the try block began. Any exception there (or a JVM crash)
+left the batch in `PROCESSING` -- and neither `/approve`'s eligible set
+(`PENDING`) nor `/redeliver`'s (`APPROVED`/`DELIVERY_FAILED`/
+`PROCESSING_ERROR`) includes `PROCESSING`, so there was no way back.
+Fixed by moving the try block to start immediately after the claim,
+wrapping everything through to the final dispatch outcome.
+
+**The conditional-status problem this surfaces in turn**: once
+everything's inside one try/catch, the catch block's *original*
+unconditional `updateStatus(..., "PROCESSING_ERROR")` would clobber a
+more specific status (`CONFIG_CHANGED`, `SOURCE_CHANGED`) set moments
+earlier, in the same call, right before the exception that triggered
+the catch. Fixed with `ImportBatchRepository.updateStatusIfCurrent` --
+a conditional compare-and-set (`WHERE status = ?`), same atomic idiom
+as `claim`/`reject`/`claimForProcessing`, just applied to "only
+downgrade if still exactly PROCESSING." The API already reported the
+precise failure correctly; now the durable database status matches it
+too, not just the response.
+
+**A manual recovery path for a genuinely stuck `PROCESSING` batch** (a
+real JVM crash, not just an exception -- the fix above already handles
+every exception path; this is for the rarer case of the process dying
+outright). The review offered two acceptable options: a time-based
+lease with a staleness timeout, or an explicit administrative recovery
+operation. Chose the latter deliberately -- a timeout has to be
+calibrated against the *worst-case* legitimate delivery duration (with
+`holdings.yaml`'s own `maxAttempts: 8` and exponential backoff up to
+120s, worst case is a genuinely long stretch), and getting that
+calibration wrong risks silently recreating the exact race this whole
+mechanism exists to prevent. A human explicitly deciding "yes, this is
+actually stuck" (`POST /batches/{id}/recover-stuck-processing`, itself
+just `updateStatusIfCurrent(id, "PROCESSING", "PROCESSING_ERROR")`)
+can't misjudge that the same way an automatic timeout could.
+
+**At most one active (PENDING) proposal per batch.** `/propose`
+previously called the model and inserted a new proposal unconditionally
+on every call. Two calls against the same batch created two PENDING
+proposals racing for one batch only one could ever be approved through
+-- the loser left recorded as if it simply never got processed, with no
+indication anything was wrong. Fixed at two layers, deliberately: the
+application checks for an existing PENDING proposal first and returns
+it instead of calling the model again (saving a real LLM call, not just
+avoiding the race), and a partial unique index
+(`uq_mapping_proposal_active_batch ON mapping_proposal(import_batch_id)
+WHERE status = 'PENDING'`) enforces the same invariant at the database
+level regardless of whether the application-code check has a bug or
+loses its own race -- a concurrent `/propose` racing past the
+application check gets a clean `DuplicateKeyException`, caught and
+turned into "return whichever proposal actually won," not a raw
+constraint-violation error. Also blocked `/propose` outright against a
+batch that's `DELIVERED` (the work is done) or `PROCESSING` (a delivery
+is actively running right now) -- every other status, including
+`REJECTED` and `DELIVERY_FAILED`, remains fair game for a fresh
+proposal attempt, since trying again after something didn't work out is
+a reasonable thing to want.
+
+**`DeliveryConfig`'s status-code lists are now defensively copied**
+(`List.copyOf`) in the compact constructor -- records are only
+shallowly immutable, so without this a caller could hold onto the list
+it passed in and mutate it after construction, silently changing a
+config that had already passed validation.
+
+### Explicitly deferred, with reasoning
+
+**A true time-based lease for `PROCESSING` batches**, with the staleness
+window properly calibrated against actual delivery-config worst-case
+timing (potentially per-model, since `maxAttempts`/backoff differ by
+target). The manual recovery endpoint is the intentionally simpler,
+safer stand-in for now -- see above.
+
+**Formalizing "one active proposal per batch" into a fuller proposal-
+revision model** (attempt numbers, a `SUPERSEDED` status for an old
+proposal once a new one replaces it, explicit UI affordance for
+"re-propose"). What's built now is the minimum that closes the actual
+bug -- return the existing PENDING proposal, block new ones against
+`DELIVERED`/`PROCESSING` batches. A richer revision-tracking model is
+real product design work, appropriately left for whenever Step 8b's
+actual review screen surfaces a concrete need for it, not guessed at now.
 
