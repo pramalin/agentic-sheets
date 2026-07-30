@@ -1180,14 +1180,119 @@ can call any other `/internal/**` endpoint. Real access-control work,
 appropriately out of scope for a single-shared-secret auth story sized
 for one organization's integrated UI (see `ui-notes.md`).
 
-**State-machine and concurrency tests** for the new propose/reject/
-re-propose/approve lifecycle, and for the claim-before-LLM-call race.
-Same reasoning as every prior round: these need either a live Postgres
-(Testcontainers, not yet built) or a scripted fake LLM response flow
-(matching `sheets-reader-mcp`'s own llmsim approach, also not yet
-built) to test properly. Not yet verified live either, unlike most of
-the fixes in this document -- the reject -> re-propose -> approve
-sequence this round specifically targets hasn't been run against a
-real batch yet as of this writing. Worth doing before treating this fix
-as more than reasoned-but-unconfirmed.
+**Automated state-machine and concurrency tests** for the new propose/
+reject/re-propose/approve lifecycle, and for the claim-before-LLM-call
+race, remain unbuilt -- same reasoning as every prior round: these need
+either a live Postgres (Testcontainers, not yet built) or a scripted
+fake LLM response flow (matching `sheets-reader-mcp`'s own llmsim
+approach, also not yet built) to test properly.
+
+What *is* now confirmed, live, against a real batch: propose ->
+reject -> re-propose -> approve, end to end. The rejected proposal
+stayed correctly rejected with an empty delivery history; the new
+proposal got a fresh ID, approved cleanly with no 409 (the exact
+failure this round exists to fix), validated all three MetLife rows,
+and dispatched successfully; and `GET /proposals/{id}` correctly scoped
+each proposal's delivery history to itself, with zero leakage between
+them. The core lifecycle fix is proven working, not just reasoned
+through in code -- the remaining gap is genuinely just the *automated*
+test coverage, for regression protection going forward, not open
+doubt about correctness today.
+
+## Step 7.5 hardening (sixth external review) -- correcting a wrong disagreement
+
+The Step 7.4 section above ends with an explicit disagreement: "the
+batch claim right after a successful proposal claim should never
+actually fail under normal operation... this is reasoned confidence,
+not a proof." A sixth-round external review demonstrated, with a
+concrete interleaving, that the reasoning was wrong -- not imprecise,
+wrong. Worth recording plainly rather than quietly fixing and moving
+on, since the whole point of writing this reasoning down was so it
+could be checked.
+
+**The actual race.** `/approve` performed two separate, sequential
+statements: claim the proposal (PENDING -> APPROVED, permanent), then
+claim the batch (PENDING -> PROCESSING). The invariant "PENDING
+proposal implies PENDING batch" is true *at rest* -- but claiming the
+proposal is itself the first half of removing that pairing. In the
+window between the two statements, the proposal is already
+permanently APPROVED and the batch is still just sitting at PENDING,
+claimable by anyone. A concurrent `/propose` claiming the batch in
+exactly that window (into PROPOSING, since nothing yet stops it)
+reproduces the identical failure Step 7.4 was supposed to have fixed:
+a proposal recorded as human-approved that never gets processed, with
+no path forward at all. The reject path had the same shape.
+
+The error in the earlier reasoning: checking whether `/propose` and
+`/approve` could disagree about the batch's *steady state* is not the
+same question as whether an operation that itself changes two related
+things can be interrupted partway through. Two individually-atomic
+operations composed sequentially are not themselves atomic -- a
+fact this document had already applied correctly to *other* two-step
+sequences in this project (batch claim before the slow LLM/HTTP call)
+without recognizing it also applied to the *proposal-then-batch* pair
+inside a single request.
+
+### Fixed
+
+**Real database transactions, not sequential atomic calls.** A new
+`ProposalDecisionService` wraps the proposal-claim and batch-claim into
+one `@Transactional` method each for `/approve` and `/reject` -- either
+both succeed or both roll back, with no observable window in between.
+Uses Spring's already-present JDBC transaction support (`spring-boot-
+starter-jdbc` was already a dependency; no new one needed) rather than
+anything exotic. Deliberately narrow in scope: only the two status
+writes are transactional. Validation, the MCP calls, and HTTP delivery
+all still happen afterward, entirely outside any transaction, in
+`processDelivery` -- holding a database connection for however long a
+network call takes would trade one real problem for a worse one.
+
+**The same transactional treatment for completing `/propose`.** Saving
+the new proposal and releasing the batch back to `PENDING` are now one
+transaction too (`saveProposalAndReleaseBatch`), closing a related gap
+the same review identified: a crash (or any failure) between the
+insert and the release could leave a PENDING proposal permanently
+attached to a batch stuck at `PROPOSING` -- and `/propose`'s own fast
+path (return the existing pending proposal without a model call) would
+keep returning that same never-approvable proposal forever, since it
+only checks whether a pending proposal exists, never whether the batch
+agrees. With the insert and release atomic, that combination is
+unreachable going forward.
+
+**The recovery endpoint now handles `PROPOSING`, not just
+`PROCESSING`.** Renamed `/batches/{id}/recover-stuck-processing` to
+`/batches/{id}/recover-stuck` to reflect the broader scope. For a batch
+stuck at `PROPOSING`: if a `PENDING` proposal already exists (a crash
+between save and release, now unreachable for *new* proposals given
+the transactional fix above, but still possible for anything that got
+stuck before this fix shipped), recovery moves the batch straight to
+`PENDING` since the proposal's already there and ready for review; if
+no proposal exists (the crash happened during the LLM call itself),
+recovery moves it to `PROPOSING_ERROR`, making a fresh `/propose`
+attempt eligible. Same break-glass caveats as before (documented in the
+endpoint's own javadoc) -- this still can't distinguish a genuinely
+dead process from a merely slow one.
+
+**Repository hygiene**: `.metals/` (Scala Metals IDE state, exposing
+local filesystem paths) had been committed. Added to `.gitignore`
+along with `.bloop/` and `metals.sbt`, which typically travel with it.
+`.gitignore` only prevents *future* additions -- the already-tracked
+files still need `git rm -r --cached .metals` (and `.bloop` if
+present) run once, separately, to actually remove them from the
+repository; that's a one-time manual step this fix doesn't perform for
+you.
+
+### Explicitly deferred, with reasoning
+
+**Automated tests for the transactional claims and the PROPOSING
+recovery path.** Same reasoning as every prior round -- these need a
+live Postgres to test the actual transaction/rollback behavior, not
+just the Java code around it. Testcontainers infrastructure remains a
+standing deferred item across this entire hardening arc, not unique to
+this round.
+
+**A true processing lease** (timestamp + token, reclaimed only after a
+calibrated staleness window), replacing the break-glass manual
+recovery entirely. Still the long-term right answer for crash recovery
+without human judgment in the loop; still real, separate work.
 

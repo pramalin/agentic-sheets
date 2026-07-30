@@ -5,4 +5,7 @@ dist/
 *.class
 .idea/
 *.iml
+.metals/
+.bloop/
+metals.sbt
 .DS_Store

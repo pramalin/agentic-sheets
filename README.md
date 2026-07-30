@@ -191,7 +191,7 @@ network, and don't ship the `.env.example` default secret anywhere real.
 | `/internal/mapping/proposals/{id}/approve?reviewedBy=` | POST | Approves a pending proposal (atomically claimed), validates it against the ADT, dispatches valid rows |
 | `/internal/mapping/proposals/{id}/reject?reviewedBy=&reason=` | POST | Rejects a pending proposal (atomically claimed) |
 | `/internal/mapping/proposals/{id}/redeliver` | POST | Re-runs validation + dispatch for an already-approved proposal -- for retrying after a transient failure |
-| `/internal/mapping/batches/{id}/recover-stuck-processing` | POST | **Break-glass only** — manually recovers a batch stuck in `PROCESSING`; only safe after confirming the previous process is actually gone, never for a merely-slow request |
+| `/internal/mapping/batches/{id}/recover-stuck` | POST | **Break-glass only** — manually recovers a batch stuck in `PROCESSING` or `PROPOSING`; only safe after confirming the previous process is actually gone, never for a merely-slow request |
 | `/internal/fake-target/{service}` | POST | Local-testing-only stand-in for a team's receiving service (no auth -- see `FakeTargetController`) |
 
 ## Roadmap
@@ -303,9 +303,27 @@ network, and don't ship the `.env.example` default secret anywhere real.
       proposal), and the manual recovery endpoint is now explicitly
       documented as a break-glass operation, not a routine UI action.
       See `mapping-notes.md` for the full account, including a
-      reasoned disagreement with one review suggestion (wrapping
-      `/approve`'s two claims in a database transaction) and what's
-      still deferred.
+      disagreement with one review suggestion (wrapping `/approve`'s
+      two claims in a database transaction) that a sixth review proved
+      **wrong** — see Step 7.5.
+- [x] **Step 7.5** — A sixth external review demonstrated, with a
+      concrete interleaving, that Step 7.4's reasoning for not needing
+      a database transaction around `/approve`'s two claims was
+      incorrect: claiming the proposal and claiming the batch were
+      still two separate statements, and a concurrent `/propose` could
+      claim the batch in the real window between them, reproducing the
+      exact "approved but never processed" failure Step 7.4 was
+      supposed to have fixed. Fixed properly this time with a new
+      `ProposalDecisionService`, wrapping the proposal+batch claims for
+      `/approve` and `/reject` in real `@Transactional` methods (no new
+      dependency — `spring-boot-starter-jdbc` already provides Spring's
+      transaction support), plus the same treatment for completing
+      `/propose` (saving the proposal and releasing the batch back to
+      `PENDING` atomically). Also extended the manual recovery endpoint
+      (renamed to `/batches/{id}/recover-stuck`) to handle a batch
+      stuck in `PROPOSING`, not just `PROCESSING`. See
+      `mapping-notes.md` for the honest account of what the earlier
+      reasoning got wrong, not just what changed.
 - [x] **Step 8a** — Backend groundwork the review UI needs to exist at
       all, done ahead of the React app itself: shared-secret auth on
       every `/internal/**` endpoint (`ApiKeyAuthFilter`, a single
