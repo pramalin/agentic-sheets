@@ -11,7 +11,7 @@ and [pramalin/sheets-reader-mcp](https://github.com/pramalin/sheets-reader-mcp),
 which this project depends on directly for spreadsheet access
 (`list_worksheets`, `describe_table`, `read_rows` over MCP).
 
- agentic-sheets turns minor client-format drift into reviewed runtime mapping data, allowing the canonical contract and downstream services to remain stable without another source-specific micro-release.![agentic-sheets architecture -](docs/images/agentic-sheets-drift-resilient-architecture.svg)
+![agentic-sheets architecture: absorb client spreadsheet drift without micro-releases — a changing client edge is inspected through a read-only MCP server, a mapping agent proposes a mapping for human review, and deterministic code constructs, validates, and dispatches canonical rows to a stable team-owned service](docs/images/agentic-sheets-drift-resilient-architecture.svg)
 
 ## Design principles
 
