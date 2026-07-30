@@ -1296,3 +1296,80 @@ calibrated staleness window), replacing the break-glass manual
 recovery entirely. Still the long-term right answer for crash recovery
 without human judgment in the loop; still real, separate work.
 
+## Proving the Step 7.5 fix properly: the curl test that didn't, and the tests that do
+
+Tried to verify the Step 7.5 transaction live with a curl-based race
+(`/approve` and `/propose` fired concurrently against a genuinely
+`PENDING` proposal). The result was safe -- no corruption, no duplicate
+proposal -- but ambiguous about *why*. The concurrent `/propose` came
+back with the *same* proposal ID as the one being approved, which means
+its fast-path check (`findPendingByBatchId`) found the proposal still
+showing `PENDING` and returned immediately, without ever attempting the
+batch claim that the transaction actually protects. Two shell-launched
+`curl` commands don't give enough control over exact statement timing
+to force the specific window in question; they only prove "nothing bad
+happened this run," not "the transaction's rollback behavior was
+actually exercised."
+
+The right fix for that isn't trying harder with `curl` -- it's a test
+that can force the exact scenario deterministically. Added
+`ProposalDecisionServiceTransactionalTest`, a Testcontainers-backed
+integration test against a real Postgres:
+
+1. **Rollback test**: create a `PENDING` proposal whose batch is
+   deliberately *not* `PENDING` (set to `DELIVERED` directly). Call
+   `claimForApproval` -- the proposal claim succeeds first, then the
+   batch claim fails. Assert the proposal is *still* `PENDING`
+   afterward, not left at `APPROVED`. This is the property the whole
+   fix exists for, forced directly rather than hoped for via timing.
+2. **Concurrency test**: two real threads call `claimForApproval` on
+   the same genuinely-`PENDING` proposal at the same time (synchronized
+   with a latch so they start together). Assert exactly one succeeds,
+   exactly one fails, and the final state is consistent (`APPROVED` +
+   `PROCESSING`, never anything in between).
+
+Deliberately not attempted: forcing the specific `/propose`-observes-
+mid-transaction-state race from the curl test. `@Transactional`
+guarantees that state is never externally observable in the first
+place -- there's nothing to force a test into observing, by design. A
+concurrent reader either sees the fully-committed "before" state
+(proposal `PENDING`) or the fully-committed "after" state (proposal
+`APPROVED`, batch `PROCESSING`), never anything in between. The two
+tests above verify that guarantee holds (rollback really rolls back;
+concurrent claims really serialize to exactly one winner) rather than
+trying to catch a state that shouldn't exist to be caught.
+
+**Worth being explicit about the risk here**: this is the first use of
+Testcontainers anywhere in this project. The two tests use
+well-established, standard patterns (a `PostgreSQLContainer`, a
+hand-built minimal Spring context rather than `@SpringBootTest` --
+deliberately, given this project's repeated history with Boot
+autoconfiguration surfacing problems unrelated to whatever was actually
+being tested), but unlike the repository and controller code elsewhere
+in this project, none of it has been proven out against a real build
+yet. Flagged honestly rather than presented with more confidence than
+is warranted -- there's a real chance this needs at least one
+correction once it's actually run.
+
+**A real process change, not just new test files**: every prior round
+of this project has maintained "`mvn test` needs no live external
+dependency" as a working assumption -- true of the OpenAI/MCP-client
+tests (mocked), true of every repository test that only exercised pure
+logic. That's no longer true as of this test: it needs Docker actually
+running and able to pull/start a `postgres:16` container, or it fails
+outright rather than skipping gracefully. Worth confirming CI has
+Docker-in-Docker available before assuming this passes there the same
+way it might locally.
+
+### Explicitly deferred, with reasoning
+
+**The third test scenario** (a concurrent `/propose` either returning
+the existing pending proposal or being correctly rejected after
+approval commits, exercised as an actual automated test rather than
+reasoned about). Genuinely harder to force deterministically than the
+two tests above, since it requires synchronizing across two *different*
+service methods (`claimForApproval` and the propose flow's fast-path
+check) rather than two calls to the same one. The two tests that did
+get built already verify the properties that matter most directly; this
+third one would be corroborating evidence, not a new guarantee.
+

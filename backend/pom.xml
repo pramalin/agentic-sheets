@@ -1,16 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="
+             http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <!-- Same version already proven working in sheets-reader-mcp's own
-             build in this environment — Spring AI 2.0.0's release notes
-             specifically target this Boot version, and Boot 3.5.x mixed
-             with Spring AI 2.0 fails at startup (Jackson 2 vs 3 conflict). -->
         <version>4.1.0</version>
         <relativePath/>
     </parent>
@@ -18,24 +17,29 @@
     <groupId>com.alai</groupId>
     <artifactId>agentic-sheets-backend</artifactId>
     <version>0.1.0-SNAPSHOT</version>
+
     <name>agentic-sheets-backend</name>
+
     <description>
-        Spring Boot backend for agentic-sheets. Step 5: a Spring AI MCP
-        client wired to sheets-reader-mcp, proving the connection with
-        direct tool calls (list_worksheets/describe_table/read_rows) --
-        no LLM/agent reasoning yet, that arrives in Step 6 once there's an
-        actual mapping decision for a model to make.
+        Spring Boot backend for agentic-sheets, including MCP spreadsheet
+        access, AI-assisted mapping proposals, deterministic validation,
+        proposal review, and delivery orchestration.
     </description>
 
     <properties>
         <java.version>21</java.version>
-        <!-- Matches sheets-reader-mcp's own pinned version — the release
-             notes both projects target Boot 4.1.0 specifically. -->
         <spring-ai.version>2.0.0</spring-ai.version>
     </properties>
 
     <dependencyManagement>
         <dependencies>
+            <!--
+                Spring AI BOM manages Spring AI module versions.
+
+                Testcontainers dependencies do not need another BOM here.
+                Spring Boot 4.1.0 already manages the Testcontainers 2.x
+                dependency versions.
+            -->
             <dependency>
                 <groupId>org.springframework.ai</groupId>
                 <artifactId>spring-ai-bom</artifactId>
@@ -47,73 +51,102 @@
     </dependencyManagement>
 
     <dependencies>
+
+        <!-- Web API and embedded servlet server. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
+        <!-- Health checks and operational endpoints. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- MCP client only — no chat model dependency yet. Step 5 calls
-             sheets-reader-mcp's tools directly to prove the connection;
-             there's no mapping decision for an LLM to make until Step 6,
-             so there's no reason to require an API key this early. -->
+        <!-- Spring AI MCP client used to call sheets-reader-mcp tools. -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-mcp-client</artifactId>
         </dependency>
 
-        <!-- Step 6: the mapping agent. Only the dependency here and a
-             couple of spring.ai.openai.* properties in application.yml
-             are OpenAI-specific — MappingProposalService itself is
-             written against Spring AI's provider-agnostic ChatClient, so
-             swapping providers later means changing this artifact and
-             those properties, not the mapping logic. -->
+        <!-- OpenAI-backed Spring AI ChatClient implementation. -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-model-openai</artifactId>
         </dependency>
 
-        <!-- Plain JDBC, not JPA/Hibernate — Step 4 only needs the
-             orchestration schema to exist and be reachable (surfaced via
-             actuator's db health indicator). Real repository/DAO code for
-             import_batch, mapping_proposal, etc. arrives in later steps
-             when something actually reads/writes them; no ORM layer
-             speculatively added ahead of that. -->
+        <!-- Plain JDBC access for orchestration repositories. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
+
+        <!-- PostgreSQL JDBC driver. -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Declared explicitly rather than relying on it arriving
-             transitively via spring-boot-starter (which pulls it in for
-             application.yml support) — canonical-models/*.yaml and
-             client-configs/*.yaml come from various teams, not just this
-             project's own authors, so this needs to be a stable, visible
-             dependency rather than an implicit one. Version is
-             BOM-managed by spring-boot-starter-parent. -->
+        <!-- YAML parsing for canonical models and client configurations. -->
         <dependency>
             <groupId>org.yaml</groupId>
             <artifactId>snakeyaml</artifactId>
         </dependency>
 
+        <!-- Spring Boot, Spring Test, JUnit Jupiter, Mockito, and AssertJ. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!--
+            Enables Spring Boot @ServiceConnection integration when used
+            by Testcontainers-backed tests.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            Testcontainers 2.x PostgreSQL module.
+
+            The old Testcontainers 1.x artifact was:
+                org.testcontainers:postgresql
+
+            Testcontainers 2.x uses:
+                org.testcontainers:testcontainers-postgresql
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            Testcontainers 2.x JUnit Jupiter extension.
+
+            The old Testcontainers 1.x artifact was:
+                org.testcontainers:junit-jupiter
+
+            Testcontainers 2.x uses:
+                org.testcontainers:testcontainers-junit-jupiter
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <build>
         <finalName>agentic-sheets-backend</finalName>
+
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
@@ -121,4 +154,5 @@
             </plugin>
         </plugins>
     </build>
+
 </project>

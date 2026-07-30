@@ -23,7 +23,11 @@ jobs:
         working-directory: backend
         run: mvn -B test
 
-      # No docker-compose integration run here yet -- that needs a real
-      # Postgres and currently only gets exercised manually. Worth adding
-      # once there's enough orchestration logic to be worth the runner
-      # time; not yet.
+      # ProposalDecisionServiceTransactionalTest (added alongside Step
+      # 7.5's transactional fix) uses Testcontainers to spin up a real
+      # postgres:16 container as part of this same `mvn test` run -- the
+      # comment that used to be here ("no real Postgres, exercised only
+      # manually") is no longer accurate. ubuntu-latest runners have
+      # Docker available natively, so this should work without any
+      # extra CI configuration, but it's a genuinely new requirement:
+      # this job now needs Docker reachable to pass, not just a JDK.

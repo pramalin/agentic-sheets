@@ -100,7 +100,11 @@ ui-notes.md                   Review UI design decisions -- framework choice, au
 
 ## Prerequisites
 
-- Docker Engine + Docker Compose
+- Docker Engine + Docker Compose. As of Step 7.5, this is also needed
+  to run `mvn test` in `backend/` — one test uses Testcontainers to spin
+  up a real Postgres container (see `mapping-notes.md`'s Step 7.5
+  follow-up section). Previously `mvn test` needed no live dependency
+  at all; that's no longer true for this one test.
 - [`sheets-reader-mcp`](https://github.com/pramalin/sheets-reader-mcp)
   checked out as a sibling directory (e.g. `~/sources/agentic-sheets` and
   `~/sources/sheets-reader-mcp`) -- `compose.yaml`'s `sheets-mcp` service
@@ -323,7 +327,15 @@ network, and don't ship the `.env.example` default secret anywhere real.
       (renamed to `/batches/{id}/recover-stuck`) to handle a batch
       stuck in `PROPOSING`, not just `PROCESSING`. See
       `mapping-notes.md` for the honest account of what the earlier
-      reasoning got wrong, not just what changed.
+      reasoning got wrong, not just what changed. A follow-up curl-based
+      concurrency test came back safe but ambiguous about *why* — proved
+      properly instead with `ProposalDecisionServiceTransactionalTest`,
+      the project's first Testcontainers-backed integration test against
+      a real Postgres. **`mvn test` now needs Docker available** to pass
+      (a genuine first for this project) — see `mapping-notes.md` for
+      what that test actually proves and the honest risk assessment on
+      code that, unlike the rest of this project, hasn't yet been run
+      against a real build.
 - [x] **Step 8a** — Backend groundwork the review UI needs to exist at
       all, done ahead of the React app itself: shared-secret auth on
       every `/internal/**` endpoint (`ApiKeyAuthFilter`, a single
