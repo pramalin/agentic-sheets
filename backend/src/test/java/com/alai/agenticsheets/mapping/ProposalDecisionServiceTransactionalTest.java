@@ -11,7 +11,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
-import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import tools.jackson.databind.json.JsonMapper;
@@ -46,22 +46,36 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * explicitly -- a plain (non-Boot) Spring context doesn't auto-enable
  * that the way {@code @SpringBootTest} would.
  *
- * This is the first use of Testcontainers anywhere in this project.
- * Everything here follows well-established, standard patterns, but
- * unlike the rest of this codebase it hasn't been proven out repeatedly
- * in a real build the way the repository/controller code has -- flagged
- * honestly rather than presented with more confidence than is actually
- * warranted.
+ * The first use of Testcontainers anywhere in this project, and the
+ * first genuine correction round it needed: the initial dependency
+ * declaration didn't resolve (Spring Boot's own dependency management
+ * covers the base {@code testcontainers} artifact but not the
+ * {@code postgresql}/{@code junit-jupiter} submodules individually),
+ * fixed by importing the official BOM. Now confirmed passing against a
+ * real Postgres container, both tests below verified live -- see
+ * {@code mapping-notes.md}'s Step 7.5 follow-up section for that full
+ * account, including an external review's confirmation that this
+ * correctly tests the *proxied* {@code @Transactional} behavior (via a
+ * context-managed bean), not a direct instantiation that would silently
+ * bypass transaction interception entirely.
  */
 @Testcontainers
 class ProposalDecisionServiceTransactionalTest {
 
     @Container
-    static PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:16")
-        .withDatabaseName("agentic_sheets_test")
-        .withUsername("test")
-        .withPassword("test")
-        .withInitScript("orchestration-schema-test-init.sql");
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16")
+            .withDatabaseName("agentic_sheets_test")
+            .withUsername("test")
+            .withPassword("test");
+    // No withInitScript here, deliberately -- an external review
+    // correctly flagged that loading schema from a classpath *copy*
+    // (src/test/resources/orchestration-schema-test-init.sql) risked
+    // that copy silently drifting from db/init/01-orchestration-schema.sql,
+    // the file docker-compose's real Postgres actually uses. Removed
+    // the copy entirely; setUpContext() below reads and executes the
+    // real file directly (relative path from backend/, this module's
+    // working directory when Surefire runs), so there is exactly one
+    // schema definition in this project, not two that could disagree.
 
     @Configuration
     @EnableTransactionManagement
@@ -120,12 +134,21 @@ class ProposalDecisionServiceTransactionalTest {
     private static JdbcTemplate jdbcTemplate;
 
     @BeforeAll
-    static void setUpContext() {
+    static void setUpContext() throws java.io.IOException {
         context = new AnnotationConfigApplicationContext(TestConfig.class);
         importBatchRepository = context.getBean(ImportBatchRepository.class);
         mappingProposalRepository = context.getBean(MappingProposalRepository.class);
         proposalDecisionService = context.getBean(ProposalDecisionService.class);
         jdbcTemplate = context.getBean(JdbcTemplate.class);
+
+        // The single source of truth for this schema -- the exact same
+        // file docker-compose's Postgres runs via
+        // docker-entrypoint-initdb.d. Surefire's working directory is
+        // this module's root (backend/), so this relative path reaches
+        // the project root's db/init directory.
+        String schemaSql = java.nio.file.Files.readString(
+                java.nio.file.Path.of("../db/init/01-orchestration-schema.sql"));
+        jdbcTemplate.execute(schemaSql);
     }
 
     @AfterAll
@@ -172,7 +195,6 @@ class ProposalDecisionServiceTransactionalTest {
         long batchId = newPendingBatch("concurrency");
         long proposalId = newPendingProposal(batchId);
 
-        ExecutorService executor = Executors.newFixedThreadPool(2);
         CountDownLatch readyLatch = new CountDownLatch(2);
         CountDownLatch startLatch = new CountDownLatch(1);
         AtomicInteger successCount = new AtomicInteger(0);
@@ -194,13 +216,19 @@ class ProposalDecisionServiceTransactionalTest {
             }
         };
 
-        Future<?> f1 = executor.submit(attempt);
-        Future<?> f2 = executor.submit(attempt);
-        readyLatch.await(10, TimeUnit.SECONDS);
-        startLatch.countDown();
-        f1.get(10, TimeUnit.SECONDS);
-        f2.get(10, TimeUnit.SECONDS);
-        executor.shutdown();
+        // try-with-resources (ExecutorService implements AutoCloseable
+        // since Java 19) -- an external review correctly noted the
+        // original plain executor.shutdown() call would never run if an
+        // assertion or a future's get() threw first, leaking the pool's
+        // threads for the rest of the test run.
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<?> f1 = executor.submit(attempt);
+            Future<?> f2 = executor.submit(attempt);
+            readyLatch.await(10, TimeUnit.SECONDS);
+            startLatch.countDown();
+            f1.get(10, TimeUnit.SECONDS);
+            f2.get(10, TimeUnit.SECONDS);
+        }
 
         assertThat(successCount.get()).as("exactly one concurrent approval should succeed").isEqualTo(1);
         assertThat(failureCount.get()).isEqualTo(1);

@@ -1373,3 +1373,84 @@ check) rather than two calls to the same one. The two tests that did
 get built already verify the properties that matter most directly; this
 third one would be corroborating evidence, not a new guarantee.
 
+## Confirmed working, and a real correction round
+
+The Testcontainers tests needed exactly the correction flagged as a
+real risk when they were first written: the initial dependency
+declaration (bare `org.testcontainers:testcontainers`/`postgresql`/
+`junit-jupiter`, assumed covered by Spring Boot's own dependency
+management) failed to resolve -- Boot's BOM covers the base
+`testcontainers` artifact but not the individual submodules. Fixed by
+importing the official `testcontainers-bom`. After that: **72 tests,
+zero failures**, against a real Postgres container, both transactional
+tests passing -- the first genuinely proven (not just carefully
+reasoned) piece of infrastructure added in this whole hardening arc.
+
+A follow-up review, run against the actual passing build, confirmed
+the tests exercise what they're supposed to: a real Spring AOP proxy
+around `ProposalDecisionService` (obtained from the context, not
+directly instantiated -- direct instantiation would silently skip
+`@Transactional` interception entirely and the tests would pass for
+the wrong reason), a real `DataSourceTransactionManager`, a real
+connection pool. It also caught two real cleanup items:
+
+**Schema drift risk.** The tests loaded schema from a classpath *copy*
+(`src/test/resources/orchestration-schema-test-init.sql`), which could
+silently diverge from the real `db/init/01-orchestration-schema.sql`
+docker-compose actually uses -- a test proving transactional behavior
+against constraints that don't match production is worse than no test,
+since it looks like coverage without being coverage. Fixed by removing
+the copy and its `withInitScript` reference entirely: `setUpContext()`
+now reads and executes the actual production schema file directly (a
+relative path from `backend/`, this module's working directory when
+Surefire runs). One schema definition in this project, not two that
+could disagree -- the stronger of the fixes the review offered
+(documenting a sync requirement, or generating one file from the
+other, would both still leave two files that *could* diverge; this
+leaves exactly one).
+
+**Executor cleanup on failure.** The concurrency test's
+`executor.shutdown()` was a plain statement after the assertions --
+never reached if a `Future.get()` timed out or threw first, leaking
+threads for the rest of the test run. Fixed with try-with-resources
+(`ExecutorService` has implemented `AutoCloseable` since Java 19).
+
+### The pom.xml reconciliation, once the real file was actually shared
+
+Reconciled properly once the real, confirmed-working `pom.xml` was
+provided directly, rather than continuing to guess at its shape. Two
+things it confirmed outright, empirically, that this document had
+previously only theorized about:
+
+**Testcontainers 2.x genuinely renamed the submodule artifacts** --
+`org.testcontainers:postgresql` and `org.testcontainers:junit-jupiter`
+(the 1.x names, and what this project's tests originally declared)
+became `org.testcontainers:testcontainers-postgresql` and
+`org.testcontainers:testcontainers-junit-jupiter` in 2.x. Confirmed by
+a passing build using the new names, not inferred from documentation
+that might have been describing a different version.
+
+**Spring Boot 4.1.0's own dependency management covers the *renamed*
+artifacts directly** -- no explicit `testcontainers-bom` import needed
+at all, which is why this document's own BOM-import attempt (using an
+assumed `${testcontainers.version}` property) was solving a problem
+that didn't actually need solving that way. The real fix was simpler:
+use the current artifact names, let Boot's own management resolve them.
+
+**`spring-boot-testcontainers` was confirmed genuinely unused** and
+removed -- it exists specifically to enable `@ServiceConnection`, and
+`ProposalDecisionServiceTransactionalTest` builds its own
+`HikariDataSource` manually in a plain (non-Boot) Spring context
+instead, exactly as the review identified. The one Java-level fact this
+also confirms with real evidence, not just reasoning: the *package*
+names (`org.testcontainers.containers.PostgreSQLContainer`,
+`org.testcontainers.junit.jupiter.*`) did not change between 1.x and
+2.x, only the Maven coordinates did -- this project's test code already
+used those exact imports, unchanged, in the build that passed 72/72.
+
+The lesson worth keeping from this whole detour: when a fix based on
+reasonable-sounding assumptions doesn't work, the fastest path to a
+correct one is the actual environment's real output (a real build
+succeeding with real dependency declarations), not a second round of
+different assumptions layered on top of the first.
+

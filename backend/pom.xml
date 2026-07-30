@@ -103,16 +103,15 @@
         </dependency>
 
         <!--
-            Enables Spring Boot @ServiceConnection integration when used
-            by Testcontainers-backed tests.
-        -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-testcontainers</artifactId>
-            <scope>test</scope>
-        </dependency>
+            No spring-boot-testcontainers dependency here — it enables
+            @ServiceConnection, which ProposalDecisionServiceTransactionalTest
+            doesn't use (it builds its own HikariDataSource pointed at the
+            container manually, in a plain Spring context rather than
+            @SpringBootTest — see that test's own javadoc for why).
+            An external review correctly caught this as declared but
+            unused; add it back if a future test actually adopts
+            @ServiceConnection.
 
-        <!--
             Testcontainers 2.x PostgreSQL module.
 
             The old Testcontainers 1.x artifact was:

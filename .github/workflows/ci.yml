@@ -19,7 +19,7 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Backend unit tests
+      - name: Backend tests
         working-directory: backend
         run: mvn -B test
 
