@@ -5,14 +5,12 @@ import com.alai.agenticsheets.canonical.FeedRoute;
 import com.alai.agenticsheets.mapping.FileHasher;
 import com.alai.agenticsheets.mapping.MappingWorkflowService;
 import com.alai.agenticsheets.mapping.ProposeResponse;
-import com.alai.agenticsheets.spreadsheet.SpreadsheetExplorerService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import tools.jackson.databind.JsonNode;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -38,10 +36,11 @@ import java.util.stream.Stream;
  * filename (see {@link InboxFilenameParser}); resolve the
  * (clientId, feedType) route (see {@link CanonicalModelRegistry#resolveRoute});
  * resolve which of the workbook's actual worksheets matches the route's
- * candidate names, failing deterministically on zero or more than one
- * match, never guessing; hash; record arrival and attempt the atomic
- * processing claim (see {@link InboxFileRepository}); only on a won
- * claim, call {@link MappingWorkflowService#proposeInitialFromInbox}.
+ * candidate names (see {@link WorksheetResolver}), failing
+ * deterministically on zero or more than one match, never guessing;
+ * hash; record arrival and attempt the atomic processing claim (see
+ * {@link InboxFileRepository}); only on a won claim, call
+ * {@link MappingWorkflowService#proposeInitialFromInbox}.
  *
  * A permanently unroutable file (bad filename, unknown client/feed,
  * ambiguous worksheet, unsupported extension) is quarantined, not
@@ -71,7 +70,7 @@ public class InboxScanner {
     private final CanonicalModelRegistry registry;
     private final FileHasher fileHasher;
     private final MappingWorkflowService workflowService;
-    private final SpreadsheetExplorerService explorer;
+    private final WorksheetResolver worksheetResolver;
 
     public InboxScanner(
             @Value("${agentic-sheets.inbox.dir:/workspace/inbox}") String inboxDir,
@@ -84,7 +83,7 @@ public class InboxScanner {
             CanonicalModelRegistry registry,
             FileHasher fileHasher,
             MappingWorkflowService workflowService,
-            SpreadsheetExplorerService explorer) {
+            WorksheetResolver worksheetResolver) {
         this.inboxDir = Path.of(inboxDir);
         this.stabilityWindow = Duration.ofSeconds(stabilityWindowSeconds);
         this.maxAttempts = maxAttempts;
@@ -95,7 +94,7 @@ public class InboxScanner {
         this.registry = registry;
         this.fileHasher = fileHasher;
         this.workflowService = workflowService;
-        this.explorer = explorer;
+        this.worksheetResolver = worksheetResolver;
     }
 
     @Scheduled(fixedDelayString = "${agentic-sheets.inbox.scan-interval-ms:60000}")
@@ -187,7 +186,7 @@ public class InboxScanner {
 
         String worksheet;
         try {
-            worksheet = resolveActualWorksheet(relativePath, route);
+            worksheet = worksheetResolver.resolve(relativePath, route);
         } catch (IllegalStateException e) {
             log.warn("Quarantining {} -- {}", filename, e.getMessage());
             return;
@@ -220,32 +219,5 @@ public class InboxScanner {
                     filename, claimed.attemptCount(), maxAttempts, e);
             inboxFileRepository.markRetryWait(claimed.id(), e.getMessage(), Instant.now().plus(retryBackoff));
         }
-    }
-
-    /**
-     * TODO -- NOT YET VERIFIED. {@code SpreadsheetExplorerService#listWorksheets}'s
-     * actual response shape has never been parsed anywhere in this
-     * codebase (only ever passed through raw to
-     * {@code GET /internal/explore/worksheets}) -- unlike
-     * {@code describe_table}'s shape, which Step 8b's frontend work
-     * confirmed against a real response before depending on it, this one
-     * is still an open gap. A real response from
-     * {@code GET /internal/explore/worksheets?path=inbox/<some file>}
-     * is needed before this method can be written correctly instead of
-     * guessed at.
-     *
-     * Once verified, the intended behavior: list the workbook's actual
-     * worksheet names, intersect with {@code route.worksheetNames()}
-     * (exact, case-sensitive match, no fuzzy matching), and return the
-     * single match. Zero or more than one match is a quarantine-worthy
-     * condition (an {@link IllegalStateException} here), never a guess
-     * at which one was intended.
-     */
-    private String resolveActualWorksheet(String relativePath, FeedRoute route) {
-        JsonNode worksheets = explorer.listWorksheets(relativePath);
-        throw new UnsupportedOperationException(
-                "resolveActualWorksheet is not yet implemented -- listWorksheets' real response shape "
-                        + "(observed: " + worksheets + ") needs to be confirmed against a live call before this "
-                        + "can correctly match it against route.worksheetNames() " + route.worksheetNames());
     }
 }
