@@ -4,91 +4,120 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * FakeTargetController has no external dependencies, so this is a
- * plain, fast unit test -- no Docker, no Testcontainers, unlike most of
- * the coverage for this project's delivery pipeline.
- *
- * The case-insensitive header matching specifically exists because a
- * real E2E run found a real bug: {@link Dispatcher} sends
- * {@code X-Import-Batch-Id} (mixed case), and an earlier version of
- * {@link FakeTargetController} did an exact-string
- * {@code headers.get("x-import-batch-id")} lookup that came back null
- * against whatever casing Spring actually preserved. HTTP header names
- * are case-insensitive by protocol (RFC 7230) -- the fix isn't "use the
- * right casing" (there isn't one to hardcode; any client or proxy could
- * send any case), it's matching case-insensitively regardless of what
- * casing actually arrives.
+ * Plain, fast unit tests -- no Docker, no Spring context, no
+ * Testcontainers. Split across the split the classes themselves took
+ * (an external review's finding that the journal needed to be a
+ * separate, conditionally-absent bean, not baked into the always-active
+ * controller): {@link FakeTargetJournal} is tested directly as a plain
+ * object, and {@link FakeTargetController} is tested with both an
+ * absent and a present journal to confirm {@code receive()} behaves
+ * identically either way -- the whole point of {@code Optional<FakeTargetJournal>}
+ * constructor injection.
  */
 class FakeTargetControllerTest {
 
     @Test
-    void capturesHeadersRegardlessOfCasingSent() {
-        FakeTargetController controller = new FakeTargetController();
+    void journalCapturesHeadersRegardlessOfCasingSent() {
+        FakeTargetJournal journal = new FakeTargetJournal();
 
-        // Mixed case, deliberately not matching CAPTURED_HEADERS'
-        // canonical lowercase names -- exactly the shape a real request
-        // actually sent, per Dispatcher's own .header(...) calls.
-        Map<String, String> incomingHeaders = Map.of(
-                "X-Import-Batch-Id", "1",
-                "X-Mapping-Proposal-Id", "2",
-                "Idempotency-Key", "abc123",
-                "Content-Type", "application/json",
-                "Authorization", "Bearer super-secret");
+        // Mixed case, deliberately not matching the controller's
+        // canonical lowercase capture keys -- exactly the shape a real
+        // request actually sent, per Dispatcher's own .header(...)
+        // calls. FakeTargetController does the case-insensitive
+        // matching before calling record(); this test exercises the
+        // journal with already-normalized (lowercase) keys, matching
+        // what the controller actually passes it.
+        Map<String, String> alreadyNormalizedHeaders = Map.of(
+                "x-import-batch-id", "1",
+                "x-mapping-proposal-id", "2",
+                "idempotency-key", "abc123");
 
-        controller.receive("holdings", "[]", incomingHeaders);
+        journal.record("holdings", "[]", alreadyNormalizedHeaders);
 
-        List<FakeTargetController.ReceivedRequest> requests = controller.requests("holdings");
+        List<FakeTargetJournal.ReceivedRequest> requests = journal.findAll("holdings");
         assertThat(requests).hasSize(1);
-
-        Map<String, String> captured = requests.get(0).headers();
-        assertThat(captured.get("x-import-batch-id")).isEqualTo("1");
-        assertThat(captured.get("x-mapping-proposal-id")).isEqualTo("2");
-        assertThat(captured.get("idempotency-key")).isEqualTo("abc123");
-        assertThat(captured.get("content-type")).isEqualTo("application/json");
-    }
-
-    @Test
-    void neverCapturesAuthorization() {
-        FakeTargetController controller = new FakeTargetController();
-        Map<String, String> incomingHeaders = Map.of(
-                "X-Import-Batch-Id", "1",
-                "Authorization", "Bearer super-secret");
-
-        controller.receive("holdings", "[]", incomingHeaders);
-
-        Map<String, String> captured = controller.requests("holdings").get(0).headers();
-        assertThat(captured).doesNotContainKey("authorization");
-        assertThat(captured.values()).noneMatch(value -> value.contains("super-secret"));
+        assertThat(requests.get(0).headers().get("x-import-batch-id")).isEqualTo("1");
+        assertThat(requests.get(0).headers().get("x-mapping-proposal-id")).isEqualTo("2");
+        assertThat(requests.get(0).headers().get("idempotency-key")).isEqualTo("abc123");
     }
 
     @Test
     void requestsAccumulateAcrossMultipleDeliveries() {
-        FakeTargetController controller = new FakeTargetController();
-        controller.receive("holdings", "[1]", Map.of());
-        controller.receive("holdings", "[2]", Map.of());
+        FakeTargetJournal journal = new FakeTargetJournal();
+        journal.record("holdings", "[1]", Map.of());
+        journal.record("holdings", "[2]", Map.of());
 
-        assertThat(controller.requests("holdings")).hasSize(2);
-        assertThat(controller.requests("holdings").get(0).body()).isEqualTo("[1]");
-        assertThat(controller.requests("holdings").get(1).body()).isEqualTo("[2]");
+        assertThat(journal.findAll("holdings")).hasSize(2);
+        assertThat(journal.findAll("holdings").get(0).body()).isEqualTo("[1]");
+        assertThat(journal.findAll("holdings").get(1).body()).isEqualTo("[2]");
     }
 
     @Test
     void resetClearsTheJournal() {
-        FakeTargetController controller = new FakeTargetController();
-        controller.receive("holdings", "[1]", Map.of());
+        FakeTargetJournal journal = new FakeTargetJournal();
+        journal.record("holdings", "[1]", Map.of());
 
-        controller.reset();
+        journal.reset();
 
-        assertThat(controller.requests("holdings")).isEmpty();
+        assertThat(journal.findAll("holdings")).isEmpty();
     }
 
     @Test
-    void requestsForAnUnknownServiceIsEmptyNotNull() {
-        FakeTargetController controller = new FakeTargetController();
-        assertThat(controller.requests("nonexistent")).isEmpty();
+    void findAllForAnUnknownServiceIsEmptyNotNull() {
+        FakeTargetJournal journal = new FakeTargetJournal();
+        assertThat(journal.findAll("nonexistent")).isEmpty();
+    }
+
+    @Test
+    void journalIsBoundedPerServiceOldestDroppedFirst() {
+        FakeTargetJournal journal = new FakeTargetJournal();
+        for (int i = 0; i < 150; i++) {
+            journal.record("holdings", "[" + i + "]", Map.of());
+        }
+
+        List<FakeTargetJournal.ReceivedRequest> requests = journal.findAll("holdings");
+        assertThat(requests).hasSize(100);
+        // Oldest (body "[0]" through "[49]") should have been dropped;
+        // the most recent 100 remain, in order.
+        assertThat(requests.get(0).body()).isEqualTo("[50]");
+        assertThat(requests.get(requests.size() - 1).body()).isEqualTo("[149]");
+    }
+
+    @Test
+    void receiveWorksIdenticallyWithNoJournalPresent() {
+        // The actual point of Optional<FakeTargetJournal> constructor
+        // injection: with the journal bean absent (matching a normal,
+        // non-E2E deployment where journal-enabled is unset), receive()
+        // still works and returns the same success response -- it just
+        // has nothing to record into.
+        FakeTargetController controller = new FakeTargetController(Optional.empty());
+
+        Map<String, Object> response = controller.receive("holdings", "[]", Map.of("X-Import-Batch-Id", "1"));
+
+        assertThat(response.get("received")).isEqualTo(true);
+        assertThat(response.get("service")).isEqualTo("holdings");
+    }
+
+    @Test
+    void receiveRecordsIntoTheJournalWhenPresent() {
+        FakeTargetJournal journal = new FakeTargetJournal();
+        FakeTargetController controller = new FakeTargetController(Optional.of(journal));
+
+        controller.receive("holdings", "[]", Map.of("X-Import-Batch-Id", "1", "Authorization", "Bearer super-secret"));
+
+        List<FakeTargetJournal.ReceivedRequest> requests = journal.findAll("holdings");
+        assertThat(requests).hasSize(1);
+        assertThat(requests.get(0).headers().get("x-import-batch-id")).isEqualTo("1");
+        // Authorization is deliberately never captured, even though
+        // this is local-only testing infrastructure -- no reason to
+        // make a real secret queryable and end up printed in a test
+        // failure's output.
+        assertThat(requests.get(0).headers()).doesNotContainKey("authorization");
+        assertThat(requests.get(0).headers().values()).noneMatch(value -> value.contains("super-secret"));
     }
 }

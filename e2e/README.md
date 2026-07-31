@@ -378,3 +378,52 @@ functional bug -- purely cosmetic, log output only -- but worth fixing
 for the same reason as the real bug: moved the log statement to read
 from `captured` (guaranteed correctly-keyed by the fix above) instead
 of a second, independent lookup that was never going to match either.
+
+## A third external review, once the payload-delivery test itself was confirmed passing
+
+**Medium: the request journal is a real security exposure if this
+configuration ever reached a shared or hosted environment.**
+`FakeTargetController` recorded full delivered payloads -- for a real
+client, real financial data -- in an unbounded map, exposed through a
+read endpoint `/internal/fake-target/**` deliberately exempts from auth
+(the same exemption that lets `Dispatcher` reach it at all, unauthenticated
+by design for local testing). Fine for the isolated, throwaway E2E
+environment this was built for; a real risk if it ever reached
+anywhere else. Fixed by splitting into three pieces: `FakeTargetJournal`
+(the state itself, now `@ConditionalOnProperty`-gated on
+`agentic-sheets.fake-target.journal-enabled`, enabled *only* in
+`compose.e2e.yaml`), `FakeTargetController` (unchanged in behavior,
+now takes `Optional<FakeTargetJournal>` -- `receive()` works
+identically everywhere, it just has nothing to record into when the
+journal bean doesn't exist), and `FakeTargetJournalController` (the
+read/reset endpoints, conditional on the exact same property, so the
+whole class doesn't exist in a normal deployment's Spring context at
+all). That's a stronger guarantee than an auth check would have been:
+a request to the journal endpoints in a normal deployment gets a plain
+404 -- confirmed by tracing through `ApiKeyAuthFilter`'s own exemption
+logic, which is purely a path-string match, unaware of whether a
+handler actually exists behind it -- not a 401 from a check that could
+itself have a bug. Also bounded the journal per service (100 entries,
+oldest dropped first), mirroring llmsim's own
+`LLMSIM_JOURNAL_MAX_ENTRIES` precedent, addressing the unbounded-growth
+half of the same finding.
+
+**Low: the "parallel-safe" framing overclaimed what was actually true.**
+The unique project name genuinely prevents one run's cleanup from
+tearing down another's containers -- but the port *defaults* are still
+fixed values, so two unconfigured concurrent local runs would still
+collide on ports even though their containers/networks/volumes
+wouldn't. Fixed the comments in both `run-golden-path.sh` and
+`compose.e2e.yaml` to say what's actually true: parallel runs are
+supported *with* distinct port overrides, not automatically safe
+without them.
+
+**Low: the two failure-only artifact-upload steps were still on the
+old runtime.** Easy to miss precisely because they only run when the
+E2E job fails -- a successful CI run never surfaces the deprecation
+warning. Verified the real current version directly via
+`git ls-remote --tags` before bumping, same discipline as every other
+version claim in this project: `actions/upload-artifact` → `v7`, one
+major version newer than the `v6` the review itself suggested (both
+exist; verifying instead of trusting either specific number turned up
+the actually-current one).

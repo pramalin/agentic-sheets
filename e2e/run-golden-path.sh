@@ -24,10 +24,16 @@ COMPOSE_ARGS=(-p "$PROJECT_NAME" -f compose.yaml -f compose.e2e.yaml)
 # but `ports: "5432:5432"` still tries to bind the literal host port
 # regardless of project name, so this collided with an ordinary dev
 # stack that happened to be running at the same time. Overridable
-# (`${VAR:-default}`), not unconditionally assigned -- a caller running
-# two of these concurrently can set distinct values for each rather
-# than the script forcing the same ports every time. Exported here so
-# both the `docker compose` invocation below (via compose.yaml's own
+# (`${VAR:-default}`), not unconditionally assigned. Worth being
+# precise about what this does and doesn't guarantee, per a follow-up
+# external review: the *project name* is unique per invocation (line
+# 18 above), but these port defaults are still fixed -- two
+# unconfigured concurrent local runs will still collide on ports even
+# though their containers/networks/volumes no longer would. Parallel
+# runs are supported *with* distinct port overrides, not automatically
+# safe without them; a caller running two of these at once needs to
+# actually set different values for each. Exported here so both the
+# `docker compose` invocation below (via compose.yaml's own
 # ${POSTGRES_PORT:-5432} / ${AGENTIC_SHEETS_BACKEND_PORT:-8081}
 # interpolation) and Playwright's actual request target agree on the
 # same values -- not hardcoded twice in two places that could drift

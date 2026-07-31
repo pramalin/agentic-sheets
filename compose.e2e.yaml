@@ -20,14 +20,21 @@
 # `ports: "5432:5432"` still tries to bind the literal host port
 # regardless of project name. run-golden-path.sh exports POSTGRES_PORT,
 # AGENTIC_SHEETS_BACKEND_PORT, and LLMSIM_HOST_PORT (overridable, not
-# forced, so two concurrent runs can use distinct values) before
-# invoking Compose -- postgres's and backend's ports reuse the exact
-# env-var-interpolation mechanism compose.yaml's own postgres service
-# already used successfully; llmsim's is parametrized the identical way
-# here, in this overlay, since it has no base-file definition to merge
-# against. Deliberately not relying on override-file list-merge
-# semantics for `ports` across -f files, which aren't certain enough to
-# bet a port collision fix on.
+# forced) before invoking Compose -- postgres's and backend's ports
+# reuse the exact env-var-interpolation mechanism compose.yaml's own
+# postgres service already used successfully; llmsim's is parametrized
+# the identical way here, in this overlay, since it has no base-file
+# definition to merge against. Deliberately not relying on
+# override-file list-merge semantics for `ports` across -f files, which
+# aren't certain enough to bet a port collision fix on.
+#
+# Worth being precise, per a follow-up external review: overridable is
+# not the same as automatically safe. The project name is unique per
+# invocation, but these port defaults are still fixed values -- two
+# unconfigured concurrent local runs will still collide on ports even
+# though their containers/networks/volumes no longer would. Parallel
+# runs are supported *with* distinct overrides, not automatically safe
+# without them.
 #
 # Compose merges `environment` and `depends_on` (the map-with-condition
 # form) by key across -f files -- this overlay only needs to state what
@@ -58,6 +65,15 @@ services:
       # environment shouldn't depend on a developer-specific dev secret
       # at all; matches pipeline-api.spec.ts's own E2E_API_KEY default.
       - AGENTIC_SHEETS_API_KEY=e2e-test-key
+      # Enables FakeTargetJournal and its read/reset endpoints --
+      # disabled by default everywhere else (see FakeTargetJournal's own
+      # javadoc for why this needed to be opt-in, not just
+      # auth-protected: an external review correctly flagged that
+      # recording full delivered payloads, unbounded, behind an
+      # unauthenticated endpoint, would be a real exposure and
+      # memory-growth risk if this configuration ever reached a shared
+      # or hosted environment).
+      - AGENTIC_SHEETS_FAKE_TARGET_JOURNAL_ENABLED=true
     depends_on:
       llmsim:
         condition: service_started

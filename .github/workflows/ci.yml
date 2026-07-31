@@ -99,7 +99,7 @@ jobs:
 
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report
           path: agentic-sheets/e2e/playwright-report/
@@ -112,7 +112,7 @@ jobs:
       # teardown, specifically so there's still something to upload.
       - name: Upload Compose logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: compose-logs
           path: agentic-sheets/e2e/compose-logs.txt

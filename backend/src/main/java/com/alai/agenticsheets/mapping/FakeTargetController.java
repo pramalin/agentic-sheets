@@ -2,7 +2,6 @@ package com.alai.agenticsheets.mapping;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -10,11 +9,10 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * FOR LOCAL TESTING ONLY. Simulates a team's receiving service so
@@ -27,18 +25,16 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * path is actually exercisable, not as a model for how a real receiver
  * should be built.
  *
- * The request journal (added alongside Step 8d's golden-path E2E test,
- * per an external review's finding) exists for the same reason llmsim's
- * own journal does: {@code Dispatcher} reporting {@code SUCCESS} only
- * proves it received a 2xx, never that the payload it sent was actually
- * correct -- a regression sending an empty array, wrong field values, or
- * missing headers would report success identically. Recording every
- * request and letting a test read the list back -- deliberately a full
- * list, not just the most recent one, matching {@code GET
- * /_llmsim/calls}'s exact shape -- turns "dispatch succeeded" into an
- * assertable "the right data crossed the delivery boundary exactly
- * once," the same "exactly once" property llmsim's own journal already
- * makes assertable for the model-call side of this same pipeline.
+ * Recording to {@link FakeTargetJournal} is optional and conditional --
+ * see that class's own javadoc for why the journal is a separate,
+ * {@code @ConditionalOnProperty}-gated bean rather than living directly
+ * in this always-active controller: an external review correctly flagged
+ * that a journal exposing full delivered payloads through an
+ * unauthenticated read endpoint is a real risk if this configuration
+ * ever reached a shared or hosted environment, not just local/E2E use.
+ * {@code Optional<FakeTargetJournal>} constructor injection means
+ * {@link #receive} works identically either way -- it just has nothing
+ * to record into when the journal bean doesn't exist.
  */
 @RestController
 @RequestMapping("/internal/fake-target")
@@ -53,7 +49,11 @@ public class FakeTargetController {
     private static final List<String> CAPTURED_HEADERS =
             List.of("x-import-batch-id", "x-mapping-proposal-id", "idempotency-key", "content-type");
 
-    private final Map<String, List<ReceivedRequest>> requestsByService = new ConcurrentHashMap<>();
+    private final Optional<FakeTargetJournal> journal;
+
+    public FakeTargetController(Optional<FakeTargetJournal> journal) {
+        this.journal = journal;
+    }
 
     @PostMapping("/{service}")
     public Map<String, Object> receive(
@@ -79,45 +79,14 @@ public class FakeTargetController {
 
         // Logged from `captured`, not a fresh lookup against the raw
         // `headers` map -- the same case-sensitivity mistake this
-        // method's actual capture logic just got fixed for would
-        // otherwise still be sitting right here, printing a misleading
-        // "null" in the log even though the real capture works
-        // correctly. `captured`'s keys are always CAPTURED_HEADERS'
-        // canonical lowercase names, guaranteed by the loop above.
+        // method's actual capture logic was fixed for would otherwise
+        // still be sitting right here, printing a misleading "null" in
+        // the log even though the real capture works correctly.
         log.info("fake-target[{}] received {} bytes, X-Import-Batch-Id={}",
                 service, body.length(), captured.get("x-import-batch-id"));
 
-        requestsByService
-                .computeIfAbsent(service, key -> new CopyOnWriteArrayList<>())
-                .add(new ReceivedRequest(body, captured, Instant.now()));
+        journal.ifPresent(j -> j.record(service, body, captured));
 
         return Map.of("received", true, "service", service, "bytes", body.length());
-    }
-
-    /**
-     * Every request {@code service} has received since the last reset,
-     * oldest first -- the read side of the journal a test asserts
-     * against, mirroring {@code GET /_llmsim/calls}'s exact shape for
-     * the model-call side of the same pipeline (a full list, so both
-     * "what was received" and "exactly how many times" are directly
-     * assertable, not just the most recent one).
-     */
-    @GetMapping("/{service}/requests")
-    public List<ReceivedRequest> requests(@PathVariable String service) {
-        return requestsByService.getOrDefault(service, List.of());
-    }
-
-    /**
-     * Clears the journal for every service -- lets one running instance
-     * serve multiple test cases without restarting the container,
-     * matching {@code POST /_llmsim/reset}'s same role for the model
-     * side.
-     */
-    @PostMapping("/reset")
-    public void reset() {
-        requestsByService.clear();
-    }
-
-    public record ReceivedRequest(String body, Map<String, String> headers, Instant receivedAt) {
     }
 }
