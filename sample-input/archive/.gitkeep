@@ -1,0 +1,3 @@
+Step 9's InboxArchiver moves a delivered file's source here (see that
+class's own javadoc), under archive/delivered/{client}/{feedType}/{date}/.
+Empty until something actually gets archived.

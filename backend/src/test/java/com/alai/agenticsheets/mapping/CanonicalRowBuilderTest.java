@@ -24,8 +24,8 @@ class CanonicalRowBuilderTest {
     private final CanonicalModelParser parser = new CanonicalModelParser();
     private final CanonicalRowBuilder builder = new CanonicalRowBuilder();
 
-    private static final ClientConfig JPMC = new ClientConfig("jpmc", "yyyy-MM-dd");
-    private static final ClientConfig PIMCO = new ClientConfig("pimco", "MM/dd/yyyy");
+    private static final ClientConfig JPMC = new ClientConfig("jpmc", "yyyy-MM-dd", java.util.Map.of());
+    private static final ClientConfig PIMCO = new ClientConfig("pimco", "MM/dd/yyyy", java.util.Map.of());
 
     private CanonicalModel holdings() throws Exception {
         Path file = Path.of(getClass().getClassLoader()

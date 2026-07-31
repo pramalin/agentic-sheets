@@ -1,0 +1,5 @@
+Step 9's InboxScanner watches this directory (agentic-sheets.inbox.dir,
+default /workspace/inbox inside the backend/sheets-mcp containers).
+Deliberately separate from sample-input/'s own top-level fixture files
+-- those exist for the E2E golden-path test and manual /propose calls,
+and the scanner never looks at them; only this subdirectory.

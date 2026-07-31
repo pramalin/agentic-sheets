@@ -47,23 +47,19 @@ public class MappingController {
 
     private static final Logger log = LoggerFactory.getLogger(MappingController.class);
 
-    /** Batch states safe to start a *new* proposal from. See
-      * mapping-notes.md's Step 7.4 section for the full reasoning. */
-    private static final Set<String> ELIGIBLE_FOR_PROPOSE =
-            Set.of("PENDING", "REJECTED", "VALIDATION_FAILED", "SOURCE_CHANGED", "CONFIG_CHANGED", "PROPOSING_ERROR");
-
     /** Retrying after a recorded failure, or recovering a batch stuck at
       * APPROVED by a genuine process crash -- deliberately excludes
       * DELIVERED and PROCESSING/PROPOSING. Deliberately disjoint from
-      * {@link #ELIGIBLE_FOR_PROPOSE} -- no status is eligible for both a
-      * fresh proposal and a redelivery, which is what lets
-      * {@code /redeliver} use a single, untransacted claim safely: no
-      * concurrent {@code /propose} could ever compete for a batch in
-      * one of these states. */
+      * {@link MappingWorkflowService}'s own eligible-for-propose sets --
+      * no status is eligible for both a fresh proposal and a
+      * redelivery, which is what lets {@code /redeliver} use a single,
+      * untransacted claim safely: no concurrent {@code /propose} could
+      * ever compete for a batch in one of these states. */
     private static final Set<String> ELIGIBLE_FOR_REDELIVER =
             Set.of("APPROVED", "DELIVERY_FAILED", "PROCESSING_ERROR");
 
     private final MappingProposalService proposalService;
+    private final MappingWorkflowService workflowService;
     private final ImportBatchRepository importBatchRepository;
     private final MappingProposalRepository mappingProposalRepository;
     private final ValidationRunRepository validationRunRepository;
@@ -76,6 +72,7 @@ public class MappingController {
 
     public MappingController(
             MappingProposalService proposalService,
+            MappingWorkflowService workflowService,
             ImportBatchRepository importBatchRepository,
             MappingProposalRepository mappingProposalRepository,
             ValidationRunRepository validationRunRepository,
@@ -86,6 +83,7 @@ public class MappingController {
             Dispatcher dispatcher,
             ProposalDecisionService proposalDecisionService) {
         this.proposalService = proposalService;
+        this.workflowService = workflowService;
         this.importBatchRepository = importBatchRepository;
         this.mappingProposalRepository = mappingProposalRepository;
         this.validationRunRepository = validationRunRepository;
@@ -101,10 +99,13 @@ public class MappingController {
      * Creates or reuses an import_batch, then either returns the
      * existing PENDING proposal for it (fast path, no model call) or
      * claims the batch into {@code PROPOSING} *before* calling the
-     * model. The model call itself stays outside any transaction (a
-     * slow network call, not a database operation) -- but persisting
-     * the result and releasing the batch back to {@code PENDING} are
-     * one transaction, via {@link ProposalDecisionService#saveProposalAndReleaseBatch}.
+     * model. As of Step 9, this is a thin HTTP-translation layer over
+     * {@link MappingWorkflowService#proposeManually} -- the orchestration
+     * itself (hashing, batch creation, claims, model invocation,
+     * persistence) moved there, alongside the new
+     * {@code proposeInitialFromInbox} the scanner uses instead. See that
+     * class's own javadoc for why those are two different methods with
+     * different eligibility rules, not one shared by both callers.
      */
     @PostMapping("/propose")
     public ProposeResponse propose(
@@ -112,47 +113,7 @@ public class MappingController {
             @RequestParam String clientId,
             @RequestParam String path,
             @RequestParam String worksheet) {
-        CanonicalModel model = registry.get(modelId);
-        ClientConfig client = registry.getClient(clientId);
-
-        String contentHash = fileHasher.sha256(path);
-        long batchId = importBatchRepository.findOrCreate(
-                model.modelId(), clientId, path, contentHash, worksheet, model.version());
-
-        Optional<StoredMappingProposal> existingPending = mappingProposalRepository.findPendingByBatchId(batchId);
-        if (existingPending.isPresent()) {
-            StoredMappingProposal existing = existingPending.get();
-            return new ProposeResponse(batchId, existing.id(), existing.proposal());
-        }
-
-        if (!importBatchRepository.claimForProcessing(batchId, ELIGIBLE_FOR_PROPOSE, "PROPOSING")) {
-            ImportBatch current = importBatchRepository.findById(batchId);
-            throw new IllegalStateException(
-                    "batch " + batchId + " could not be claimed for proposing -- current status is "
-                            + current.status() + ", not one of " + ELIGIBLE_FOR_PROPOSE
-                            + " (already being processed concurrently, already delivered, or a state that needs "
-                            + "/redeliver instead of a fresh proposal)");
-        }
-
-        MappingProposal proposal;
-        try {
-            proposal = proposalService.propose(model, client, path, worksheet);
-        } catch (RuntimeException e) {
-            log.error("propose (model call) failed unexpectedly for batch {}", batchId, e);
-            importBatchRepository.updateStatusIfCurrent(batchId, "PROPOSING", "PROPOSING_ERROR");
-            throw e;
-        }
-
-        long proposalId;
-        try {
-            proposalId = proposalDecisionService.saveProposalAndReleaseBatch(batchId, model.version(), proposal);
-        } catch (RuntimeException e) {
-            log.error("propose (persist+release) failed unexpectedly for batch {}", batchId, e);
-            importBatchRepository.updateStatusIfCurrent(batchId, "PROPOSING", "PROPOSING_ERROR");
-            throw e;
-        }
-
-        return new ProposeResponse(batchId, proposalId, proposal);
+        return workflowService.proposeManually(modelId, clientId, path, worksheet);
     }
 
     /**
@@ -260,9 +221,10 @@ public class MappingController {
      * {@code /approve} and {@code /reject}): {@code /redeliver} never
      * changes the proposal's own status (it's already permanently
      * APPROVED), so there's only one row's worth of state to claim, and
-     * {@link #ELIGIBLE_FOR_REDELIVER} is deliberately disjoint from
-     * {@link #ELIGIBLE_FOR_PROPOSE} -- no concurrent {@code /propose}
-     * could ever be racing for a batch in one of these states.
+     * {@link #ELIGIBLE_FOR_REDELIVER} is deliberately disjoint from both
+     * of {@link MappingWorkflowService}'s eligible-for-propose sets --
+     * no concurrent {@code /propose} could ever be racing for a batch in
+     * one of these states.
      */
     @PostMapping("/proposals/{id}/redeliver")
     public ApproveResponse redeliver(@PathVariable long id) {
@@ -401,9 +363,6 @@ public class MappingController {
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ValidationErrorResponse(List.of(
                         e.getClass().getSimpleName() + ": " + e.getMessage())));
-    }
-
-    public record ProposeResponse(long importBatchId, long mappingProposalId, MappingProposal proposal) {
     }
 
     public record ApproveResponse(long importBatchId, long mappingProposalId, ValidationSummary validation,

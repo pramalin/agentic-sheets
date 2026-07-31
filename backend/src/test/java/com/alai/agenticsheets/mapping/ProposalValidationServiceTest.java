@@ -68,7 +68,7 @@ class ProposalValidationServiceTest {
                 List.of(),
                 "test");
 
-        ClientConfig jpmc = new ClientConfig("jpmc", "yyyy-MM-dd");
+        ClientConfig jpmc = new ClientConfig("jpmc", "yyyy-MM-dd", java.util.Map.of());
         ImportBatch batch = new ImportBatch(1L, "Holdings", "jpmc", "holdings_jpmc.xlsx", "hash", "Holdings", 1, "APPROVED");
 
         ValidationReport report = service.validate(holdings(), jpmc, batch, proposal);

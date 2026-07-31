@@ -21,9 +21,10 @@ import java.util.stream.Stream;
 /**
  * The single owner of {@code canonical-models/*.yaml} and
  * {@code client-configs/*.yaml}. Nothing else in the codebase parses
- * these files -- every consumer (the future mapping agent's prompt
- * builder, the structured-output schema, the deterministic validator,
- * the dispatcher) reads {@link #get(String)} / {@link #getClient(String)}.
+ * these files -- every consumer (the mapping agent's prompt builder,
+ * the deterministic validator, the dispatcher, Step 9's inbox scanner)
+ * reads {@link #get(String)} / {@link #getClient(String)} /
+ * {@link #resolveRoute}.
  *
  * This exists specifically to avoid a real failure mode from a prior
  * system: configuration that was "not constant at all," ending up
@@ -31,11 +32,16 @@ import java.util.stream.Stream;
  * {@code mapping-notes.md} and {@code canonical-models/SCHEMA.md}'s
  * "Loading &amp; reload" section.
  *
- * Reload is per-file, not all-or-nothing across every config: a file that
- * fails to parse or validate leaves its own previous good model in place
- * (or absent, if it never loaded successfully) and does not affect any
- * other file. A mistake in one team's config can't corrupt another
- * team's pipeline.
+ * Reload is per-file, not all-or-nothing across every config: a file
+ * that fails to parse or validate -- including, as of Step 9, a
+ * client's feed referencing a model id that doesn't exist -- leaves its
+ * own previous good config in place (or absent, if it never loaded
+ * successfully) and does not affect any other file. A mistake in one
+ * team's config can't corrupt another team's pipeline.
+ *
+ * One {@link RegistrySnapshot}, swapped atomically, not two
+ * independently-updated fields -- see that record's own javadoc for the
+ * race this closes.
  */
 @Component
 public class CanonicalModelRegistry {
@@ -47,8 +53,7 @@ public class CanonicalModelRegistry {
     private final CanonicalModelParser modelParser;
     private final ClientConfigParser clientParser;
 
-    private volatile Map<String, CanonicalModel> models = Map.of();
-    private volatile Map<String, ClientConfig> clients = Map.of();
+    private volatile RegistrySnapshot snapshot = RegistrySnapshot.EMPTY;
 
     public CanonicalModelRegistry(
             @Value("${agentic-sheets.canonical-models-dir:/config/canonical-models}") String canonicalModelsDir,
@@ -71,41 +76,74 @@ public class CanonicalModelRegistry {
       * picked up without a redeploy. */
     @Scheduled(fixedDelayString = "${agentic-sheets.canonical.reload-interval-ms:300000}")
     public void reload() {
-        reloadModels();
-        reloadClients();
+        RegistrySnapshot current = this.snapshot;
+
+        Map<String, CanonicalModel> models = reloadModels(current.models());
+        // Clients are (re)loaded and route-validated against `models`
+        // above -- the map about to become current, not the one this
+        // reload cycle started with -- so a client's feeds always
+        // validate against whichever model generation will actually be
+        // in effect once this reload completes, never a stale one.
+        Map<String, ClientConfig> clients = reloadClients(current.clients(), models);
+        Map<FeedRouteKey, FeedRoute> routes = buildRouteIndex(clients);
+
+        this.snapshot = new RegistrySnapshot(models, clients, routes);
     }
 
-    private void reloadModels() {
-        Map<String, CanonicalModel> next = new LinkedHashMap<>(this.models);
+    private Map<String, CanonicalModel> reloadModels(Map<String, CanonicalModel> previous) {
+        Map<String, CanonicalModel> next = new LinkedHashMap<>(previous);
         for (Path file : listYamlFiles(canonicalModelsDir)) {
             try {
                 CanonicalModel parsed = modelParser.parse(file);
-                CanonicalModel previous = next.put(parsed.modelId(), parsed);
-                if (previous == null) {
+                CanonicalModel replaced = next.put(parsed.modelId(), parsed);
+                if (replaced == null) {
                     log.info("Loaded canonical model '{}' version {} from {}",
                             parsed.modelId(), parsed.version(), file);
-                } else if (previous.version() != parsed.version()) {
+                } else if (replaced.version() != parsed.version()) {
                     log.info("Reloaded canonical model '{}': version {} -> {}",
-                            parsed.modelId(), previous.version(), parsed.version());
+                            parsed.modelId(), replaced.version(), parsed.version());
                 }
             } catch (Exception e) {
                 log.error("Failed to (re)load canonical model config {} -- keeping previous version, if any", file, e);
             }
         }
-        this.models = Map.copyOf(next);
+        return Map.copyOf(next);
     }
 
-    private void reloadClients() {
-        Map<String, ClientConfig> next = new LinkedHashMap<>(this.clients);
+    /** {@code models} is the just-computed, about-to-be-current model
+      * map -- see {@link #reload}'s own comment on why. A client whose
+      * feed references a model id absent from it is treated exactly
+      * like any other parse failure: logged, that one file's previous
+      * good config (if any) stays in place, every other client config
+      * still reloads normally. */
+    private Map<String, ClientConfig> reloadClients(Map<String, ClientConfig> previous, Map<String, CanonicalModel> models) {
+        Map<String, ClientConfig> next = new LinkedHashMap<>(previous);
         for (Path file : listYamlFiles(clientConfigsDir)) {
             try {
                 ClientConfig parsed = clientParser.parse(file);
+                for (FeedRoute route : parsed.feeds().values()) {
+                    if (!models.containsKey(route.modelId())) {
+                        throw new CanonicalConfigException(
+                                "client '" + parsed.clientId() + "' feed '" + route.feedType()
+                                        + "' references unknown canonical model '" + route.modelId() + "': " + file);
+                    }
+                }
                 next.put(parsed.clientId(), parsed);
             } catch (Exception e) {
                 log.error("Failed to (re)load client config {} -- keeping previous version, if any", file, e);
             }
         }
-        this.clients = Map.copyOf(next);
+        return Map.copyOf(next);
+    }
+
+    private Map<FeedRouteKey, FeedRoute> buildRouteIndex(Map<String, ClientConfig> clients) {
+        Map<FeedRouteKey, FeedRoute> routes = new LinkedHashMap<>();
+        for (ClientConfig client : clients.values()) {
+            for (FeedRoute route : client.feeds().values()) {
+                routes.put(new FeedRouteKey(client.clientId(), route.feedType()), route);
+            }
+        }
+        return Map.copyOf(routes);
     }
 
     private List<Path> listYamlFiles(Path dir) {
@@ -127,7 +165,7 @@ public class CanonicalModelRegistry {
     }
 
     public CanonicalModel get(String modelId) {
-        CanonicalModel m = models.get(modelId);
+        CanonicalModel m = snapshot.models().get(modelId);
         if (m == null) {
             throw new NoSuchElementException("No such canonical model: " + modelId);
         }
@@ -135,11 +173,11 @@ public class CanonicalModelRegistry {
     }
 
     public Collection<CanonicalModel> allModels() {
-        return models.values();
+        return snapshot.models().values();
     }
 
     public ClientConfig getClient(String clientId) {
-        ClientConfig c = clients.get(clientId);
+        ClientConfig c = snapshot.clients().get(clientId);
         if (c == null) {
             throw new NoSuchElementException("No such client config: " + clientId);
         }
@@ -147,6 +185,18 @@ public class CanonicalModelRegistry {
     }
 
     public Collection<ClientConfig> allClients() {
-        return clients.values();
+        return snapshot.clients().values();
+    }
+
+    /** Step 9: resolves a parsed filename's (clientId, feedType) into
+      * the route the inbox scanner needs (modelId, expected worksheet
+      * names). */
+    public FeedRoute resolveRoute(String clientId, String feedType) {
+        FeedRoute route = snapshot.routes().get(new FeedRouteKey(clientId, feedType));
+        if (route == null) {
+            throw new NoSuchElementException(
+                    "No feed route for client '" + clientId + "', feed type '" + feedType + "'");
+        }
+        return route;
     }
 }

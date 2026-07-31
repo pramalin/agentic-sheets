@@ -3,3 +3,15 @@ client: jpmc
 # text -- no string parsing needed, so this is effectively unused. Kept
 # for completeness/documentation rather than left absent.
 dateFormat: yyyy-MM-dd
+
+# Step 9: inbox-scanner routing. modelId/worksheetNames are validated
+# against the current canonical-model snapshot at registry reload, not
+# here -- this parser has no view of that. worksheetNames is a list,
+# matched exactly against sheets-reader-mcp's reported worksheet names;
+# the scanner quarantines rather than guessing if zero or more than one
+# actually matches.
+feeds:
+  holdings:
+    modelId: Holdings
+    worksheetNames:
+      - Holdings

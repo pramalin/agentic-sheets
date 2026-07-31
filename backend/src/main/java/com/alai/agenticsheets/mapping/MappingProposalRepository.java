@@ -58,6 +58,34 @@ public class MappingProposalRepository {
     }
 
     /**
+     * Whether *any* proposal -- regardless of status -- has ever existed
+     * for this batch. Deliberately broader than {@link #findPendingByBatchId}:
+     * Step 9's scanner uses this specifically, not that, to tell "a human
+     * already manually proposed this exact file" (skip -- don't create a
+     * competing proposal, whatever its current status) apart from "this
+     * batch has genuinely never been proposed" (the only case the
+     * scanner should ever call the model for).
+     */
+    public boolean existsForBatch(long importBatchId) {
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM mapping_proposal WHERE import_batch_id = ?",
+                Integer.class, importBatchId);
+        return count != null && count > 0;
+    }
+
+    /** The single most recent proposal for a batch, whatever its status
+      * -- used alongside {@link #existsForBatch} so Step 9's scanner can
+      * link {@code inbox_file} to a proposal a human already created
+      * manually, rather than failing when it isn't PENDING. */
+    public java.util.Optional<StoredMappingProposal> findMostRecentByBatchId(long importBatchId) {
+        List<StoredMappingProposal> found = jdbcTemplate.query(
+                "SELECT " + SELECT_COLUMNS + " FROM mapping_proposal WHERE import_batch_id = ? "
+                        + "ORDER BY created_at DESC LIMIT 1",
+                this::mapRow, importBatchId);
+        return found.isEmpty() ? java.util.Optional.empty() : java.util.Optional.of(found.get(0));
+    }
+
+    /**
      * The Step 8 review queue, joined with {@code import_batch} for the
      * fields a queue actually needs to be usable -- which client, which
      * file, which worksheet -- rather than the bare IDs {@link

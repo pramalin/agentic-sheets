@@ -56,6 +56,12 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - HOLDINGS_WRITER_API_KEY=${HOLDINGS_WRITER_API_KEY:-}
       - AGENTIC_SHEETS_API_KEY=${AGENTIC_SHEETS_API_KEY:-}
+      # Step 9: off by default, same conservative default as Step 8d's
+      # AGENTIC_SHEETS_FAKE_TARGET_JOURNAL_ENABLED -- a still-incomplete
+      # feature (see InboxScanner's own worksheet-resolution TODO)
+      # shouldn't run unattended just because the stack is up. Set to
+      # true in .env once ready to actually exercise it.
+      - AGENTIC_SHEETS_INBOX_ENABLED=${AGENTIC_SHEETS_INBOX_ENABLED:-false}
     volumes:
       # Mounted, not baked into the image -- configuration here is
       # expected to change often (see mapping-notes.md), and the
@@ -66,7 +72,15 @@ services:
       # Same directory sheets-mcp treats as its workspace -- Step 6's
       # /internal/mapping/propose needs real file bytes to hash for
       # import_batch dedupe, not just sheets-mcp's parsed view of them.
-      - ./sample-input:/workspace:ro
+      # Read-write here (unlike sheets-mcp's own :ro copy above) as of
+      # Step 9 -- InboxScanner/InboxArchiver read and move files under
+      # this same mount's inbox/ and archive/ subdirectories, which
+      # sheets-mcp itself never needs to write to. The existing
+      # top-level fixture files (holdings_jpmc_20260115.xlsx and
+      # friends) are untouched either way -- nothing in this codebase
+      # writes to them, and the scanner only ever looks inside inbox/
+      # specifically, never at sample-input/'s own top level.
+      - ./sample-input:/workspace
     depends_on:
       postgres:
         condition: service_healthy

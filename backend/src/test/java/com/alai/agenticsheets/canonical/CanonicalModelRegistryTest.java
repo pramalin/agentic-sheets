@@ -98,4 +98,40 @@ class CanonicalModelRegistryTest {
         registry.reload();
         assertThat(registry.allModels()).isEmpty();
     }
+
+    @Test
+    void aFeedReferencingAnUnknownModelFailsThatClientAloneNotEverything(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        Files.writeString(modelsDir.resolve("good.yaml"), GOOD_MODEL);
+        Files.writeString(clientsDir.resolve("broken.yaml"), """
+                client: broken
+                dateFormat: yyyy-MM-dd
+                feeds:
+                  someFeed:
+                    modelId: NoSuchModel
+                    worksheetNames:
+                      - Sheet1
+                """);
+        Files.writeString(clientsDir.resolve("fine.yaml"), """
+                client: fine
+                dateFormat: yyyy-MM-dd
+                feeds:
+                  someFeed:
+                    modelId: GoodModel
+                    worksheetNames:
+                      - Sheet1
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThatThrownBy(() -> registry.getClient("broken"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+        assertThat(registry.getClient("fine").feeds()).containsKey("someFeed");
+        assertThat(registry.resolveRoute("fine", "someFeed").modelId()).isEqualTo("GoodModel");
+        assertThatThrownBy(() -> registry.resolveRoute("broken", "someFeed"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+    }
 }

@@ -153,3 +153,68 @@ CREATE TABLE validation_run (
 
 CREATE INDEX idx_validation_run_batch ON validation_run (import_batch_id);
 CREATE INDEX idx_validation_run_proposal ON validation_run (mapping_proposal_id);
+
+-- Step 9: physical file arrival identity -- deliberately narrower than
+-- import_batch's own identity (which also includes worksheet, model,
+-- client, and config version: a distinct *unit of reviewable work*,
+-- not the same thing as "have I seen these exact bytes under this name
+-- before"). Conflating the two was a real design mistake caught before
+-- it was built: a plain existence check against import_batch is a
+-- check-then-act race across concurrent scanner instances or config
+-- reloads (two instances that loaded different config versions could
+-- both observe "no batch exists" and both call the model for the same
+-- physical file), and "any batch exists for this file" is also too
+-- broad on its own -- a batch that hit PROPOSING_ERROR without ever
+-- actually producing a proposal would be permanently skipped forever,
+-- undermining the exact recovery semantics Step 7.4 built on purpose
+-- for that status. A separate table with its own atomic claim
+-- (ON CONFLICT DO NOTHING for first discovery, a leased UPDATE for
+-- retries -- see InboxFileRepository) closes both gaps.
+CREATE TABLE inbox_file (
+    id                  BIGSERIAL PRIMARY KEY,
+    -- The dedupe identity -- deliberately the bare filename, not a full
+    -- path. original_path/current_path change (the file moves once
+    -- archived); logical_filename never does, so archiving can never
+    -- accidentally change what counts as "the same file arriving
+    -- again."
+    logical_filename    TEXT NOT NULL,
+    content_hash        TEXT NOT NULL,
+    original_path       TEXT NOT NULL,
+    -- Captured at arrival, from the parsed filename and resolved route
+    -- -- needed to build a collision-proof archive destination path
+    -- later without re-deriving them (feed_type/source_date in
+    -- particular aren't stored anywhere else; import_batch has
+    -- client_id but not these).
+    feed_type            TEXT,
+    client_id            TEXT,
+    source_date          DATE,
+    worksheet             TEXT,
+    -- Same as original_path until archived (Step 9's delivered-only
+    -- archiving pass, entirely separate from initial discovery).
+    current_path        TEXT NOT NULL,
+    -- NEW / PROCESSING / PROPOSAL_CREATED / RETRY_WAIT / QUARANTINED /
+    -- ARCHIVED. Informal, same reasoning as import_batch/
+    -- mapping_proposal's own status columns above.
+    status               TEXT NOT NULL DEFAULT 'NEW',
+    import_batch_id      BIGINT REFERENCES import_batch (id),
+    attempt_count         INTEGER NOT NULL DEFAULT 0,
+    last_error            TEXT,
+    -- Set while status = PROCESSING; a scanner instance that crashes
+    -- mid-claim leaves a row whose lease simply expires, reclaimable by
+    -- the next scan rather than stuck forever. Deliberately automatic
+    -- here -- unlike import_batch's own manual-only /recover-stuck
+    -- endpoints from Step 7.3 (a human reviewer's own work, recovered
+    -- by a human on purpose), inbox_file is a machine-only resource
+    -- with no reviewer in the loop to trigger recovery at all, a
+    -- genuinely different risk profile.
+    lease_until           TIMESTAMPTZ,
+    -- Set on a transient (retryable) failure -- when this is null, or
+    -- in the past, the row is eligible for a fresh claim attempt.
+    next_attempt_at       TIMESTAMPTZ,
+    archived_at           TIMESTAMPTZ,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (logical_filename, content_hash)
+);
+
+CREATE INDEX idx_inbox_file_status ON inbox_file (status);

@@ -3,3 +3,9 @@ client: metlife
 # 02/01/2026"), not a column -- this format applies to that extracted
 # text, same as it would to any date-typed column this client provided.
 dateFormat: MM/dd/yyyy
+
+feeds:
+  holdings:
+    modelId: Holdings
+    worksheetNames:
+      - Holdings

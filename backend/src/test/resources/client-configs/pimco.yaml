@@ -3,3 +3,14 @@ client: pimco
 # strings, not native Excel dates -- this is what resolves the ambiguity
 # without needing the parser (or the agent) to guess per file.
 dateFormat: MM/dd/yyyy
+
+# feedType "rate_reset" deliberately doesn't match either the model id
+# (MarketRateBookValue) or the worksheet name (RateReset) -- confirmed
+# against this project's own real fixture (rate_reset_pimco_20250501.xlsx)
+# that no simple string rule connects all three; that's exactly why this
+# route is explicit config, not inferred.
+feeds:
+  rate_reset:
+    modelId: MarketRateBookValue
+    worksheetNames:
+      - RateReset
