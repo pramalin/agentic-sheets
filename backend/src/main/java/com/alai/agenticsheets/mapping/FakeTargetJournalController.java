@@ -14,14 +14,29 @@ import java.util.List;
  * its own controller, conditional on the exact same property as the
  * journal bean itself, so this class (and every endpoint on it) simply
  * doesn't exist in a normal deployment's Spring context. A request to
- * {@code GET /internal/fake-target/{service}/requests} in that case
- * gets a plain 404 -- no matching handler at all, not a 401 from an
- * auth check that could itself have a bug. See
+ * {@code GET /internal/fake-target/_journal/{service}/requests} in
+ * that case gets a plain 404 -- no matching handler at all, not a 401
+ * from an auth check that could itself have a bug. See
  * {@code agentic-sheets.fake-target.journal-enabled} in
  * {@code compose.e2e.yaml}, the only place this is turned on.
+ *
+ * {@code /_journal} is a real fix for a real routing bug an external
+ * review caught, not decoration: this used to live directly under
+ * {@code /internal/fake-target}, meaning {@code POST
+ * /internal/fake-target/reset} -- meant to hit this controller's own
+ * {@code reset()} -- was only reachable when this controller's bean
+ * actually existed. When the property is unset, {@link
+ * FakeTargetController}'s {@code @PostMapping("/{service}")} is the
+ * *only* handler left registered for that shape of URL, and Spring
+ * happily matches it with {@code service = "reset"} instead of
+ * returning 404 -- the request gets silently treated as an ordinary
+ * fake-target delivery. A two-segment namespace under {@code
+ * /_journal} can never collide with the single-segment {@code
+ * /{service}} pattern, regardless of which beans happen to be
+ * registered.
  */
 @RestController
-@RequestMapping("/internal/fake-target")
+@RequestMapping("/internal/fake-target/_journal")
 @ConditionalOnProperty(name = "agentic-sheets.fake-target.journal-enabled", havingValue = "true")
 public class FakeTargetJournalController {
 

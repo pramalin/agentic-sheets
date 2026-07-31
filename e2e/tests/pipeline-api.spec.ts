@@ -45,7 +45,7 @@ test.describe("golden path: propose -> approve -> validate -> dispatch", () => {
     // step.
     const resetResponse = await llmsimApi.post("/_llmsim/reset");
     expect(resetResponse.ok(), "llmsim reset should succeed").toBeTruthy();
-    const fakeTargetResetResponse = await api.post("/internal/fake-target/reset");
+    const fakeTargetResetResponse = await api.post("/internal/fake-target/_journal/reset");
     expect(fakeTargetResetResponse.ok(), "fake-target reset should succeed").toBeTruthy();
 
     // 1. Propose
@@ -111,7 +111,7 @@ test.describe("golden path: propose -> approve -> validate -> dispatch", () => {
     // actual fix for the gap an external review correctly caught: the
     // test previously verified everything *up to* the delivery
     // boundary, but nothing that actually crossed it.
-    const fakeTargetRequestsResponse = await api.get("/internal/fake-target/holdings/requests");
+    const fakeTargetRequestsResponse = await api.get("/internal/fake-target/_journal/holdings/requests");
     const fakeTargetRequests = await fakeTargetRequestsResponse.json();
     expect(fakeTargetRequests.length, "fake-target should have received exactly one delivery").toBe(1);
 

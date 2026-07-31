@@ -103,6 +103,27 @@
         </dependency>
 
         <!--
+            Spring Boot 4.0 split test-slice support by web technology
+            into separate modular starters rather than bundling
+            everything into spring-boot-starter-test. @WebMvcTest
+            (used by FakeTargetRoutingTest) needs this explicitly now.
+            Confirmed as a real published artifact on Maven Central
+            before adding (org.springframework.boot:
+            spring-boot-starter-webmvc-test, present at 4.0.0, 4.0.1,
+            and the underlying spring-boot-webmvc-test module even at
+            4.1.0-M4). Not guessed at: a first attempt assumed
+            spring-boot-starter-test alone was still enough and failed
+            to compile. No explicit version needed, same as every
+            other Boot starter here; spring-boot-starter-parent above
+            manages it.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
             No spring-boot-testcontainers dependency here — it enables
             @ServiceConnection, which ProposalDecisionServiceTransactionalTest
             doesn't use (it builds its own HikariDataSource pointed at the

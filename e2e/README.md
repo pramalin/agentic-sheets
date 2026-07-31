@@ -283,8 +283,8 @@ checked `dispatch.outcome === SUCCESS` and `deliveryLog[0].statusCode
 delivery boundary -- a regression sending an empty array, wrong field
 values, or missing headers would report success identically. Fixed by
 adding a request journal to `FakeTargetController`
-(`POST /internal/fake-target/reset`,
-`GET /internal/fake-target/{service}/requests`) -- deliberately a full
+(`POST /internal/fake-target/_journal/reset`,
+`GET /internal/fake-target/_journal/{service}/requests`) -- deliberately a full
 list, not just "the most recent request" (the review's own suggested
 endpoint shape), matching `GET /_llmsim/calls`'s exact pattern instead:
 a list gives both "what was received" *and* "exactly how many times"
@@ -427,3 +427,93 @@ version claim in this project: `actions/upload-artifact` → `v7`, one
 major version newer than the `v6` the review itself suggested (both
 exist; verifying instead of trusting either specific number turned up
 the actually-current one).
+
+## A fourth external review, once the security fix itself was confirmed working
+
+CI run #26 passed clean -- backend tests, frontend checks, and the
+golden-path E2E job all green. The review's one remaining finding was a
+real routing bug the previous round's fix introduced without noticing:
+
+**Low: the disabled journal's `/reset` URL wasn't actually absent.**
+`FakeTargetJournalController`'s endpoints originally lived directly
+under `/internal/fake-target` -- meaning `POST
+/internal/fake-target/reset` was only reachable while that
+controller's bean existed. With the journal property unset,
+`FakeTargetController`'s `@PostMapping("/{service}")` was the *only*
+handler left registered for that URL shape, and Spring happily matched
+it with `service = "reset"` instead of returning 404 -- a request meant
+for a now-nonexistent endpoint would be silently treated as an ordinary
+fake-target delivery (harmlessly, since the absent journal means
+nothing gets recorded either way, but contradicting the documented "the
+endpoint doesn't exist" guarantee). Fixed by moving the journal under
+`/internal/fake-target/_journal` -- a two-segment namespace the
+single-segment `/{service}` pattern can never match, regardless of
+which beans happen to be registered, rather than depending on which
+controller happens to be present to keep the routes apart.
+
+Also added exactly what the review asked for: a real Spring MVC routing
+test (`FakeTargetRoutingTest`, `@WebMvcTest`), not more of
+`FakeTargetControllerTest`'s direct-object-construction style. The
+review was right to distinguish these -- the earlier unit tests
+verified `FakeTargetJournal`'s and `FakeTargetController`'s logic
+correctly, but none of them sent an actual HTTP request through a real
+`DispatcherServlet`, which is the only way this exact bug could ever
+have been caught. `FakeTargetRoutingTest` boots a real (sliced) Spring
+context with the journal property left unset -- matching a normal,
+non-E2E deployment -- and confirms both journal URLs return a genuine
+404, the old unnamespaced `/reset` URL is *not* silently treated as
+`service = "reset"`, and the ordinary receiver still works normally for
+real service names.
+
+### A real compile failure, from a stale package path -- fixed with evidence, not a guess
+
+`mvn -B test` failed outright: `package
+org.springframework.boot.test.autoconfigure.web.servlet does not
+exist`. That's `@WebMvcTest`'s package in Spring Boot 3.x -- this
+project runs Spring Boot 4.1.0, and Spring Boot 4.0 restructured its
+test-autoconfigure modules by web technology as part of a larger
+split (the same release that, elsewhere, renamed
+`spring-boot-starter-web` to `spring-boot-starter-webmvc` in some
+migration paths -- not needed here, since this project's own
+`spring-boot-starter-web` dependency was never the problem).
+`@WebMvcTest` itself moved to
+`org.springframework.boot.webmvc.test.autoconfigure` -- confirmed
+directly against the real Spring Boot 4.1.0 API docs before fixing,
+not inferred from the error message alone. The other MockMvc imports
+(`org.springframework.test.web.servlet.*`) are core Spring Framework,
+not Boot-specific auto-configuration, and weren't affected -- confirmed
+by the compiler only complaining about the one import, not those.
+
+A second real run, after fixing the import, hit a *different* compile
+error: the package genuinely didn't exist at all, confirming Spring
+Boot 4.0 had also split test-slice support into separate modular
+starters -- `spring-boot-starter-test` alone no longer bundles MVC
+test support. Added `org.springframework.boot:
+spring-boot-starter-webmvc-test`, confirmed as a real published Maven
+Central artifact (present at 4.0.0, 4.0.1, and the underlying
+`spring-boot-webmvc-test` module even at `4.1.0-M4`) before adding it,
+not guessed at a second time after the first miss. Caught and fixed a
+self-inflicted bug while making that edit: used `--` as a prose
+separator inside the new pom.xml comment, which is invalid XML (unlike
+every other comment style used throughout this project) -- comments
+can't contain `--` anywhere in their content, not just at the
+boundary. Found by actually parsing the file as XML before calling the
+fix done, not by eyeballing it.
+
+**The actual test run then surfaced a real flaw in the test's own
+premise, not a remaining bug in the fix.** `mvn test`: 82/83, one
+failure --
+`theOldUnnamespacedResetUrlIsNotSilentlyTreatedAsAServiceCalledReset`
+expected 404, got 400. The request *did* route to
+`FakeTargetController.receive()` as expected, but failed on a missing
+required request body before reaching any application logic --
+revealing that the test itself was asserting the wrong thing. Once the
+journal moved to `/_journal`, the plain `/internal/fake-target/reset`
+path has nothing left to collide with at all -- `service = "reset"` is
+now exactly as valid and unambiguous as any other service name, the
+same way a real deployment might genuinely have a client called
+"reset". Expecting 404 there was never correct once the actual fix
+(the namespace change) was in place; fixed by rewriting the test to
+assert what's actually true now -- an ordinary delivery to that URL
+succeeds like any other, confirming the namespace change resolved the
+ambiguity rather than just relocating it.
