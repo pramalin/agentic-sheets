@@ -9,3 +9,6 @@ dist/
 .bloop/
 metals.sbt
 .DS_Store
+e2e/compose-logs.txt
+e2e/playwright-report/
+e2e/test-results/

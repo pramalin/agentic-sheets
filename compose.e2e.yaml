@@ -1,0 +1,60 @@
+# E2E overlay -- applied on top of compose.yaml, never used alone:
+#   docker compose -p agentic-sheets-e2e -f compose.yaml -f compose.e2e.yaml up --build --wait
+#
+# -p agentic-sheets-e2e is load-bearing, not cosmetic: without a
+# distinct project name, this would reuse the same postgres-data volume
+# name as ordinary local development. Postgres only runs
+# db/init/*.sql against a *new* volume (docker-entrypoint-initdb.d
+# semantics) -- reusing a developer's existing volume would silently
+# skip schema initialization and make the E2E suite nondeterministic,
+# exactly the kind of "the volume already exists" trap this project's
+# own README has warned about repeatedly for ordinary local dev.
+#
+# -p alone does NOT isolate host port bindings, though -- a real live
+# collision this project actually hit: "5432 ... port is already
+# allocated" when an ordinary dev stack was running at the same time.
+# Distinct project names give separate containers/networks/volumes, but
+# `ports: "5432:5432"` still tries to bind the literal host port
+# regardless of project name. run-golden-path.sh sets POSTGRES_PORT and
+# AGENTIC_SHEETS_BACKEND_PORT to e2e-specific values before invoking
+# Compose, reusing the exact env-var-interpolation mechanism
+# compose.yaml's postgres service already used successfully (and which
+# backend's port mapping is now parametrized to support too, matching
+# that same pattern) -- deliberately not relying on override-file
+# list-merge semantics for `ports`, which aren't certain enough to bet
+# a port collision fix on. llmsim is a brand-new service with no base-
+# file definition to merge against, so its port here is just a plain,
+# distinct value with no such ambiguity.
+#
+# Compose merges `environment` and `depends_on` (the map-with-condition
+# form) by key across -f files -- this overlay only needs to state what
+# it's adding or overriding, not repeat everything already in
+# compose.yaml's backend service.
+services:
+  llmsim:
+    build: ./e2e/llmsim
+    ports:
+      - "18089:8089"
+
+  backend:
+    environment:
+      # Overrides compose.yaml's OPENAI_API_KEY -- llmsim never checks
+      # this value, but Spring AI's OpenAI client still requires
+      # *something* non-empty configured.
+      - OPENAI_API_KEY=unused
+      # OpenAI's base-url needs the /v1 suffix -- Spring AI appends
+      # /chat/completions to whatever base URL is configured, so
+      # without it this would 404 against llmsim's actual route
+      # (/v1/chat/completions), not the shorter path a first guess
+      # might assume.
+      - SPRING_AI_OPENAI_BASE_URL=http://llmsim:8089/v1
+      # Fixed, not whatever a developer's local .env happens to have --
+      # a real first run of this suite failed with a 401 because the
+      # test's own default key ("e2e-test-key") didn't match
+      # AGENTIC_SHEETS_API_KEY from .env (dev-local-secret). The E2E
+      # environment shouldn't depend on a developer-specific dev secret
+      # at all; matches pipeline-api.spec.ts's own E2E_API_KEY default.
+      - AGENTIC_SHEETS_API_KEY=e2e-test-key
+    depends_on:
+      llmsim:
+        condition: service_started

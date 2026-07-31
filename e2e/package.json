@@ -1,0 +1,14 @@
+{
+  "name": "agentic-sheets-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:golden-path": "playwright test tests/pipeline-api.spec.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^24.13.2",
+    "typescript": "^5.9.3"
+  }
+}

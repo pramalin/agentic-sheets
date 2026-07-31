@@ -428,6 +428,38 @@ network, and don't ship the `.env.example` default secret anywhere real.
       including what's deliberately deferred (a confirmation-gate
       modal, full responsive redesign, automated frontend tests, and
       more) with reasoning for each.
+- [ ] **Step 8d** — End-to-end regression testing, paused for
+      deliberately before Step 9: every verification of this project's
+      actual working behavior so far has depended on a human running
+      curl or clicking through the app by hand, which isn't regression
+      protection against a future change quietly breaking something
+      that already worked. **Checkpoint A: done and confirmed** — a
+      black-box golden-path test — real backend container, real
+      Postgres, real sheets-reader-mcp,
+      [llmsim](https://github.com/pramalin/llmsim) standing in for the
+      one genuinely nondeterministic dependency (a real model call),
+      real validator and dispatcher — driving `/propose` through
+      delivery and asserting business results (actual field mappings,
+      validation row counts, delivery outcome, exactly one model call),
+      not just terminal status. Four real runs against this project's
+      own machine found and fixed three genuine bugs (a host-port
+      collision `-p` project isolation alone didn't cover, an API key
+      never wired to match between the test and the backend, a
+      working-directory bug in the cleanup trap, and a stale hardcoded
+      model string in the test itself — this project's own
+      `application.yml` had already decided never to pin one, for
+      exactly the reason the test then ran into) before the fourth run
+      came back clean: `1 passed (3.6s)`, confirming **the entire
+      pipeline — propose through delivery — actually works end to
+      end**, on a real machine, not just internally verified. Also
+      added: CI now
+      builds/lints the frontend at all (previously only `mvn test`
+      ran). See `e2e/README.md` for the full round-by-round history —
+      preserved in full, not overwritten, matching how
+      `mapping-notes.md` keeps every hardening round's history rather
+      than just the current end state — and Checkpoint B's plan (two
+      Playwright browser journeys: an
+      approval flow and the Step 8c wrong-key-recovery path).
 - [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
       (same filename + same hash → skip; same filename + different hash
       → new batch), filename parsing

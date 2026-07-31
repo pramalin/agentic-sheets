@@ -45,7 +45,7 @@ services:
   backend:
     build: ./backend
     ports:
-      - "8081:8081"
+      - "${AGENTIC_SHEETS_BACKEND_PORT:-8081}:8081"
     environment:
       - AGENTIC_SHEETS_DB_HOST=postgres
       - AGENTIC_SHEETS_DB_PORT=5432
