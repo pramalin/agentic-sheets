@@ -517,3 +517,35 @@ same way a real deployment might genuinely have a client called
 assert what's actually true now -- an ordinary delivery to that URL
 succeeds like any other, confirming the namespace change resolved the
 ambiguity rather than just relocating it.
+
+## Checkpoint A: closed
+
+A sixth review round, against `mvn test` 83/83 and CI run #27 green
+end to end, found nothing further -- confirmed the route separation,
+the disabled-state routing test, and the enabled-state E2E behavior
+all resolve the original finding correctly, with the reviewer's own
+words: *"I consider the Step 8 E2E golden path complete at this
+point."*
+
+Six rounds, six real bugs, every one of them found only by actually
+running something -- never by static review alone, though review was
+consistently what pointed at *where* to look. Worth the full list in
+one place, since it's genuinely the point of this whole initiative:
+
+1. A host-port collision `-p` project isolation alone didn't cover
+   (containers/networks/volumes were isolated; literal host ports
+   weren't).
+2. An API key the test and the backend were never actually wired to
+   agree on.
+3. A working-directory bug in the cleanup trap that broke diagnostics
+   on failure specifically.
+4. A stale hardcoded model string in the test itself, violating a
+   principle this codebase had already deliberately established.
+5. An unauthenticated, unbounded journal that would have been a real
+   exposure outside the isolated E2E environment it was built for.
+6. A routing collision where a disabled journal's URL silently fell
+   through to the ordinary receiver instead of 404ing.
+
+Checkpoint B (two Playwright browser journeys -- an approval flow and
+the Step 8c wrong-key-recovery path) is next, whenever that's picked
+up. Not started yet; no code exists for it.

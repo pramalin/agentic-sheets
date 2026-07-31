@@ -428,58 +428,38 @@ network, and don't ship the `.env.example` default secret anywhere real.
       including what's deliberately deferred (a confirmation-gate
       modal, full responsive redesign, automated frontend tests, and
       more) with reasoning for each.
-- [ ] **Step 8d** — End-to-end regression testing, paused for
-      deliberately before Step 9: every verification of this project's
-      actual working behavior so far has depended on a human running
+- [x] **Step 8d** — End-to-end regression testing, done deliberately
+      before Step 9: every verification of this project's actual
+      working behavior up to this point had depended on a human running
       curl or clicking through the app by hand, which isn't regression
       protection against a future change quietly breaking something
-      that already worked. **Checkpoint A: done and confirmed** — a
-      black-box golden-path test — real backend container, real
-      Postgres, real sheets-reader-mcp,
+      that already worked. **Checkpoint A (the golden-path test):
+      done, confirmed, and closed out.** A black-box test — real
+      backend container, real Postgres, real sheets-reader-mcp,
       [llmsim](https://github.com/pramalin/llmsim) standing in for the
-      one genuinely nondeterministic dependency (a real model call),
-      real validator and dispatcher — driving `/propose` through
-      delivery and asserting business results (actual field mappings,
-      validation row counts, delivery outcome, exactly one model call),
-      not just terminal status. Four real runs against this project's
-      own machine found and fixed three genuine bugs (a host-port
-      collision `-p` project isolation alone didn't cover, an API key
-      never wired to match between the test and the backend, a
-      working-directory bug in the cleanup trap, and a stale hardcoded
-      model string in the test itself — this project's own
-      `application.yml` had already decided never to pin one, for
-      exactly the reason the test then ran into) before the fourth run
-      came back clean: `1 passed (3.6s)`, confirming **the entire
-      pipeline — propose through delivery — actually works end to
-      end**, on a real machine, not just internally verified. A second
-      external review then found a real gap even in that confirmed-
-      passing test: it never verified the payload that actually crossed
-      the delivery boundary, only that dispatch reported success —
-      `FakeTargetController` accepted any body and stored nothing.
-      Fixed with a request journal mirroring llmsim's own
-      `GET /_llmsim/calls` pattern exactly (a full list, not just "the
-      most recent request" — gives both content *and* count as one
-      assertion). That fix had a real bug of its own, found the same
-      way every other bug in this initiative was found — an actual
-      execution: HTTP headers are case-insensitive by protocol, but the
-      capture logic did an exact-string lookup against Dispatcher's
-      real mixed-case header names. Fixed properly (case-insensitive
-      matching, not a casing guess), locked in with a new
-      `FakeTargetControllerTest`, and reconfirmed passing:
-      `mvn test` 77/77, `run-golden-path.sh` `1 passed (3.4s)`. Also
-      pinned `sheets-reader-mcp` in CI to a verified real commit,
-      made concurrent E2E runs safe (unique project name, overridable
-      ports), and bumped three GitHub Actions to their real current
-      major versions (all verified directly via `git ls-remote`, not
-      assumed). Also
-      added: CI now
-      builds/lints the frontend at all (previously only `mvn test`
-      ran). See `e2e/README.md` for the full round-by-round history —
-      preserved in full, not overwritten, matching how
-      `mapping-notes.md` keeps every hardening round's history rather
-      than just the current end state — and Checkpoint B's plan (two
-      Playwright browser journeys: an
-      approval flow and the Step 8c wrong-key-recovery path).
+      one genuinely nondeterministic dependency, real validator and
+      dispatcher, a request journal on the fake-target mirroring
+      llmsim's own — drives `/propose` through delivery and asserts
+      real business results (actual delivered payload, headers, row
+      counts, representative field values, durable database state,
+      exactly one model call), not just terminal status. Six rounds of
+      external review and real execution against this project's own
+      machine found and fixed six genuine bugs along the way — a
+      host-port collision, an unwired API key, a working-directory bug
+      in the cleanup trap, a stale hardcoded model string, an
+      unauthenticated/unbounded journal exposure, and a routing
+      collision between the journal and the receiver — every one of
+      them a class of problem only an actual execution surfaced, never
+      something static review alone caught first. Final state,
+      confirmed clean: `mvn test` 83/83, CI green end to end (backend,
+      frontend, and the E2E job all passing), an external reviewer's
+      own words: *"I consider the Step 8 E2E golden path complete at
+      this point."* See `e2e/README.md` for the complete round-by-round
+      history, preserved in full rather than overwritten (matching how
+      `mapping-notes.md` keeps every hardening round's history), and
+      for Checkpoint B's plan (two Playwright browser journeys: an
+      approval flow and the Step 8c wrong-key-recovery path) — not yet
+      started.
 - [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
       (same filename + same hash → skip; same filename + different hash
       → new batch), filename parsing
