@@ -90,3 +90,90 @@ the UI is embedded or integrated:
   not the multi-tenant/multi-IDP complexity the deferred list still
   describes, since that only applies once there are actual adopters
   other than whoever runs agentic-sheets itself.
+
+## Step 8b, first pass: scaffold, design system, review queue
+
+Split into a first pass (this) and a follow-up (the actual review
+screen), same reasoning as Step 8a's own split -- the review screen is
+substantial enough to deserve its own focused pass rather than being
+rushed alongside project setup.
+
+**Real verification, unlike most of this project's backend work.**
+`npm`/`npmjs.org` are in this environment's network allowlist, unlike
+Maven Central -- so unlike the many rounds of backend code that could
+only be verified by the person running `mvn test` and reporting back
+(sometimes after a real mistake shipped), `npm run build` and `npm run
+lint` both actually ran here and passed before anything was presented.
+Worth naming as a genuine difference in how confidently this part of
+the project can be checked, not just a footnote.
+
+**The design system reuses the architecture diagram's palette
+directly**, not a new choice -- deep navy base, orange for "needs a
+human decision," teal for "deterministic / settled," red for "failed."
+The status-pill component is the one place this becomes a real,
+consistent visual language throughout the tool rather than a one-off
+color choice on the diagram. Typography: a serif for headers (matching
+the diagram's own title treatment), sans for UI/data density, mono for
+IDs and technical values.
+
+**The review queue needed a real backend addition, found while
+actually building against it.** `StoredMappingProposal` alone --
+proposal ID, batch ID, status -- isn't enough to build a queue a
+reviewer could use: no client, no filename, nothing to say what a
+proposal is even for. Added `ProposalQueueEntry` and
+`MappingProposalRepository.findQueueEntries` (a join with
+`import_batch`), and changed `GET /proposals`'s response shape to
+match. Worth naming as a pattern, not just this one instance: building
+the actual UI against the actual API is revealing real gaps a
+backend-only conversation about "what fields does this need" would
+likely have missed or guessed wrong about.
+
+**Auth is a simple gate, not a login.** A single shared secret (see
+Step 8a's `ApiKeyAuthFilter`), entered once and stored in the browser's
+own localStorage -- appropriate here in a way it wouldn't be for a
+claude.ai artifact (this is a real deployed app running in the
+reviewer's own browser, not code executing inside Claude's own
+sandboxed environment). No username, no session; a wrong or expired key
+just surfaces as every API call failing with a clear 401, which the
+queue page's error state calls out directly rather than a bare
+"something went wrong."
+
+### What's built vs. what's next
+
+Built, first pass: project scaffold, design tokens, `StatusPill`, the
+API client (typed against the backend's real JSON shapes, verified
+against the actual Java records rather than guessed), the review queue
+page, and routing through to a proposal's detail data.
+
+Built, second pass: the actual review screen --
+`FieldMappingTable`/`ConfidenceBar` (source column/constant, variant
+resolution, transformations, and confidence for every proposed field),
+working approve/reject through `ReviewActions` (with a persisted
+"reviewed by" name and a reason field for rejection), a retry-delivery
+action for a batch stuck at `DELIVERY_FAILED`/`PROCESSING_ERROR`, and
+`ValidationHistory`/`DeliveryHistory` rendering the durable history Step
+8a's backend work added.
+
+**Deliberately deferred, and why**: showing the source spreadsheet's
+actual columns and sample values next to the proposed mapping -- the
+layout this document called the right structural choice from the start.
+That data comes from `/internal/explore/table`, which returns a raw,
+untyped `JsonNode` on the backend (see `SpreadsheetExplorerController`)
+rather than a fixed Java record -- there's nothing to verify the exact
+response shape against the way every other type in this frontend was
+verified against a real `record`. Traced through the one place the
+backend itself actually parses this response
+(`MappingProposalService.extractColumnHeaders`) and confirmed
+`columns[].header` is real, but the type/sample fields a genuinely
+useful side-by-side view would need aren't confirmed. Given this
+project's repeated cost of guessing at unfamiliar shapes, built what's
+fully verified (the proposal side) rather than the row-by-row samples,
+and left this named as the next concrete piece rather than quietly
+dropped.
+
+Also still not built: "edit" (the third verb in "approve/edit/reject")
+-- still no backend endpoint for a human correcting a proposed mapping
+before approving. The shape for that is clearer now that a real review
+screen exists to design against (most likely: an editable version of
+`FieldMappingTable`'s rows, submitted as a new proposal via a
+not-yet-built endpoint), but still not decided or built.

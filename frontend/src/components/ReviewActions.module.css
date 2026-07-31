@@ -1,0 +1,104 @@
+.panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: var(--space-4);
+}
+
+.reviewerRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.reviewerInput {
+  flex: 1;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.buttonRow {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.approveButton {
+  flex: 1;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--accent-success-border);
+  background: var(--accent-success-bg);
+  color: var(--accent-success);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.approveButton:hover {
+  filter: brightness(1.2);
+}
+
+.approveButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rejectButton {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.rejectButton:hover {
+  border-color: var(--accent-danger-border);
+  color: var(--accent-danger);
+}
+
+.reasonInput {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-primary);
+  font-size: 13px;
+  margin-bottom: var(--space-3);
+  box-sizing: border-box;
+}
+
+.errorBox {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--accent-danger-bg);
+  border: 1px solid var(--accent-danger-border);
+  color: var(--accent-danger);
+  font-size: 13px;
+}
+
+.resultBox {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--accent-info-bg);
+  border: 1px solid var(--accent-info-border);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.decidedNote {
+  color: var(--text-secondary);
+  font-size: 13px;
+}

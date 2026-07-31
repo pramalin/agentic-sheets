@@ -155,15 +155,17 @@ public class MappingController {
     }
 
     /**
-     * The Step 8 review queue -- most recent first. {@code status}
-     * narrows to one status (typically {@code PENDING}, "what needs
-     * review right now"); omit it for a broader history view.
+     * The Step 8 review queue -- most recent first, joined with batch
+     * context (client, file, worksheet) so it's actually usable, not
+     * just a list of proposal IDs. {@code status} narrows to one status
+     * (typically {@code PENDING}, "what needs review right now"); omit
+     * it for a broader history view.
      */
     @GetMapping("/proposals")
-    public List<StoredMappingProposal> list(
+    public List<ProposalQueueEntry> list(
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "50") int limit) {
-        return mappingProposalRepository.findAll(status, limit);
+        return mappingProposalRepository.findQueueEntries(status, limit);
     }
 
     /**

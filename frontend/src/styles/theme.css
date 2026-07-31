@@ -1,0 +1,67 @@
+/**
+ * Design tokens for agentic-sheets' review UI.
+ *
+ * The palette is deliberately not a new choice -- it's lifted directly
+ * from docs/images/agentic-sheets-drift-resilient-architecture.svg,
+ * this project's own architecture diagram: deep navy base, orange for
+ * "needs a human decision," teal for "deterministic / settled," red for
+ * "failed." Reusing it here means the review screen and the docs read
+ * as the same product, not a generic admin-panel template bolted onto
+ * a separately-designed diagram.
+ */
+
+:root {
+  /* Surfaces */
+  --bg: #0b1324;
+  --bg-elevated: #101a2e;
+  --surface: #111b31;
+  --surface-hover: #16233d;
+  --border: #2d3b5d;
+  --border-subtle: #202c47;
+
+  /* Text */
+  --text-primary: #eaf0fa;
+  --text-secondary: #a9b5ca;
+  --text-muted: #6b7690;
+
+  /* Status language -- matches the diagram exactly */
+  --accent-pending: #f1a52b;
+  --accent-pending-bg: #3a2a10;
+  --accent-pending-border: #6b4c1a;
+
+  --accent-success: #38c6a2;
+  --accent-success-bg: #0f3a34;
+  --accent-success-border: #1f6d5c;
+
+  --accent-danger: #e9857b;
+  --accent-danger-bg: #3a1f1c;
+  --accent-danger-border: #7a3a34;
+
+  --accent-info: #4a90e2;
+  --accent-info-bg: #12233f;
+  --accent-info-border: #2a4f7a;
+
+  --accent-neutral: #8b96ad;
+  --accent-neutral-bg: #1a2540;
+  --accent-neutral-border: #35466d;
+
+  /* Type */
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, monospace;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-8: 48px;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+}

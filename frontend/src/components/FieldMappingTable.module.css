@@ -1,0 +1,102 @@
+.table {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.headerRow {
+  display: grid;
+  grid-template-columns: 1fr 1.3fr 110px;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1.3fr 110px;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  align-items: start;
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.fieldPath {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.sourceKind {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.sourceValue {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.variantMap {
+  margin-top: var(--space-2);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.variantMapRow {
+  font-family: var(--font-mono);
+  display: flex;
+  gap: 6px;
+}
+
+.notes {
+  margin-top: var(--space-2);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.transformBadge {
+  display: inline-block;
+  margin-top: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-info);
+  background: var(--accent-info-bg);
+  border: 1px solid var(--accent-info-border);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+}
+
+.unmapped {
+  padding: var(--space-4);
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.unmapped strong {
+  color: var(--text-primary);
+}
+
+.unmappedList {
+  font-family: var(--font-mono);
+  margin-top: var(--space-1);
+}

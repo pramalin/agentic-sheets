@@ -72,7 +72,8 @@ below.
 ## Repository layout
 
 ```
-compose.yaml         Postgres, sheets-mcp, backend; frontend service arrives at Step 8
+compose.yaml         Postgres, sheets-mcp, backend; no frontend service yet -- `npm run dev` is how Step 8b's UI runs for now (see frontend/README.md), a real Docker/nginx service is deferred until the UI itself is further along
+frontend/                     Step 8b's review UI (React + TypeScript + Vite) -- see frontend/README.md
 docs/images/                  Architecture diagram(s) referenced from this README
 .env.example                 Postgres credentials -- copy to .env
 db/init/                      Plain SQL orchestration schema (Step 4)
@@ -169,6 +170,22 @@ cleanly; there's nothing in it worth keeping at this stage) or apply the
 current `db/init/01-orchestration-schema.sql` to the running container
 by hand.
 
+### Running the review UI (Step 8b)
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Needs the backend already running (above). Open the URL Vite prints
+(typically `http://localhost:5173`), enter the same value as
+`AGENTIC_SHEETS_API_KEY` when prompted. Review queue and the review
+screen (approve/reject, retry-delivery, validation/delivery history)
+both work end to end; source-column samples next to the proposed
+mapping are the one deliberately deferred piece — see
+`frontend/README.md` for exact status.
+
 ## API endpoints (internal, for now)
 
 Every `/internal/**` endpoint except `/internal/fake-target/**` requires
@@ -193,7 +210,7 @@ network, and don't ship the `.env.example` default secret anywhere real.
 | `/internal/explore/table?path=&worksheet=` | GET | `describe_table` — headers, inferred types, samples |
 | `/internal/explore/rows?path=&worksheet=&offset=&limit=` | GET | `read_rows` — paginated row data |
 | `/internal/mapping/propose?modelId=&clientId=&path=&worksheet=` | POST | Runs the mapping agent; creates/reuses an `import_batch`, persists a `mapping_proposal` |
-| `/internal/mapping/proposals?status=&limit=` | GET | The review queue — most recent first, optionally filtered by status |
+| `/internal/mapping/proposals?status=&limit=` | GET | The review queue — most recent first, optionally filtered by status. Joined with batch context (client, file, worksheet) as of Step 8b, since a bare proposal ID isn't enough to build a usable queue view from |
 | `/internal/mapping/proposals/{id}` | GET | One proposal's full detail: the proposal, its batch, every validation run, every delivery attempt |
 | `/internal/mapping/proposals/{id}/approve?reviewedBy=` | POST | Approves a pending proposal (atomically claimed), validates it against the ADT, dispatches valid rows |
 | `/internal/mapping/proposals/{id}/reject?reviewedBy=&reason=` | POST | Rejects a pending proposal (atomically claimed) |
@@ -356,12 +373,32 @@ network, and don't ship the `.env.example` default secret anywhere real.
       spreadsheets into canonical data, and a genuinely reusable,
       embeddable review widget is better scoped as its own separate
       project later, built against this project's REST API from the
-      outside. Queue, review screen (source columns + samples + proposed
-      field + confidence, editable), approve/edit/reject, plus a
-      delivery-status view for Step 7's outcomes, all against the API
-      Step 8a now provides. See `ui-notes.md` for the full reasoning,
-      including what's deferred to the eventual separate
-      embeddable-widget project rather than dropped entirely.
+      outside. First pass done: project scaffold (Vite + React +
+      TypeScript, real build verified — `npm run build` and `npm run
+      lint` both actually run and pass, unlike most of this project's
+      backend work which could only be verified by the person running
+      `mvn test` themselves), the design system (palette drawn directly
+      from `docs/images/agentic-sheets-drift-resilient-architecture.svg`
+      for real visual consistency with the docs), API-key auth matching
+      `ApiKeyAuthFilter`, and the review queue itself — which needed a
+      small, well-motivated backend addition
+      (`MappingProposalRepository.findQueueEntries`, joining
+      `import_batch` so the queue shows what a proposal is actually
+      for, not a bare ID). Second pass done: the actual review screen
+      — proposed field mappings with per-field confidence (source
+      column/constant, variant resolution, transformations all shown),
+      working approve/reject (with a reason field for rejection), a
+      retry-delivery action for a batch stuck at `DELIVERY_FAILED`/
+      `PROCESSING_ERROR`, and validation/delivery history rendered
+      usefully rather than as raw JSON. **Still not built**: source
+      spreadsheet columns and sample values shown next to the proposed
+      mapping — deliberately deferred, since that data comes from an
+      untyped `JsonNode` endpoint with no fixed Java record to verify
+      the exact shape against, unlike everything else this frontend
+      talks to (see `ui-notes.md`'s Step 8b section for the full
+      reasoning). "Edit" (the third verb in "approve/edit/reject")
+      also still has no backend endpoint. See `frontend/README.md` for
+      current status.
 - [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
       (same filename + same hash → skip; same filename + different hash
       → new batch), filename parsing

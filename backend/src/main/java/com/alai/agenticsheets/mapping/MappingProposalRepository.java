@@ -75,6 +75,40 @@ public class MappingProposalRepository {
                 this::mapRow, limit);
     }
 
+    /**
+     * Same listing as {@link #findAll}, joined with {@code import_batch}
+     * for the fields a review queue actually needs to be usable --
+     * which client, which file, which worksheet -- rather than the bare
+     * IDs {@link StoredMappingProposal} carries. Added once building the
+     * actual Step 8b queue view made clear that a list of opaque
+     * proposal IDs isn't something a reviewer can do anything with.
+     */
+    public List<ProposalQueueEntry> findQueueEntries(String statusFilter, int limit) {
+        String sql = "SELECT p.id, p.import_batch_id, p.status, p.created_at, "
+                + "b.model_id, b.client_id, b.source_filename, b.worksheet "
+                + "FROM mapping_proposal p JOIN import_batch b ON b.id = p.import_batch_id ";
+        if (statusFilter != null) {
+            return jdbcTemplate.query(
+                    sql + "WHERE p.status = ? ORDER BY p.created_at DESC LIMIT ?",
+                    this::mapQueueEntryRow, statusFilter, limit);
+        }
+        return jdbcTemplate.query(
+                sql + "ORDER BY p.created_at DESC LIMIT ?",
+                this::mapQueueEntryRow, limit);
+    }
+
+    private ProposalQueueEntry mapQueueEntryRow(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
+        return new ProposalQueueEntry(
+                rs.getLong("id"),
+                rs.getLong("import_batch_id"),
+                rs.getString("status"),
+                rs.getString("model_id"),
+                rs.getString("client_id"),
+                rs.getString("source_filename"),
+                rs.getString("worksheet"),
+                rs.getObject("created_at", java.time.OffsetDateTime.class));
+    }
+
     private StoredMappingProposal mapRow(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
         return new StoredMappingProposal(
                 rs.getLong("id"),

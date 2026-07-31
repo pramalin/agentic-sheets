@@ -1,0 +1,138 @@
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5) var(--space-8);
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+  flex-wrap: wrap;
+}
+
+.title {
+  font-size: 26px;
+}
+
+.subtitle {
+  color: var(--text-secondary);
+  margin-top: var(--space-1);
+  font-size: 14px;
+}
+
+.filters {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.filterButton {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: var(--radius-pill);
+  padding: var(--space-2) var(--space-4);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.filterButton:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.filterButtonActive {
+  composes: filterButton;
+  background: var(--accent-pending-bg);
+  border-color: var(--accent-pending-border);
+  color: var(--accent-pending);
+}
+
+.list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 130px 1fr 1fr 110px 130px;
+  gap: var(--space-4);
+  align-items: center;
+  padding: var(--space-4) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  text-decoration: none;
+  color: inherit;
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.row:hover {
+  background: var(--surface-hover);
+}
+
+.rowHeader {
+  composes: row;
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.rowHeader:hover {
+  background: none;
+}
+
+.client {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.file {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.created {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: right;
+}
+
+.emptyState,
+.errorState,
+.loadingState {
+  padding: var(--space-8) var(--space-5);
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.emptyStateTitle {
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 700;
+  margin-bottom: var(--space-2);
+}
+
+.errorState {
+  color: var(--accent-danger);
+}
