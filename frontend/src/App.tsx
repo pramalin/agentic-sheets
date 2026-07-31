@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Link } from "react-router-dom";
 import { ApiKeyGate } from "./components/ApiKeyGate";
+import { SettingsMenu } from "./components/SettingsMenu";
 import { QueuePage } from "./pages/QueuePage";
 import { ProposalDetailPage } from "./pages/ProposalDetailPage";
 
@@ -16,11 +17,14 @@ export function App() {
           style={{
             borderBottom: "1px solid var(--border)",
             padding: "14px 24px",
+            display: "flex",
+            alignItems: "center",
           }}
         >
           <Link to="/" style={{ fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 700, textDecoration: "none" }}>
             agentic-sheets
           </Link>
+          <SettingsMenu />
         </header>
         <Routes>
           <Route path="/" element={<QueuePage />} />

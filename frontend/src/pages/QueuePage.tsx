@@ -6,13 +6,31 @@ import { StatusPill } from "../components/StatusPill";
 import { relativeTime } from "../utils/format";
 import styles from "./QueuePage.module.css";
 
-const FILTERS: { label: string; status: string | undefined }[] = [
-  { label: "Needs review", status: "PENDING" },
-  { label: "All", status: undefined },
+/** Statuses that mean "something needs a person's attention" -- distinct
+  * from PENDING ("needs a first decision"): these are proposals or
+  * batches that already had a decision or attempt and didn't land
+  * cleanly. An external review correctly pointed out this is likely
+  * more operationally useful than "All" once a queue has real history
+  * in it, since it surfaces exactly what a person can actually act on
+  * (retry, re-propose, or investigate) rather than everything ever
+  * decided. */
+const NEEDS_ATTENTION_STATUSES = [
+  "PROPOSING_ERROR",
+  "VALIDATION_FAILED",
+  "PROCESSING_ERROR",
+  "DELIVERY_FAILED",
+  "SOURCE_CHANGED",
+  "CONFIG_CHANGED",
+];
+
+const FILTERS: { label: string; statuses: string[] | undefined }[] = [
+  { label: "Needs review", statuses: ["PENDING"] },
+  { label: "Needs attention", statuses: NEEDS_ATTENTION_STATUSES },
+  { label: "All", statuses: undefined },
 ];
 
 export function QueuePage() {
-  const [filter, setFilter] = useState<string | undefined>("PENDING");
+  const [filter, setFilter] = useState(FILTERS[0]);
   const [entries, setEntries] = useState<ProposalQueueEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,7 +38,7 @@ export function QueuePage() {
     let cancelled = false;
     setEntries(null);
     setError(null);
-    listProposals(filter)
+    listProposals(filter.statuses)
       .then((result) => {
         if (!cancelled) setEntries(result);
       })
@@ -44,8 +62,8 @@ export function QueuePage() {
           {FILTERS.map((f) => (
             <button
               key={f.label}
-              className={filter === f.status ? styles.filterButtonActive : styles.filterButton}
-              onClick={() => setFilter(f.status)}
+              className={filter.label === f.label ? styles.filterButtonActive : styles.filterButton}
+              onClick={() => setFilter(f)}
             >
               {f.label}
             </button>
@@ -53,13 +71,13 @@ export function QueuePage() {
         </div>
       </div>
 
-      <div className={styles.list}>
-        <div className={styles.rowHeader}>
-          <span>Status</span>
-          <span>Client</span>
-          <span>File</span>
-          <span>Model</span>
-          <span style={{ textAlign: "right" }}>Proposed</span>
+      <div className={styles.list} role="table" aria-label="Review queue">
+        <div className={styles.rowHeader} role="row">
+          <span role="columnheader">Status</span>
+          <span role="columnheader">Client</span>
+          <span role="columnheader">File</span>
+          <span role="columnheader">Model</span>
+          <span role="columnheader" style={{ textAlign: "right" }}>Proposed</span>
         </div>
 
         {error && (
@@ -78,25 +96,33 @@ export function QueuePage() {
         {!error && entries !== null && entries.length === 0 && (
           <div className={styles.emptyState}>
             <div className={styles.emptyStateTitle}>
-              {filter === "PENDING" ? "Nothing waiting for review" : "No proposals yet"}
+              {filter.label === "Needs review"
+                ? "Nothing waiting for review"
+                : filter.label === "Needs attention"
+                  ? "Nothing needs attention"
+                  : "No proposals yet"}
             </div>
-            {filter === "PENDING"
+            {filter.label === "Needs review"
               ? "Every proposed mapping has been approved or rejected. New spreadsheets will show up here once proposed."
-              : "Proposals appear here once a spreadsheet has been submitted for mapping."}
+              : filter.label === "Needs attention"
+                ? "No failed validations, failed deliveries, or drift-related states right now."
+                : "Proposals appear here once a spreadsheet has been submitted for mapping."}
           </div>
         )}
 
         {!error &&
           entries !== null &&
           entries.map((entry) => (
-            <Link key={entry.id} to={`/proposals/${entry.id}`} className={styles.row}>
-              <StatusPill status={entry.status} />
-              <span className={styles.client}>{entry.clientId}</span>
-              <span className={styles.file} title={`${entry.sourceFilename} · ${entry.worksheet}`}>
+            <Link key={entry.id} to={`/proposals/${entry.id}`} className={styles.row} role="row">
+              <span role="cell">
+                <StatusPill status={entry.status} />
+              </span>
+              <span role="cell" className={styles.client}>{entry.clientId}</span>
+              <span role="cell" className={styles.file} title={`${entry.sourceFilename} · ${entry.worksheet}`}>
                 {entry.sourceFilename} · {entry.worksheet}
               </span>
-              <span className={styles.model}>{entry.modelId}</span>
-              <span className={styles.created}>{relativeTime(entry.createdAt)}</span>
+              <span role="cell" className={styles.model}>{entry.modelId}</span>
+              <span role="cell" className={styles.created}>{relativeTime(entry.createdAt)}</span>
             </Link>
           ))}
       </div>

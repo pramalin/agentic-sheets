@@ -210,7 +210,7 @@ network, and don't ship the `.env.example` default secret anywhere real.
 | `/internal/explore/table?path=&worksheet=` | GET | `describe_table` — headers, inferred types, samples |
 | `/internal/explore/rows?path=&worksheet=&offset=&limit=` | GET | `read_rows` — paginated row data |
 | `/internal/mapping/propose?modelId=&clientId=&path=&worksheet=` | POST | Runs the mapping agent; creates/reuses an `import_batch`, persists a `mapping_proposal` |
-| `/internal/mapping/proposals?status=&limit=` | GET | The review queue — most recent first, optionally filtered by status. Joined with batch context (client, file, worksheet) as of Step 8b, since a bare proposal ID isn't enough to build a usable queue view from |
+| `/internal/mapping/proposals?status=&limit=` | GET | The review queue — most recent first, optionally filtered by status (repeat `status=` for several at once, e.g. the UI's "Needs attention" filter). Joined with batch context (client, file, worksheet) as of Step 8b, since a bare proposal ID isn't enough to build a usable queue view from |
 | `/internal/mapping/proposals/{id}` | GET | One proposal's full detail: the proposal, its batch, every validation run, every delivery attempt |
 | `/internal/mapping/proposals/{id}/approve?reviewedBy=` | POST | Approves a pending proposal (atomically claimed), validates it against the ADT, dispatches valid rows |
 | `/internal/mapping/proposals/{id}/reject?reviewedBy=&reason=` | POST | Rejects a pending proposal (atomically claimed) |
@@ -407,6 +407,27 @@ network, and don't ship the `.env.example` default secret anywhere real.
       shape against). Every piece of the original Step 8 scope is now
       built. See `frontend/README.md` and `ui-notes.md`'s Step 8b
       section for the full account.
+- [x] **Step 8c** — A thorough external UX/operational-safety review of
+      the actual built UI (not just the code) found several confirmed
+      bugs: no reachable "Change API key" action despite the queue's
+      own error message pointing at one, source-sample load failures
+      silently swallowed into an indistinguishable "no samples exist"
+      state, one shared error state covering two different failures on
+      the detail page, confidence coloring that contradicted its own
+      documented intent (red below 60%, despite the code's own comment
+      saying low confidence shouldn't look like a failure), unlabeled
+      decision-vs-delivery status pills, and no cancel path once a
+      rejection reason input was open. Fixed all of these, plus a
+      compact pre-approval risk summary, ARIA table semantics for the
+      div/span-based grids, a horizontal-scroll responsive fallback,
+      continuous JSON validation with Reset in the edit panel, and a
+      "Needs attention" queue filter — which needed a real backend
+      change (`GET /proposals` accepting multiple `status=` values, not
+      just one) since "needs attention" is six different statuses, not
+      one. See `ui-notes.md`'s Step 8b section for the full account,
+      including what's deliberately deferred (a confirmation-gate
+      modal, full responsive redesign, automated frontend tests, and
+      more) with reasoning for each.
 - [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
       (same filename + same hash → skip; same filename + different hash
       → new batch), filename parsing

@@ -88,9 +88,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
-export function listProposals(status?: string, limit = 50): Promise<ProposalQueueEntry[]> {
+export function listProposals(statuses?: string[], limit = 50): Promise<ProposalQueueEntry[]> {
   const params = new URLSearchParams({ limit: String(limit) });
-  if (status) params.set("status", status);
+  for (const s of statuses ?? []) params.append("status", s);
   return request<ProposalQueueEntry[]>(`/internal/mapping/proposals?${params}`);
 }
 

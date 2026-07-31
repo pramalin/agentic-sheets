@@ -1,0 +1,92 @@
+.wrap {
+  position: relative;
+  margin-left: auto;
+}
+
+.trigger {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.trigger:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-info-border);
+}
+
+.panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 280px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  z-index: 10;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.label {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  margin-top: var(--space-3);
+}
+
+.label:first-child {
+  margin-top: 0;
+}
+
+.input {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-primary);
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.row {
+  display: flex;
+  gap: 6px;
+}
+
+.applyButton {
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-info-border);
+  background: var(--accent-info-bg);
+  color: var(--accent-info);
+  font-weight: 700;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dangerButton {
+  width: 100%;
+  margin-top: var(--space-4);
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-danger-border);
+  background: transparent;
+  color: var(--accent-danger);
+  font-weight: 700;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.dangerButton:hover {
+  background: var(--accent-danger-bg);
+}

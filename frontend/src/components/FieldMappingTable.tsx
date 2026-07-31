@@ -73,17 +73,27 @@ export function FieldMappingTable({
 }) {
   return (
     <div>
-      <div className={styles.table}>
-        <div className={styles.headerRow}>
-          <span>Canonical field</span>
-          <span>Proposed source</span>
-          <span>Confidence</span>
+      {/* This is a CSS grid, not a semantic <table> -- restructuring to
+        * one would also mean reworking the layout (table layout and
+        * grid layout don't mix cleanly), a bigger change than an
+        * external review's finding here warranted. ARIA table/row/cell
+        * roles give a screen reader the same column-association
+        * information a real <table> would, without that rework. */}
+      <div className={styles.table} role="table" aria-label="Proposed field mappings">
+        <div className={styles.headerRow} role="row">
+          <span role="columnheader">Canonical field</span>
+          <span role="columnheader">Proposed source</span>
+          <span role="columnheader">Confidence</span>
         </div>
         {proposal.fieldMappings.map((mapping) => (
-          <div key={mapping.canonicalFieldPath} className={styles.row}>
-            <span className={styles.fieldPath}>{mapping.canonicalFieldPath}</span>
-            <SourceCell mapping={mapping} sourceColumns={sourceColumns} />
-            <ConfidenceBar value={mapping.confidence} />
+          <div key={mapping.canonicalFieldPath} className={styles.row} role="row">
+            <span className={styles.fieldPath} role="cell">{mapping.canonicalFieldPath}</span>
+            <span role="cell">
+              <SourceCell mapping={mapping} sourceColumns={sourceColumns} />
+            </span>
+            <span role="cell">
+              <ConfidenceBar value={mapping.confidence} />
+            </span>
           </div>
         ))}
       </div>

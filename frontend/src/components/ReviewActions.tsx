@@ -85,9 +85,11 @@ export function ReviewActions({
       )}
 
       <div className={styles.buttonRow}>
-        <button className={styles.approveButton} onClick={handleApprove} disabled={submitting}>
-          {submitting ? "Approving…" : "Approve"}
-        </button>
+        {!showReasonInput && (
+          <button className={styles.approveButton} onClick={handleApprove} disabled={submitting}>
+            {submitting ? "Approving…" : "Approve"}
+          </button>
+        )}
         <button
           className={styles.rejectButton}
           disabled={submitting}
@@ -95,6 +97,18 @@ export function ReviewActions({
         >
           {showReasonInput ? (submitting ? "Rejecting…" : "Confirm reject") : "Reject"}
         </button>
+        {showReasonInput && (
+          <button
+            className={styles.rejectButton}
+            disabled={submitting}
+            onClick={() => {
+              setShowReasonInput(false);
+              setReason("");
+            }}
+          >
+            Cancel
+          </button>
+        )}
       </div>
 
       {error && <div className={styles.errorBox}>{error}</div>}

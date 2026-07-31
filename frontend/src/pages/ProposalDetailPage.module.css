@@ -26,6 +26,52 @@
   font-size: 24px;
 }
 
+.statusLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.sampleWarning {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--accent-pending-bg);
+  border: 1px solid var(--accent-pending-border);
+  border-radius: var(--radius-lg);
+  color: var(--accent-pending);
+  font-size: 13px;
+  margin-bottom: var(--space-4);
+}
+
+.retryLink {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--accent-pending-border);
+  color: var(--accent-pending);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.riskSummary {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-3);
+}
+
+.riskFlag {
+  color: var(--accent-pending);
+  font-weight: 600;
+}
+
 .meta {
   color: var(--text-secondary);
   font-size: 14px;

@@ -54,7 +54,7 @@
 .list {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  overflow: hidden;
+  overflow-x: auto;
   background: var(--surface);
 }
 
@@ -67,6 +67,7 @@
   border-bottom: 1px solid var(--border-subtle);
   text-decoration: none;
   color: inherit;
+  min-width: 640px;
 }
 
 .row:last-child {

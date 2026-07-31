@@ -198,3 +198,136 @@ editing UI (dedicated controls for `variantValueMap` entries,
 own right -- this is a genuinely functional first version, not a
 placeholder, but worth naming as a lower-fidelity interaction than
 `FieldMappingTable`'s read view.
+
+## Step 8b UX/operational-safety review, and what came of it
+
+A thorough external review of the built UI (not just the code, the
+actual reviewer-facing behavior) found several confirmed bugs, not just
+style preferences -- worth verifying each against the real code before
+fixing anything, same discipline as every backend review in this
+project.
+
+**Confirmed and fixed:**
+
+- **No reachable "Change API key" action.** `QueuePage`'s error state
+  told a reviewer to "check the API key in Settings," but no Settings
+  control existed anywhere -- `ApiKeyGate` only ever showed the entry
+  form once, before a key was stored. Added `SettingsMenu` (reviewer
+  name, change key, clear credentials), reachable from the header on
+  every screen.
+- **Sample-load failures were silently swallowed.** `describeTable(...)
+  .catch(() => setSourceColumns({}))` made a genuine fetch failure
+  indistinguishable from "this proposal has no source samples" -- a
+  reviewer had no way to tell "no evidence available" from "evidence
+  intentionally absent." Now tracked as a distinct `sampleError` state
+  with a visible, non-blocking banner and a Retry action.
+- **One shared error state for two different failures.**
+  `ProposalDetailPage` used the same `error` state for the initial load
+  and for a failed redelivery attempt -- a failed retry could show
+  "Couldn't load proposal" while the proposal was still correctly
+  loaded and visible underneath. Split into `loadError` and
+  `redeliveryError`.
+- **Confidence color didn't match its own documented intent.**
+  `ConfidenceBar`'s comment said low confidence should read as "needs a
+  closer look," not an alarm -- but the code colored anything below 60%
+  in `--accent-danger`, the same red a genuine validation/delivery
+  failure uses. Added `--accent-pending-strong`, a darker orange
+  distinct from both the ordinary pending color and danger red, so
+  confidence stays epistemic ("inspect this") rather than looking like
+  a system failure at any level.
+- **Decision vs. delivery status was unlabeled.** Two bare `StatusPill`s
+  side by side (e.g. "Approved" next to "Delivery failed") required the
+  reviewer to infer which pill meant what. Now explicitly labeled
+  "Decision:" and "Delivery:".
+- **No risk summary before a one-click approval.** Added a compact
+  summary line (fields mapped, count below 60% confidence, count
+  unmapped, samples-availability) at the top of the Decision section --
+  cheaper than the review's suggested full confirmation-gate (see
+  deferred list below), but genuinely surfaces the same information a
+  reviewer would want before clicking Approve.
+- **Reject had no way back.** Once the reason input appeared, there was
+  no cancel path short of actually rejecting. Added Cancel; also hid
+  the Approve button while the reject-reason input is open, so a
+  misclick can't approve something mid-reject.
+- **The JSON editor only validated on Save.** Now validates on every
+  keystroke, with an inline warning and Save disabled while invalid,
+  not just a Save-time error box discovered after the fact. Added
+  "Reset changes" and a `beforeunload` warning for unsaved edits.
+- **Queue had no "needs attention" view.** Only "Needs review" and
+  "All" existed; the review correctly noted "Failed" is likely more
+  operationally valuable than "All" once a queue has real history.
+  Needed an actual backend change to express properly: `GET /proposals`
+  previously only accepted one status, and "needs attention" is six
+  different statuses (`PROPOSING_ERROR`, `VALIDATION_FAILED`,
+  `PROCESSING_ERROR`, `DELIVERY_FAILED`, `SOURCE_CHANGED`,
+  `CONFIG_CHANGED`), not one -- generalized
+  `MappingProposalRepository.findQueueEntries` to accept a status list
+  (`WHERE status IN (...)`, the same dynamic-IN-clause idiom already
+  used by `claimForProcessing`), which also let `findAll` -- dead code
+  since `findQueueEntries` superseded it in the first Step 8b pass and
+  nothing had called it since -- finally get removed.
+- **Accessibility: the mapping table and queue are `div`/`span` grids,
+  not semantic `<table>`s.** Restructuring to real tables would also
+  mean reworking the CSS layout (table layout and grid layout don't mix
+  cleanly) -- took the review's own offered alternative instead: ARIA
+  `role="table"`/`"row"`/`"columnheader"`/`"cell"` on the existing grid
+  structure, giving a screen reader the same column-association
+  information without the layout rework.
+- **No responsive fallback.** Fixed-column CSS grids with
+  `overflow: hidden` meant content actually got clipped on narrow
+  screens, not just cramped. Took the review's explicitly-offered
+  "at minimum" bar rather than a full card-stacking redesign:
+  horizontal scroll with an explicit `min-width` on both the queue and
+  the mapping table, so nothing is ever silently cut off.
+
+**Explicitly deferred, with reasoning:**
+
+- **A full confirmation-gate modal** for risky approvals (low
+  confidence, unmapped columns, sample-load failure, transformations
+  present). The summary line above surfaces the same information
+  cheaply; gating the approve button behind a second confirmation step
+  is a real UX decision (when exactly should it trigger, what should it
+  say) worth its own consideration rather than building quickly here.
+- **A full card-stacking responsive redesign.** The horizontal-scroll
+  fallback meets the review's own "at minimum" bar; a genuinely
+  reflowed mobile layout is a bigger design pass.
+- **Edit-panel diff view, per-field backend-error attribution, and
+  keeping a superseded proposal's edit state accessible after
+  navigating away.** All real, all bigger asks than the cheap wins
+  (Reset, continuous validation, unsaved-changes warning) already
+  built.
+- **In-app navigation blocking for unsaved edits** (only the browser-
+  level `beforeunload` was added, not blocking React Router navigation
+  like clicking "Back to queue" mid-edit). That needs a specific
+  react-router API this project hasn't verified against a real build --
+  unlike the router usage already proven out elsewhere in this app.
+  Narrower but confirmed correct beats broader but guessed at, given
+  this project's repeated cost of getting exactly this kind of thing
+  wrong (see the `pom.xml`/Testcontainers episodes in `mapping-notes.md`
+  for what guessing at an unfamiliar library's API actually cost, in a
+  different but analogous situation).
+- **Search, additional queue filters ("Approved but not delivered",
+  etc.), result counts per filter, and pagination.** "Needs attention"
+  was the one addition built, since the review specifically called it
+  out as more valuable than "All" -- the rest is real, separate feature
+  work.
+- **Hard-requiring a rejection reason.** Left optional, matching the
+  backend's own existing design (reason is nullable in
+  `mapping_proposal`) -- a soft nudge via placeholder text rather than
+  blocking rejection outright, since there are legitimate "just wrong,
+  no detailed reason" cases.
+- **A "Backend connection status" indicator** in the header. Would need
+  new global connectivity-tracking state this project doesn't have yet
+  (something has to own "was the last API call successful"); a
+  reasonable idea, not attempted here.
+- **Automated frontend tests** (React Testing Library, Playwright).
+  Genuinely significant new test infrastructure, similar in kind to the
+  Testcontainers work on the backend side -- deserves its own dedicated
+  pass, not squeezed into a UX-fix round. The review's specific
+  suggested coverage (approval, rejection, wrong-key recovery, silent
+  sample-fetch failure, superseding edits, retry delivery) is a
+  reasonable starting scope whenever that pass happens.
+- **README screenshots.** Attempted a headless-browser screenshot
+  earlier in this project (see the architecture-diagram work) and hit
+  the same sandbox network restriction that blocked Playwright's
+  browser-binary download then; that restriction hasn't changed.

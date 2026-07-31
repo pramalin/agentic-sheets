@@ -28,6 +28,13 @@
   --accent-pending: #f1a52b;
   --accent-pending-bg: #3a2a10;
   --accent-pending-border: #6b4c1a;
+  /* A darker, more saturated orange for "this really needs a close
+     look" -- distinct from both the ordinary pending orange and danger
+     red. Confidence staying out of red is deliberate: low confidence is
+     an epistemic signal ("inspect this"), not a failure signal, and
+     coloring it red made it visually indistinguishable from an actual
+     validation/delivery failure. */
+  --accent-pending-strong: #d4841f;
 
   --accent-success: #38c6a2;
   --accent-success-bg: #0f3a34;

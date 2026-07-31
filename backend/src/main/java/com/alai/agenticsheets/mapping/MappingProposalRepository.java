@@ -58,39 +58,32 @@ public class MappingProposalRepository {
     }
 
     /**
-     * Lists proposals, most recent first -- the Step 8 review queue.
-     * {@code statusFilter} narrows to one status (typically
-     * {@code "PENDING"}, for "what needs review right now"); null lists
-     * everything, for a broader history view.
+     * The Step 8 review queue, joined with {@code import_batch} for the
+     * fields a queue actually needs to be usable -- which client, which
+     * file, which worksheet -- rather than the bare IDs {@link
+     * StoredMappingProposal} carries. Added once building the actual
+     * Step 8b queue view made clear that a list of opaque proposal IDs
+     * isn't something a reviewer can do anything with.
+     *
+     * @param statusFilters narrows to any of the given statuses (an
+     * external review correctly pointed out that a single-status filter
+     * couldn't express "needs attention" -- PROPOSING_ERROR,
+     * VALIDATION_FAILED, PROCESSING_ERROR, DELIVERY_FAILED,
+     * SOURCE_CHANGED, and CONFIG_CHANGED are six different statuses,
+     * not one); empty or null lists everything, for a broader history
+     * view
      */
-    public List<StoredMappingProposal> findAll(String statusFilter, int limit) {
-        if (statusFilter != null) {
-            return jdbcTemplate.query(
-                    "SELECT " + SELECT_COLUMNS + " FROM mapping_proposal WHERE status = ? "
-                            + "ORDER BY created_at DESC LIMIT ?",
-                    this::mapRow, statusFilter, limit);
-        }
-        return jdbcTemplate.query(
-                "SELECT " + SELECT_COLUMNS + " FROM mapping_proposal ORDER BY created_at DESC LIMIT ?",
-                this::mapRow, limit);
-    }
-
-    /**
-     * Same listing as {@link #findAll}, joined with {@code import_batch}
-     * for the fields a review queue actually needs to be usable --
-     * which client, which file, which worksheet -- rather than the bare
-     * IDs {@link StoredMappingProposal} carries. Added once building the
-     * actual Step 8b queue view made clear that a list of opaque
-     * proposal IDs isn't something a reviewer can do anything with.
-     */
-    public List<ProposalQueueEntry> findQueueEntries(String statusFilter, int limit) {
+    public List<ProposalQueueEntry> findQueueEntries(List<String> statusFilters, int limit) {
         String sql = "SELECT p.id, p.import_batch_id, p.status, p.created_at, "
                 + "b.model_id, b.client_id, b.source_filename, b.worksheet "
                 + "FROM mapping_proposal p JOIN import_batch b ON b.id = p.import_batch_id ";
-        if (statusFilter != null) {
+        if (statusFilters != null && !statusFilters.isEmpty()) {
+            String placeholders = String.join(",", java.util.Collections.nCopies(statusFilters.size(), "?"));
+            java.util.List<Object> args = new java.util.ArrayList<>(statusFilters);
+            args.add(limit);
             return jdbcTemplate.query(
-                    sql + "WHERE p.status = ? ORDER BY p.created_at DESC LIMIT ?",
-                    this::mapQueueEntryRow, statusFilter, limit);
+                    sql + "WHERE p.status IN (" + placeholders + ") ORDER BY p.created_at DESC LIMIT ?",
+                    this::mapQueueEntryRow, args.toArray());
         }
         return jdbcTemplate.query(
                 sql + "ORDER BY p.created_at DESC LIMIT ?",
