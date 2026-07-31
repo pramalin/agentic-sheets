@@ -396,16 +396,21 @@ being visible during a race-dependent window. The existing test
 assertions needed no changes at all -- they were correct all along; the
 application just wasn't reliably giving them anything to find.
 
-Left alone, deliberately: the rest of the test's assertions (the
-`Decision:`/`Approved`/`Delivered` header-pill checks) use simpler,
-single-element locators without the same cross-element risk as the
-`Dispatch:`/`SUCCESS` case -- none of them have actually failed yet, so
-they're not speculatively rewritten. The next real run is what settles
-whether they're fine.
+**Confirmed passing.** `2 passed (8.3s)` -- and worth noting precisely:
+the approval test completed in **4.3s** this run, against the 24.1s it
+took to time out before the fix. That's real confirmation the race
+condition was the actual root cause, not a symptom papered over with a
+longer timeout -- once `ReviewActions` no longer discards the result on
+re-render, the test has nothing left to wait around for.
 
-```bash
-bash e2e/run-browser-tests.sh
-```
+Checkpoint B is done: both browser journeys built against real,
+verified selectors, four real rounds of execution, four real findings
+(a locator ambiguity, a cross-element text-matching issue, a false lead
+on worker contention that led to real diagnostic evidence instead of a
+third guess, and a genuine application race condition an actual
+approve click uncovered) -- the same "verify with evidence, don't
+guess twice" discipline this whole initiative has run on since
+Checkpoint A's first port collision.
 
 ## What's intentionally not covered here
 

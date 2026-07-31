@@ -455,16 +455,24 @@ network, and don't ship the `.env.example` default secret anywhere real.
       frontend, and the E2E job all passing), an external reviewer's
       own words: *"I consider the Step 8 E2E golden path complete at
       this point."* **Checkpoint B (two Playwright browser journeys —
-      an approval flow and the Step 8c wrong-key-recovery path): built,
-      not yet run.** Every selector verified against real frontend
-      component source before writing the tests, not guessed at — but
-      given every one of Checkpoint A's six bugs was something only an
-      actual execution surfaced, these should be expected to need at
-      least one real round too. See `e2e/README.md` for the complete
+      an approval flow and the Step 8c wrong-key-recovery path): done
+      and confirmed.** Four real execution rounds, four real findings —
+      a locator ambiguity, a cross-element text-matching issue, a false
+      lead on worker contention that led to pulling real diagnostic
+      evidence instead of guessing a third time, and — the most
+      significant one — a genuine race condition in `ReviewActions.tsx`
+      that a real approve click uncovered: the success message could
+      be discarded the instant the parent's own refresh landed,
+      something a real reviewer could hit on a fast connection, not
+      just test automation. Fixed in the application itself; the
+      existing test assertions needed no changes at all. Final state:
+      `2 passed (8.3s)`, with the approval test's own time dropping
+      from a 24s timeout to a clean 4.3s once the actual bug was fixed
+      — real confirmation it was the root cause, not a symptom papered
+      over with a longer wait. See `e2e/README.md` for the complete
       round-by-round history, preserved in full rather than overwritten
       (matching how `mapping-notes.md` keeps every hardening round's
-      history), and Checkpoint B's full design reasoning and honest
-      status.
+      history).
 - [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
       (same filename + same hash → skip; same filename + different hash
       → new batch), filename parsing
