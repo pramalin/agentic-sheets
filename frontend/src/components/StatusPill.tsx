@@ -17,6 +17,7 @@ const STATUS_INFO: Record<Status, { tone: Tone; label: string }> = {
   PROPOSING_ERROR: { tone: "danger", label: "Proposing failed" },
   APPROVED: { tone: "info", label: "Approved" },
   REJECTED: { tone: "neutral", label: "Rejected" },
+  SUPERSEDED: { tone: "neutral", label: "Edited (superseded)" },
   PROCESSING: { tone: "info", label: "Delivering" },
   VALIDATION_FAILED: { tone: "danger", label: "Validation failed" },
   PROCESSING_ERROR: { tone: "danger", label: "Processing error" },

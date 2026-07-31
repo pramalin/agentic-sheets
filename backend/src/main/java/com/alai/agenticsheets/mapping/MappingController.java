@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -152,6 +153,32 @@ public class MappingController {
         }
 
         return new ProposeResponse(batchId, proposalId, proposal);
+    }
+
+    /**
+     * A human edits a pending proposal rather than approving or
+     * rejecting it outright -- the "edit" verb in "approve/edit/reject",
+     * the one piece of the original Step 8 scope that had no backend
+     * support until now (see {@code ui-notes.md}'s Step 8b section for
+     * why it was deferred, and {@code mapping-notes.md}'s Step 7.4
+     * section for where {@code SUPERSEDED} was first floated as a
+     * future need before it was actually built). The edited content is
+     * validated the same way agent output is -- a real field path, a
+     * real observed source column, a valid variant -- before the old
+     * proposal is superseded and the new one persisted, both atomically
+     * via {@link ProposalDecisionService#amendProposal}.
+     */
+    @PostMapping("/proposals/{id}/amend")
+    public ProposeResponse amend(@PathVariable long id, @RequestBody MappingProposal editedProposal) {
+        StoredMappingProposal stored = mappingProposalRepository.findById(id);
+        ImportBatch batch = importBatchRepository.findById(stored.importBatchId());
+        CanonicalModel model = registry.get(batch.modelId());
+
+        proposalService.validateEdited(editedProposal, model, batch.sourceFilename(), batch.worksheet());
+
+        long newProposalId = proposalDecisionService.amendProposal(
+                id, stored.importBatchId(), model.version(), editedProposal);
+        return new ProposeResponse(stored.importBatchId(), newProposalId, editedProposal);
     }
 
     /**

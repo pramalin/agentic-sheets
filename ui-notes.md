@@ -171,9 +171,22 @@ fully verified (the proposal side) rather than the row-by-row samples,
 and left this named as the next concrete piece rather than quietly
 dropped.
 
-Also still not built: "edit" (the third verb in "approve/edit/reject")
--- still no backend endpoint for a human correcting a proposed mapping
-before approving. The shape for that is clearer now that a real review
-screen exists to design against (most likely: an editable version of
-`FieldMappingTable`'s rows, submitted as a new proposal via a
-not-yet-built endpoint), but still not decided or built.
+**"Edit" is now built too** -- `POST /internal/mapping/proposals/{id}/amend`,
+`ProposalDecisionService.amendProposal`, and a new `SUPERSEDED` status
+(deliberately distinct from `REJECTED` -- "corrected" and "wrong" are
+different facts worth keeping distinct in the audit trail; this exact
+distinction was first floated as a future need in `mapping-notes.md`'s
+Step 7.4 section, before there was an actual UI to build it against).
+Structural validation reused from the agent path
+(`MappingProposalService.validateEdited`) -- a human-edited field path
+or variant name can be just as malformed as a model's, and correctness
+doesn't depend on who wrote the content.
+
+The frontend side (`EditProposalPanel`) is honestly scoped, not a full
+per-field form: a direct JSON editor pre-filled with the current
+proposal, not individual inputs for every property. A fully per-field
+editing UI (dedicated controls for `variantValueMap` entries,
+`transformations` arrays, and so on) is real, separate UI work in its
+own right -- this is a genuinely functional first version, not a
+placeholder, but worth naming as a lower-fidelity interaction than
+`FieldMappingTable`'s read view.

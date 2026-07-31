@@ -215,6 +215,7 @@ network, and don't ship the `.env.example` default secret anywhere real.
 | `/internal/mapping/proposals/{id}/approve?reviewedBy=` | POST | Approves a pending proposal (atomically claimed), validates it against the ADT, dispatches valid rows |
 | `/internal/mapping/proposals/{id}/reject?reviewedBy=&reason=` | POST | Rejects a pending proposal (atomically claimed) |
 | `/internal/mapping/proposals/{id}/redeliver` | POST | Re-runs validation + dispatch for an already-approved proposal -- for retrying after a transient failure |
+| `/internal/mapping/proposals/{id}/amend` | POST | The "edit" verb — supersedes a pending proposal with a human-corrected one, validated the same way agent output is |
 | `/internal/mapping/batches/{id}/recover-stuck` | POST | **Break-glass only** — manually recovers a batch stuck in `PROCESSING` or `PROPOSING`; only safe after confirming the previous process is actually gone, never for a merely-slow request |
 | `/internal/fake-target/{service}` | POST | Local-testing-only stand-in for a team's receiving service (no auth -- see `FakeTargetController`) |
 
@@ -390,15 +391,20 @@ network, and don't ship the `.env.example` default secret anywhere real.
       working approve/reject (with a reason field for rejection), a
       retry-delivery action for a batch stuck at `DELIVERY_FAILED`/
       `PROCESSING_ERROR`, and validation/delivery history rendered
-      usefully rather than as raw JSON. **Still not built**: source
+      usefully rather than as raw JSON. Third pass done: "edit" — the
+      last unbuilt verb in "approve/edit/reject" — via a new
+      `/proposals/{id}/amend` endpoint, `ProposalDecisionService
+      .amendProposal`, and a new `SUPERSEDED` proposal status
+      (deliberately distinct from `REJECTED`: "corrected" and "wrong"
+      are different facts). The frontend side is a direct JSON editor,
+      not a full per-field form — honestly scoped as a functional
+      first version, not a placeholder. **Still not built**: source
       spreadsheet columns and sample values shown next to the proposed
       mapping — deliberately deferred, since that data comes from an
       untyped `JsonNode` endpoint with no fixed Java record to verify
       the exact shape against, unlike everything else this frontend
       talks to (see `ui-notes.md`'s Step 8b section for the full
-      reasoning). "Edit" (the third verb in "approve/edit/reject")
-      also still has no backend endpoint. See `frontend/README.md` for
-      current status.
+      reasoning). See `frontend/README.md` for current status.
 - [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
       (same filename + same hash → skip; same filename + different hash
       → new batch), filename parsing

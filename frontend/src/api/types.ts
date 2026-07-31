@@ -44,6 +44,7 @@ export type Status =
   | "PROPOSING_ERROR"
   | "APPROVED"
   | "REJECTED"
+  | "SUPERSEDED"
   | "PROCESSING"
   | "VALIDATION_FAILED"
   | "PROCESSING_ERROR"
@@ -121,6 +122,13 @@ export interface ProposalQueueEntry {
   sourceFilename: string;
   worksheet: string;
   createdAt: string;
+}
+
+/** MappingController.ProposeResponse -- also what /amend returns. */
+export interface ProposeResponse {
+  importBatchId: number;
+  mappingProposalId: number;
+  proposal: MappingProposal;
 }
 
 export interface DispatchResult {

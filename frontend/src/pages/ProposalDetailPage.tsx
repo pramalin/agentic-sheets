@@ -5,6 +5,7 @@ import type { ApproveResponse, ProposalDetail } from "../api/types";
 import { StatusPill } from "../components/StatusPill";
 import { FieldMappingTable } from "../components/FieldMappingTable";
 import { ReviewActions } from "../components/ReviewActions";
+import { EditProposalPanel } from "../components/EditProposalPanel";
 import { ValidationHistory, DeliveryHistory } from "../components/HistoryPanel";
 import styles from "./ProposalDetailPage.module.css";
 
@@ -87,6 +88,9 @@ export function ProposalDetailPage() {
               <div className={styles.redeliverBar} style={{ marginBottom: "var(--space-3)" }}>
                 Retry result: <strong>{redeliverResult.dispatch.outcome}</strong> — {redeliverResult.dispatch.message}
               </div>
+            )}
+            {detail.proposal.status === "PENDING" && (
+              <EditProposalPanel proposalId={detail.proposal.id} proposal={detail.proposal.proposal} />
             )}
             <ReviewActions proposal={detail.proposal} onDecided={load} />
           </div>

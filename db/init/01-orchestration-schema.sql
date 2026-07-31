@@ -51,7 +51,12 @@ CREATE TABLE mapping_proposal (
     -- pending approval. See SCHEMA.md's "Loading & reload" section.
     config_version      INTEGER NOT NULL,
     proposal            JSONB NOT NULL,
-    -- PENDING / APPROVED / REJECTED, informal for the same reasons as
+    -- PENDING / APPROVED / REJECTED / SUPERSEDED (a human edited this
+    -- proposal rather than approving or rejecting it -- see
+    -- ProposalDecisionService#amendProposal; deliberately distinct
+    -- from REJECTED, since "corrected" and "wrong" are different
+    -- facts worth keeping distinct in the audit trail), informal for
+    -- the same reasons as
     -- import_batch.status above.
     status              TEXT NOT NULL DEFAULT 'PENDING',
     reviewed_by         TEXT,

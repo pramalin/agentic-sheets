@@ -158,4 +158,26 @@ public class MappingProposalRepository {
                 reviewedBy, reason, id);
         return updated == 1;
     }
+
+    /**
+     * Same atomic compare-and-set idiom as {@link #claim}, for the third
+     * thing that can happen to a pending proposal: a human edits it
+     * rather than approving or rejecting outright. The old proposal
+     * moves to {@code SUPERSEDED} -- deliberately not {@code REJECTED},
+     * since rejection means "this mapping is wrong," while superseding
+     * means "this mapping was corrected," a genuinely different fact
+     * worth keeping distinct in the audit trail. See
+     * {@link ProposalDecisionService#amendProposal} for the transaction
+     * that pairs this with inserting the replacement.
+     *
+     * @return true if this call won the race and the proposal is now
+     * SUPERSEDED; false if it wasn't PENDING
+     */
+    public boolean supersede(long id) {
+        int updated = jdbcTemplate.update(
+                "UPDATE mapping_proposal SET status = 'SUPERSEDED', reviewed_at = now() "
+                        + "WHERE id = ? AND status = 'PENDING'",
+                id);
+        return updated == 1;
+    }
 }

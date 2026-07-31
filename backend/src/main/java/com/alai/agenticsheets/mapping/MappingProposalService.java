@@ -134,6 +134,30 @@ public class MappingProposalService {
         return proposal;
     }
 
+    /**
+     * Validates a human-edited proposal the same way agent-generated
+     * output is validated in {@link #propose} -- structural correctness
+     * (a real field path, a real observed source column, a valid
+     * variant name, exactly one of a mutually-exclusive pair) doesn't
+     * depend on who wrote the content. Backs {@code MappingController}'s
+     * {@code /amend} endpoint, the "edit" verb in "approve/edit/reject"
+     * that had no backend support until now. Re-fetches the source
+     * table's headers itself so the caller doesn't need its own
+     * {@code SpreadsheetExplorerService} dependency just for this one
+     * check.
+     *
+     * @throws MappingProposalValidationException if the edited proposal
+     * is structurally invalid
+     */
+    public void validateEdited(MappingProposal edited, CanonicalModel model, String sourcePath, String worksheet) {
+        JsonNode table = explorer.describeTable(sourcePath, worksheet);
+        Set<String> observedColumns = extractColumnHeaders(table);
+        List<String> problems = structuralValidator.validate(edited, model, observedColumns);
+        if (!problems.isEmpty()) {
+            throw new MappingProposalValidationException(problems);
+        }
+    }
+
     private Set<String> extractColumnHeaders(JsonNode table) {
         Set<String> headers = new HashSet<>();
         JsonNode columns = table.get("columns");

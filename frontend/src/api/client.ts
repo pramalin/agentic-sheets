@@ -1,4 +1,4 @@
-import type { ApiErrorBody, ApproveResponse, ProposalDetail, ProposalQueueEntry } from "./types";
+import type { ApiErrorBody, ApproveResponse, MappingProposal, ProposalDetail, ProposalQueueEntry, ProposeResponse } from "./types";
 
 /**
  * The backend's base URL. In development (`npm run dev`), Vite's dev
@@ -111,4 +111,16 @@ export function rejectProposal(id: number, reviewedBy: string, reason: string): 
 
 export function redeliverProposal(id: number): Promise<ApproveResponse> {
   return request<ApproveResponse>(`/internal/mapping/proposals/${id}/redeliver`, { method: "POST" });
+}
+
+/** The "edit" verb in "approve/edit/reject" -- supersedes the current
+  * pending proposal and returns the new, edited one. `editedProposal`
+  * is sent as-is as the request body; the backend validates it the same
+  * way agent output is validated before persisting. */
+export function amendProposal(id: number, editedProposal: MappingProposal): Promise<ProposeResponse> {
+  return request<ProposeResponse>(`/internal/mapping/proposals/${id}/amend`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(editedProposal),
+  });
 }

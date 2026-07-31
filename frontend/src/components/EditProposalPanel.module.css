@@ -1,0 +1,93 @@
+.toggleButton {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  margin-bottom: var(--space-3);
+}
+
+.toggleButton:hover {
+  border-color: var(--accent-info-border);
+  color: var(--accent-info);
+}
+
+.panel {
+  border: 1px solid var(--accent-info-border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.hint {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  margin-bottom: var(--space-3);
+}
+
+.textarea {
+  width: 100%;
+  min-height: 320px;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.buttonRow {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.saveButton {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--accent-info-border);
+  background: var(--accent-info-bg);
+  color: var(--accent-info);
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.saveButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cancelButton {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.errorBox {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--accent-danger-bg);
+  border: 1px solid var(--accent-danger-border);
+  color: var(--accent-danger);
+  font-size: 13px;
+}
+
+.errorBox ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}

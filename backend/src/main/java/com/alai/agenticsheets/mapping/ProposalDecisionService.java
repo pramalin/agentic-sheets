@@ -110,4 +110,37 @@ public class ProposalDecisionService {
         }
         return proposalId;
     }
+
+    /**
+     * A human edits a pending proposal rather than approving or
+     * rejecting it outright -- the third verb in "approve/edit/reject",
+     * the one piece of the original Step 8 scope that had no backend
+     * support until now. Supersedes the old proposal and inserts the
+     * edited replacement in one transaction, so a failure between the
+     * two can't leave the batch with zero PENDING proposals (the old one
+     * gone, no new one to replace it) or, worse, two -- the partial
+     * unique index on {@code mapping_proposal(import_batch_id) WHERE
+     * status = 'PENDING'} would reject that outright, but there's no
+     * reason to let a caller hit that constraint violation directly
+     * when a clean rollback is available instead.
+     *
+     * The batch itself is never touched here -- it was already
+     * {@code PENDING} (the same invariant {@link #saveProposalAndReleaseBatch}
+     * establishes) and stays that way throughout; editing a proposal
+     * doesn't involve a model call, so there's no {@code PROPOSING}
+     * window to protect against.
+     *
+     * @return the new proposal's id
+     * @throws IllegalStateException if the proposal being amended isn't
+     * currently PENDING
+     */
+    @Transactional
+    public long amendProposal(long oldProposalId, long importBatchId, int configVersion, MappingProposal editedProposal) {
+        if (!mappingProposalRepository.supersede(oldProposalId)) {
+            throw new IllegalStateException(
+                    "proposal " + oldProposalId + " could not be amended -- not PENDING (already decided, or "
+                            + "already amended by a concurrent request)");
+        }
+        return mappingProposalRepository.save(importBatchId, configVersion, editedProposal);
+    }
 }

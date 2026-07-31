@@ -5,21 +5,24 @@ Step 8b's integrated review UI — see the main project README's
 integrated into agentic-sheets rather than built as an embeddable
 widget.
 
-## Status: review screen built, source samples still pending
+## Status: queue, review, and edit all built; source samples still pending
 
 Built: the review queue, the review screen (proposed field mappings
-with confidence, approve/reject, retry-delivery, validation and
+with confidence, approve/reject, edit, retry-delivery, validation and
 delivery history), and API-key auth matching the backend's
 `ApiKeyAuthFilter`.
+
+Edit (`EditProposalPanel`) is a direct JSON editor, not a full
+per-field form with dedicated controls for variant maps and
+transformations -- a genuinely functional first version, honestly
+scoped rather than half-built. See `ui-notes.md`'s Step 8b section.
 
 **Deliberately not built yet**: showing the source spreadsheet's actual
 columns and sample values next to the proposed mapping. That data comes
 from `/internal/explore/table`, which returns an untyped `JsonNode` on
 the backend -- there's no fixed Java record to verify the exact
 response shape against, unlike everything else this frontend talks to.
-See `ui-notes.md`'s Step 8b section for the full reasoning. Also not
-built: "edit" (the third verb in "approve/edit/reject") -- no backend
-endpoint for it yet.
+See `ui-notes.md`'s Step 8b section for the full reasoning.
 
 ## Running it
 
