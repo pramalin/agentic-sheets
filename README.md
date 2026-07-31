@@ -454,12 +454,17 @@ network, and don't ship the `.env.example` default secret anywhere real.
       confirmed clean: `mvn test` 83/83, CI green end to end (backend,
       frontend, and the E2E job all passing), an external reviewer's
       own words: *"I consider the Step 8 E2E golden path complete at
-      this point."* See `e2e/README.md` for the complete round-by-round
-      history, preserved in full rather than overwritten (matching how
-      `mapping-notes.md` keeps every hardening round's history), and
-      for Checkpoint B's plan (two Playwright browser journeys: an
-      approval flow and the Step 8c wrong-key-recovery path) — not yet
-      started.
+      this point."* **Checkpoint B (two Playwright browser journeys —
+      an approval flow and the Step 8c wrong-key-recovery path): built,
+      not yet run.** Every selector verified against real frontend
+      component source before writing the tests, not guessed at — but
+      given every one of Checkpoint A's six bugs was something only an
+      actual execution surfaced, these should be expected to need at
+      least one real round too. See `e2e/README.md` for the complete
+      round-by-round history, preserved in full rather than overwritten
+      (matching how `mapping-notes.md` keeps every hardening round's
+      history), and Checkpoint B's full design reasoning and honest
+      status.
 - [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
       (same filename + same hash → skip; same filename + different hash
       → new batch), filename parsing

@@ -107,4 +107,4 @@ npm ci
 E2E_BACKEND_URL="http://localhost:${AGENTIC_SHEETS_BACKEND_PORT}" \
 E2E_LLMSIM_URL="http://localhost:${LLMSIM_HOST_PORT}" \
 E2E_API_KEY="e2e-test-key" \
-  npx playwright test tests/pipeline-api.spec.ts
+  npx playwright test --project=api tests/pipeline-api.spec.ts

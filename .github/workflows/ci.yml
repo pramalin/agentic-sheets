@@ -117,3 +117,70 @@ jobs:
           name: compose-logs
           path: agentic-sheets/e2e/compose-logs.txt
           retention-days: 7
+
+  # Step 8.5, Checkpoint B: the two browser journeys (real Chromium,
+  # the actual frontend) -- an approval flow and the Step 8c
+  # wrong-key-recovery path. Depends on the golden path passing first,
+  # deliberately -- no point spending Chromium install time and browser
+  # test minutes on a pipeline that isn't already proven working at the
+  # API level. See e2e/README.md for the full design reasoning.
+  e2e-browser:
+    runs-on: ubuntu-latest
+    needs: [e2e-golden-path]
+    steps:
+      - name: Checkout agentic-sheets
+        uses: actions/checkout@v7
+        with:
+          path: agentic-sheets
+
+      # Same sibling-directory layout as the golden-path job, same
+      # pinned commit -- see that job's own comments for the full
+      # reasoning.
+      - name: Checkout sheets-reader-mcp
+        uses: actions/checkout@v7
+        with:
+          repository: pramalin/sheets-reader-mcp
+          ref: b77f59679bcc4b443d54621868d4afd908b81135
+          path: sheets-reader-mcp
+
+      - name: Configure environment
+        working-directory: agentic-sheets
+        run: cp .env.example .env
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: agentic-sheets/frontend/package-lock.json
+
+      # The frontend itself isn't built here -- Playwright's webServer
+      # runs `npm run dev` directly (a real Vite dev server, not a
+      # production build) -- but its dependencies still need installing
+      # before that command can run.
+      - name: Install frontend dependencies
+        working-directory: agentic-sheets/frontend
+        run: npm ci
+
+      - name: Run browser E2E journeys
+        working-directory: agentic-sheets
+        run: bash e2e/run-browser-tests.sh
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-browser
+          path: agentic-sheets/e2e/playwright-report/
+          retention-days: 7
+
+      # Same reasoning as the golden-path job's own equivalent step --
+      # run-browser-tests.sh's cleanup trap tears the environment down
+      # on any exit, so the logs have to be captured before that, not
+      # queried afterward from here.
+      - name: Upload Compose logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: compose-logs-browser
+          path: agentic-sheets/e2e/compose-logs-browser.txt
+          retention-days: 7

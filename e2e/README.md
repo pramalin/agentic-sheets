@@ -232,25 +232,180 @@ healthy, clean teardown. Checkpoint A is done -- not "should pass," not
 the actual packaged application. That's the real bar this whole
 initiative was trying to clear, and it's cleared.
 
-## What's deferred to Checkpoint B
+## Checkpoint B: built, honestly unverified
 
-- `e2e/tests/review-approval.spec.ts` -- one Playwright browser
-  journey: seed a pending proposal via the API, open the UI, enter the
-  API key, approve it, confirm the UI reflects approved/delivered
-  status.
-- `e2e/tests/api-key-recovery.spec.ts` -- one Playwright browser test
-  for the wrong-key recovery path Step 8c fixed (`SettingsMenu`).
-- Chromium installation in CI (`npx playwright install --with-deps
-  chromium` -- Chromium only, not all three engines; no meaningful
-  value added by Firefox/WebKit coverage for a single-operator internal
-  tool).
-- Screenshot/trace/HTML-report upload on browser-test failure.
-- A `webServer` entry in `playwright.config.ts` to launch the Vite dev
-  server as part of the browser test run.
+Two browser journeys, built against real, verified selectors -- every
+locator in both spec files was checked against the actual frontend
+component source (`ApiKeyGate.tsx`, `SettingsMenu.tsx`, `QueuePage.tsx`,
+`ReviewActions.tsx`, `ProposalDetailPage.tsx`, `StatusPill.tsx`) before
+writing the test, not guessed at from what the UI "probably" looks
+like -- the same discipline as verifying llmsim's interface or a
+Maven artifact's existence before depending on it.
 
-Not started until Checkpoint A is confirmed actually passing -- no
-point building browser tests against a pipeline that hasn't been proven
-to work yet.
+- `e2e/tests/review-approval.spec.ts` -- seeds a pending proposal via
+  the API (same `request` context pattern as the golden-path test),
+  then drives the real browser: enter the API key, find the seeded
+  proposal in the queue by its actual client/filename, open it, confirm
+  real field-mapping content is visible, approve it, confirm both the
+  UI's own success message and the header status pills
+  (`Decision: Approved`, `Delivered`) update -- then cross-checks the
+  backend directly, since the UI showing the right thing and the
+  durable state actually being right are two different claims.
+- `e2e/tests/api-key-recovery.spec.ts` -- regression coverage for the
+  Step 8c bug (no reachable way back from a wrong key). Confirmed via
+  reading the real code, not memory of what was fixed: a wrong key
+  still satisfies `ApiKeyGate`'s own check (something was entered), so
+  the app renders and the queue's *own* fetch fails with a visible 401
+  -- Settings is then reachable, `Apply` corrects the key and reloads,
+  and the queue loads cleanly afterward.
+
+**Design decisions worth being explicit about:**
+
+- **Two Playwright projects (`api`, `browser`) in one config, not two
+  config files.** `run-golden-path.sh` passes `--project=api`;
+  `run-browser-tests.sh` passes `--project=browser`. Keeps the golden
+  path from ever needing Chromium or a frontend dev server, while
+  still sharing one framework, one report format, one set of
+  conventions.
+- **The Vite dev server only starts when `E2E_START_FRONTEND` is set.**
+  Same reasoning -- a pure API-only run of `run-golden-path.sh` should
+  never need `frontend/node_modules` installed at all.
+- **`--port` has to be passed through explicitly.** `frontend/package.json`'s
+  `dev` script is plain `vite`, no port flag baked in -- checked before
+  assuming `E2E_FRONTEND_URL`'s port would actually take effect, since
+  Vite's real default (5173) would otherwise silently not match it.
+  `reuseExistingServer: false` (always, not just in CI) for the same
+  class of reason: a stray local dev server already running on this
+  port could otherwise get silently reused, pointed at a completely
+  different backend.
+- **Both fixtures reuse the JPMC Holdings data Checkpoint A already
+  uses**, rather than a second llmsim script. `POST /_llmsim/reset`
+  rewinds `Script.exactly` back to its one step regardless of which
+  test called it last, so this doesn't create any actual dependency
+  between the golden-path test and the browser tests -- each resets
+  llmsim and the fake-target journal itself before creating its own
+  proposal, never assuming a prior test already did.
+- **`run-browser-tests.sh` uses distinct default ports again**
+  (`35432`/`38081`/`38089`/`38173`) -- not just from the ordinary dev
+  stack, but from `run-golden-path.sh`'s own defaults too, so the two
+  E2E scripts could in principle run at the same time locally without
+  colliding with each other either.
+
+**Honest status: this has never actually been run.** Everything above
+was checked as thoroughly as this sandbox allows -- both spec files
+compile, both are correctly recognized under the `browser` project via
+`npx playwright test --list`, every selector traces back to real
+component source rather than assumption. What none of that proves is
+that a real browser, driving the real running app, actually completes
+either journey -- that needs Docker and a real Chromium install, which
+this sandbox has neither of. Given every single bug Checkpoint A found
+across six rounds was something only an actual execution surfaced,
+the honest expectation here is that the first real run finds
+something too -- possibly a text-matching mismatch (React's exact
+rendered DOM structure for interpolated JSX text isn't something
+static reading fully guarantees), possibly a timing issue, possibly
+something neither of us has thought of yet. Try it:
+
+```bash
+bash e2e/run-browser-tests.sh
+```
+
+**Honest status, updated across four real runs: ten for ten -- and this
+one was a real application bug, not a test artifact.**
+
+*Run 1*: `api-key-recovery.spec.ts` passed clean on the very first
+attempt -- every selector in that file correct as written.
+`review-approval.spec.ts` hit a Playwright strict-mode violation:
+`page.getByText("account_id")` matched *two* elements, the
+field-mapping table's own `account_id` cell and a conversion-notes
+sentence ("Source column 'Account' maps to account_id.") that happens
+to contain the same words. Fixed with the more specific locator
+Playwright's own error message suggested:
+`getByRole("cell", { name: "account_id", exact: true })`.
+
+*Run 2*: past that fix, the test got further -- the seeded proposal,
+the queue row, the review screen content, the approve click, and
+"Approved." itself all confirmed working -- before failing on
+`getByText(/Dispatch:\s*SUCCESS/)`. Not a rendering bug, a
+cross-element text-matching issue: `Dispatch: ` and `SUCCESS` render as
+separate nodes (`Dispatch: <strong>{outcome}</strong>`, a plain text
+node followed by a nested element), and a single regex spanning both
+via a fresh `getByText` search isn't something to depend on the exact
+matching behavior of. Fixed by reusing the already-proven `Approved.`
+element handle and checking its content directly
+(`resultBox.toContainText("SUCCESS")`) instead of a second independent
+search.
+
+*Run 3*: failed differently again, and more interestingly -- not a
+locator issue this time. The *exact same* `Approved.` assertion that
+had just passed cleanly (well within a 15s window, total test time
+10.2s) timed out on this run (total test time 20.3s). The log explained
+why on its own: `"Running 2 tests using 2 workers"` -- `workers` only
+forced `1` in CI, not locally, so this run let both browser spec files
+execute *concurrently*. Both share one backend/Postgres/llmsim
+environment, not isolated per-worker infrastructure -- running them at
+the same time creates real resource contention no actual single-
+reviewer session would ever produce, and it was enough to push the
+approve→validate→dispatch round trip past the timeout. Fixed at the
+root: `workers: 1` unconditionally now, not just in CI, plus a modest
+timeout increase (15s → 20s) as reasonable defense-in-depth against
+ordinary Docker/network jitter, not as the primary fix.
+
+*Run 4*: `workers: 1` genuinely took effect this time (the log
+confirmed `"Running 2 tests using 1 worker"`), and the exact same
+failure happened anyway -- with an even longer wait (20s timeout, 24.1s
+total) and no concurrent test to blame. The earlier contention theory
+was wrong, or at least insufficient -- worth naming plainly rather than
+quietly moving past it. Rather than guess a third time, asked for the
+actual diagnostic evidence Playwright already generates on failure
+(`error-context.md`, an accessibility snapshot of the page at the
+moment it gave up) instead of speculating further. That evidence was
+conclusive: the snapshot showed `Decision: Approved`, `Delivery:
+Delivered`, real validation and delivery history, and `"This proposal
+has already been decided — no further action needed here."` -- the
+approval had **completely succeeded**. The network log confirmed it
+too: `POST /internal/mapping/proposals/1/approve` returned `200 OK` in
+148ms. The "failure" was never about approval not working -- it was
+that the UI's own success message never stayed on screen long enough
+to see.
+
+The actual bug was a real race condition in `ReviewActions.tsx`, not
+anything about the test: `handleApprove()` calls `setResult(response)`
+(local state, for the "Approved. N rows valid..." message) and
+`onDecided()` (triggers the parent's re-fetch) back to back. Once that
+re-fetch resolves, `proposal.status` becomes `"APPROVED"` and this
+component re-renders with the new prop -- hitting an early return
+(`if (proposal.status !== "PENDING") return ...`) *before* it ever
+checked `result`, discarding the success message the instant the
+parent's refresh landed. Whether a person saw it first came down to
+pure timing -- a real reviewer clicking Approve on a fast connection
+could hit the exact same flash-and-vanish, not just headless test
+automation running faster or slower than expected. This is precisely
+the class of bug this whole E2E initiative exists to catch: something
+no amount of reading the code carefully would flag as obviously wrong
+(the code "works" -- it approves, it validates, it delivers), that only
+shows up when something actually drives the real UI and watches what a
+person would see.
+
+Fixed in the application itself, not the test: `resultBanner` is now
+computed once, checked before the early return, and rendered in *both*
+branches (the "already decided" branch and the normal form). The
+outcome of a review action now stays visible for the rest of the page's
+life regardless of when the parent's refresh lands, instead of only
+being visible during a race-dependent window. The existing test
+assertions needed no changes at all -- they were correct all along; the
+application just wasn't reliably giving them anything to find.
+
+Left alone, deliberately: the rest of the test's assertions (the
+`Decision:`/`Approved`/`Delivered` header-pill checks) use simpler,
+single-element locators without the same cross-element risk as the
+`Dispatch:`/`SUCCESS` case -- none of them have actually failed yet, so
+they're not speculatively rewritten. The next real run is what settles
+whether they're fine.
+
+```bash
+bash e2e/run-browser-tests.sh
+```
 
 ## What's intentionally not covered here
 

@@ -17,6 +17,34 @@ export function ReviewActions({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ApproveResponse | null>(null);
 
+  // Deliberately checked before the "already decided" early return below,
+  // not nested inside it -- a real race a live browser test caught: after
+  // a successful approve, this component sets `result` locally *and*
+  // calls `onDecided()`, which triggers the parent's re-fetch. Once that
+  // re-fetch resolves, `proposal.status` becomes "APPROVED" and this
+  // component re-renders with the new prop -- previously hitting the
+  // early return before ever checking `result`, discarding the success
+  // message the instant the parent's refresh landed. Whether that
+  // happened before or after a person even saw it came down to pure
+  // timing, not anything the UI was doing on purpose -- a real reviewer
+  // could hit the exact same flash-and-vanish depending on network
+  // speed, not just test automation. Rendering it unconditionally here
+  // means the outcome of *this* review action stays visible for the
+  // rest of the page's life, regardless of which branch below fires.
+  const resultBanner = result && (
+    <div className={styles.resultBox}>
+      Approved. {result.validation.validRows.length} row(s) valid, {result.validation.rowErrors.length} row error(s).
+      {result.dispatch && (
+        <>
+          {" "}
+          Dispatch: <strong>{result.dispatch.outcome}</strong> ({result.dispatch.attempts} attempt
+          {result.dispatch.attempts === 1 ? "" : "s"}
+          {result.dispatch.lastStatusCode ? `, HTTP ${result.dispatch.lastStatusCode}` : ""}) — {result.dispatch.message}
+        </>
+      )}
+    </div>
+  );
+
   if (proposal.status !== "PENDING") {
     return (
       <div className={styles.panel}>
@@ -25,6 +53,7 @@ export function ReviewActions({
             ? `Rejected${proposal.rejectionReason ? ` — ${proposal.rejectionReason}` : "."}`
             : "This proposal has already been decided — no further action needed here."}
         </p>
+        {resultBanner}
       </div>
     );
   }
@@ -113,19 +142,7 @@ export function ReviewActions({
 
       {error && <div className={styles.errorBox}>{error}</div>}
 
-      {result && (
-        <div className={styles.resultBox}>
-          Approved. {result.validation.validRows.length} row(s) valid, {result.validation.rowErrors.length} row error(s).
-          {result.dispatch && (
-            <>
-              {" "}
-              Dispatch: <strong>{result.dispatch.outcome}</strong> ({result.dispatch.attempts} attempt
-              {result.dispatch.attempts === 1 ? "" : "s"}
-              {result.dispatch.lastStatusCode ? `, HTTP ${result.dispatch.lastStatusCode}` : ""}) — {result.dispatch.message}
-            </>
-          )}
-        </div>
-      )}
+      {resultBanner}
     </div>
   );
 }
