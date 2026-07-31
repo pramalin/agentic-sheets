@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiError, getProposalDetail, redeliverProposal } from "../api/client";
+import { ApiError, describeTable, getProposalDetail, redeliverProposal } from "../api/client";
 import type { ApproveResponse, ProposalDetail } from "../api/types";
 import { StatusPill } from "../components/StatusPill";
-import { FieldMappingTable } from "../components/FieldMappingTable";
+import { FieldMappingTable, type SourceColumnLookup } from "../components/FieldMappingTable";
 import { ReviewActions } from "../components/ReviewActions";
 import { EditProposalPanel } from "../components/EditProposalPanel";
 import { ValidationHistory, DeliveryHistory } from "../components/HistoryPanel";
@@ -17,17 +17,31 @@ export function ProposalDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [redelivering, setRedelivering] = useState(false);
   const [redeliverResult, setRedeliverResult] = useState<ApproveResponse | null>(null);
+  const [sourceColumns, setSourceColumns] = useState<SourceColumnLookup>({});
 
   const load = useCallback(() => {
     if (!id) return;
     setError(null);
     getProposalDetail(Number(id))
-      .then(setDetail)
+      .then((result) => {
+        setDetail(result);
+        // Independent of the main fetch, deliberately -- a failure here
+        // (or the endpoint being briefly unreachable) shouldn't block
+        // the review screen itself, only the sample-values enhancement.
+        describeTable(result.batch.sourceFilename, result.batch.worksheet)
+          .then((table) => {
+            const lookup: SourceColumnLookup = {};
+            for (const col of table.columns) lookup[col.header] = col;
+            setSourceColumns(lookup);
+          })
+          .catch(() => setSourceColumns({}));
+      })
       .catch((err: unknown) => setError(err instanceof ApiError ? err.message : "Couldn't reach the backend."));
   }, [id]);
 
   useEffect(() => {
     setDetail(null);
+    setSourceColumns({});
     setRedeliverResult(null);
     load();
   }, [load]);
@@ -71,7 +85,7 @@ export function ProposalDetailPage() {
 
           <div className={styles.section}>
             <div className={styles.sectionTitle}>Proposed mapping</div>
-            <FieldMappingTable proposal={detail.proposal.proposal} />
+            <FieldMappingTable proposal={detail.proposal.proposal} sourceColumns={sourceColumns} />
           </div>
 
           <div className={styles.section}>

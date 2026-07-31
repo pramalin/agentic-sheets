@@ -180,11 +180,11 @@ npm run dev
 
 Needs the backend already running (above). Open the URL Vite prints
 (typically `http://localhost:5173`), enter the same value as
-`AGENTIC_SHEETS_API_KEY` when prompted. Review queue and the review
-screen (approve/reject, retry-delivery, validation/delivery history)
-both work end to end; source-column samples next to the proposed
-mapping are the one deliberately deferred piece — see
-`frontend/README.md` for exact status.
+`AGENTIC_SHEETS_API_KEY` when prompted. Every piece of the original
+Step 8 scope works end to end: the queue, the review screen with
+source-column samples shown inline, approve/edit/reject, and
+validation/delivery history — see `frontend/README.md` for exact
+status.
 
 ## API endpoints (internal, for now)
 
@@ -368,7 +368,7 @@ network, and don't ship the `.env.example` default secret anywhere real.
       (`GET /proposals`, `GET /proposals/{id}`), and a reject endpoint
       (`POST /proposals/{id}/reject`, same atomic compare-and-set idiom
       as approve).
-- [ ] **Step 8b** — The review UI itself, built with React, integrated
+- [x] **Step 8b** — The review UI itself, built with React, integrated
       into agentic-sheets rather than designed for embedding into
       third-party applications — the project's main goal is processing
       spreadsheets into canonical data, and a genuinely reusable,
@@ -398,13 +398,15 @@ network, and don't ship the `.env.example` default secret anywhere real.
       (deliberately distinct from `REJECTED`: "corrected" and "wrong"
       are different facts). The frontend side is a direct JSON editor,
       not a full per-field form — honestly scoped as a functional
-      first version, not a placeholder. **Still not built**: source
-      spreadsheet columns and sample values shown next to the proposed
-      mapping — deliberately deferred, since that data comes from an
-      untyped `JsonNode` endpoint with no fixed Java record to verify
-      the exact shape against, unlike everything else this frontend
-      talks to (see `ui-notes.md`'s Step 8b section for the full
-      reasoning). See `frontend/README.md` for current status.
+      first version, not a placeholder. Fourth pass done: source
+      spreadsheet columns and sample values, shown inline in
+      `FieldMappingTable` next to each proposed field rather than a
+      separate panel — closed once a real `/internal/explore/table`
+      response was confirmed rather than guessed at (an untyped
+      `JsonNode` on the backend, no fixed Java record to verify the
+      shape against). Every piece of the original Step 8 scope is now
+      built. See `frontend/README.md` and `ui-notes.md`'s Step 8b
+      section for the full account.
 - [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
       (same filename + same hash → skip; same filename + different hash
       → new batch), filename parsing

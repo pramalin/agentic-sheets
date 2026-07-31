@@ -131,6 +131,30 @@ export interface ProposeResponse {
   proposal: MappingProposal;
 }
 
+/**
+ * GET /internal/explore/table's response shape -- verified against a
+ * real response rather than guessed (see ui-notes.md's Step 8b section
+ * for why this was deferred until it could be). sampleValues are always
+ * strings in the real response, even for NUMBER/DATE columns -- the
+ * MCP tool stringifies everything, so this type reflects that rather
+ * than a more "correct"-looking union that doesn't match reality.
+ */
+export interface SourceColumn {
+  header: string;
+  inferredType: string;
+  nullRate: number;
+  sampleValues: string[];
+}
+
+export interface DescribeTableResponse {
+  worksheet: string;
+  headerRowIndex: number;
+  firstDataRowIndex: number;
+  lastDataRowIndex: number;
+  detectionConfidence: number;
+  columns: SourceColumn[];
+}
+
 export interface DispatchResult {
   outcome: "SUCCESS" | "TERMINAL_FAILURE" | "RETRIES_EXHAUSTED" | "NOT_IMPLEMENTED" | "CONFIGURATION_ERROR" | "INTERRUPTED";
   attempts: number;

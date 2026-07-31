@@ -1,14 +1,29 @@
-import type { FieldMapping, MappingProposal } from "../api/types";
+import type { FieldMapping, MappingProposal, SourceColumn } from "../api/types";
 import { ConfidenceBar } from "./ConfidenceBar";
 import styles from "./FieldMappingTable.module.css";
 
-function SourceCell({ mapping }: { mapping: FieldMapping }) {
+/** Keyed by column header for quick lookup while rendering each row --
+  * built once by the caller from /internal/explore/table's response. */
+export type SourceColumnLookup = Record<string, SourceColumn>;
+
+function SampleValues({ column }: { column: SourceColumn | undefined }) {
+  if (!column || column.sampleValues.length === 0) return null;
+  return (
+    <div className={styles.samples}>
+      <span className={styles.samplesLabel}>{column.inferredType.toLowerCase()}, e.g.</span>{" "}
+      {column.sampleValues.slice(0, 3).join(", ")}
+    </div>
+  );
+}
+
+function SourceCell({ mapping, sourceColumns }: { mapping: FieldMapping; sourceColumns: SourceColumnLookup }) {
   return (
     <div>
       {mapping.sourceColumn && (
         <div>
           <div className={styles.sourceKind}>Column</div>
           <div className={styles.sourceValue}>{mapping.sourceColumn}</div>
+          <SampleValues column={sourceColumns[mapping.sourceColumn]} />
         </div>
       )}
       {mapping.sourceConstant && (
@@ -46,7 +61,16 @@ function SourceCell({ mapping }: { mapping: FieldMapping }) {
   );
 }
 
-export function FieldMappingTable({ proposal }: { proposal: MappingProposal }) {
+export function FieldMappingTable({
+  proposal,
+  sourceColumns = {},
+}: {
+  proposal: MappingProposal;
+  /** Optional -- degrades to no sample values shown if the source-table
+    * fetch failed or hasn't completed yet, rather than blocking the
+    * whole table on it. */
+  sourceColumns?: SourceColumnLookup;
+}) {
   return (
     <div>
       <div className={styles.table}>
@@ -58,7 +82,7 @@ export function FieldMappingTable({ proposal }: { proposal: MappingProposal }) {
         {proposal.fieldMappings.map((mapping) => (
           <div key={mapping.canonicalFieldPath} className={styles.row}>
             <span className={styles.fieldPath}>{mapping.canonicalFieldPath}</span>
-            <SourceCell mapping={mapping} />
+            <SourceCell mapping={mapping} sourceColumns={sourceColumns} />
             <ConfidenceBar value={mapping.confidence} />
           </div>
         ))}
@@ -68,7 +92,14 @@ export function FieldMappingTable({ proposal }: { proposal: MappingProposal }) {
         <div className={styles.unmapped}>
           <strong>{proposal.unmappedSourceColumns.length}</strong> source column
           {proposal.unmappedSourceColumns.length === 1 ? "" : "s"} left unmapped:
-          <div className={styles.unmappedList}>{proposal.unmappedSourceColumns.join(", ")}</div>
+          <div className={styles.unmappedList}>
+            {proposal.unmappedSourceColumns.map((header) => (
+              <div key={header} className={styles.unmappedRow}>
+                <span className={styles.sourceValue}>{header}</span>
+                <SampleValues column={sourceColumns[header]} />
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

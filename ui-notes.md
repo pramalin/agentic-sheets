@@ -154,22 +154,30 @@ action for a batch stuck at `DELIVERY_FAILED`/`PROCESSING_ERROR`, and
 `ValidationHistory`/`DeliveryHistory` rendering the durable history Step
 8a's backend work added.
 
-**Deliberately deferred, and why**: showing the source spreadsheet's
-actual columns and sample values next to the proposed mapping -- the
-layout this document called the right structural choice from the start.
-That data comes from `/internal/explore/table`, which returns a raw,
-untyped `JsonNode` on the backend (see `SpreadsheetExplorerController`)
-rather than a fixed Java record -- there's nothing to verify the exact
-response shape against the way every other type in this frontend was
-verified against a real `record`. Traced through the one place the
-backend itself actually parses this response
-(`MappingProposalService.extractColumnHeaders`) and confirmed
-`columns[].header` is real, but the type/sample fields a genuinely
-useful side-by-side view would need aren't confirmed. Given this
-project's repeated cost of guessing at unfamiliar shapes, built what's
-fully verified (the proposal side) rather than the row-by-row samples,
-and left this named as the next concrete piece rather than quietly
-dropped.
+**The source-samples gap is now closed, once the real shape was
+confirmed rather than guessed.** `/internal/explore/table` returns a
+raw, untyped `JsonNode` on the backend -- there was nothing to verify
+the exact response shape against the way every other type in this
+frontend was verified against a real Java `record`. Rather than guess,
+asked for and got a real response pasted back:
+`{worksheet, headerRowIndex, firstDataRowIndex, lastDataRowIndex,
+detectionConfidence, columns: [{header, inferredType, nullRate,
+sampleValues}]}`. One detail that would have been easy to get wrong by
+guessing: `sampleValues` are always strings in the real response, even
+for `NUMBER`/`DATE` columns -- the MCP tool stringifies everything, and
+`SourceColumn`'s type reflects that reality rather than a more
+"correct"-looking union that doesn't match what actually comes back.
+
+Placement matters more than the fetch itself: samples show up *inline*
+in `FieldMappingTable`, next to the matched source column in each
+row, not as a separate panel the reviewer would have to cross-reference
+manually against the proposed mapping. That's the actual decision a
+reviewer is making -- "does this proposed field make sense given what's
+really in the file" -- and the layout should embody that directly. The
+fetch is deliberately independent of the main proposal-detail fetch: a
+failure or delay here degrades to "no samples shown," not a broken
+review screen, since this is a genuine enhancement, not something the
+core approve/reject workflow depends on.
 
 **"Edit" is now built too** -- `POST /internal/mapping/proposals/{id}/amend`,
 `ProposalDecisionService.amendProposal`, and a new `SUPERSEDED` status

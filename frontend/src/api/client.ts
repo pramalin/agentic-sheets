@@ -1,4 +1,4 @@
-import type { ApiErrorBody, ApproveResponse, MappingProposal, ProposalDetail, ProposalQueueEntry, ProposeResponse } from "./types";
+import type { ApiErrorBody, ApproveResponse, DescribeTableResponse, MappingProposal, ProposalDetail, ProposalQueueEntry, ProposeResponse } from "./types";
 
 /**
  * The backend's base URL. In development (`npm run dev`), Vite's dev
@@ -123,4 +123,14 @@ export function amendProposal(id: number, editedProposal: MappingProposal): Prom
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(editedProposal),
   });
+}
+
+/** Source-column context (headers, inferred types, samples) for the
+  * review screen -- a separate, independent fetch from the proposal
+  * detail itself, so a failure here (or the endpoint being briefly
+  * unreachable) degrades to "no samples shown" rather than breaking the
+  * whole review screen. */
+export function describeTable(path: string, worksheet: string): Promise<DescribeTableResponse> {
+  const params = new URLSearchParams({ path, worksheet });
+  return request<DescribeTableResponse>(`/internal/explore/table?${params}`);
 }
