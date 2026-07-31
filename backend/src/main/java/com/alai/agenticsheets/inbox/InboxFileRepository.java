@@ -36,21 +36,20 @@ public class InboxFileRepository {
      * least once. Idempotent -- a no-op if already known, deliberately:
      * this alone does not grant processing rights, so calling it
      * repeatedly (every scan cycle, for every file still sitting in the
-     * inbox) is always safe. feedType/clientId/sourceDate/worksheet are
-     * only ever written on the *first* insert (the ON CONFLICT clause
-     * doesn't touch them) -- they describe how this file was routed
-     * when the scanner first found it, not something a later scan
-     * should overwrite.
+     * inbox) is always safe. Called before filename parsing / route
+     * resolution even happen -- hashing (and therefore establishing a
+     * real {@code inbox_file} identity) now comes first in the
+     * scanner's own flow specifically so a permanently-unroutable file
+     * still gets a proper row to quarantine, not just a log line. See
+     * {@link #updateRouteMetadata} for backfilling feedType/clientId/
+     * sourceDate/worksheet once they're actually known.
      */
-    public void recordArrival(String logicalFilename, String contentHash, String originalPath,
-            String feedType, String clientId, java.time.LocalDate sourceDate, String worksheet) {
+    public void recordArrival(String logicalFilename, String contentHash, String originalPath) {
         jdbcTemplate.update(
-                "INSERT INTO inbox_file (logical_filename, content_hash, original_path, current_path, "
-                        + "feed_type, client_id, source_date, worksheet) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "INSERT INTO inbox_file (logical_filename, content_hash, original_path, current_path) "
+                        + "VALUES (?, ?, ?, ?) "
                         + "ON CONFLICT (logical_filename, content_hash) DO NOTHING",
-                logicalFilename, contentHash, originalPath, originalPath,
-                feedType, clientId, sourceDate, worksheet);
+                logicalFilename, contentHash, originalPath, originalPath);
     }
 
     /**
@@ -83,9 +82,24 @@ public class InboxFileRepository {
 
     public Optional<InboxFile> findByLogicalFilenameAndHash(String logicalFilename, String contentHash) {
         List<InboxFile> found = jdbcTemplate.query(
-                "SELECT " + SELECT_COLUMNS + " FROM inbox_file WHERE logical_filename = ? AND content_hash = ?",
+                "SELECT " + SELECT_COLUMNS + " FROM inbox_file f WHERE f.logical_filename = ? AND f.content_hash = ?",
                 InboxFileRepository::mapRow, logicalFilename, contentHash);
         return found.stream().findFirst();
+    }
+
+    /** Backfills what's only known once filename parsing, route
+      * resolution, and worksheet resolution have all succeeded --
+      * called once, right before attempting to propose. Never called at
+      * all for a file that gets quarantined first, which is exactly
+      * why the archiver's destination-path building (see
+      * {@link InboxArchiver#buildDestinationPath}) treats these as
+      * possibly null. */
+    public void updateRouteMetadata(long id, String feedType, String clientId,
+            java.time.LocalDate sourceDate, String worksheet) {
+        jdbcTemplate.update(
+                "UPDATE inbox_file SET feed_type = ?, client_id = ?, source_date = ?, worksheet = ?, "
+                        + "updated_at = now() WHERE id = ?",
+                feedType, clientId, sourceDate, worksheet, id);
     }
 
     /** A successful initial proposal -- the only outcome that ends this
@@ -150,9 +164,18 @@ public class InboxFileRepository {
                 newPath, id);
     }
 
+    // Qualified with the f. alias on every column -- a real bug, found
+    // by an actual first execution, not a test: import_batch (aliased b
+    // in findDeliveredAwaitingArchive's JOIN below) has its own columns
+    // named id, client_id, content_hash, worksheet, and status, so an
+    // unqualified column list is genuinely ambiguous the moment it's
+    // used inside that join, not just stylistically worse. Every query
+    // using this constant aliases its FROM inbox_file as f specifically
+    // so this stays valid everywhere it's used, not just here.
     private static final String SELECT_COLUMNS =
-            "id, logical_filename, content_hash, original_path, current_path, feed_type, client_id, "
-                    + "source_date, worksheet, status, import_batch_id, attempt_count, last_error";
+            "f.id, f.logical_filename, f.content_hash, f.original_path, f.current_path, f.feed_type, "
+                    + "f.client_id, f.source_date, f.worksheet, f.status, f.import_batch_id, f.attempt_count, "
+                    + "f.last_error";
 
     private static InboxFile mapRow(ResultSet rs, int rowNum) throws SQLException {
         long importBatchId = rs.getLong("import_batch_id");

@@ -32,14 +32,20 @@ import java.util.stream.Stream;
  * {@code e2e/README.md}).
  *
  * Per-file flow, in order: skip anything not a stable, regular,
- * non-hidden, non-lock, non-symlink spreadsheet file; parse the
- * filename (see {@link InboxFilenameParser}); resolve the
+ * non-hidden, non-lock, non-symlink spreadsheet file; hash it and
+ * record arrival, then attempt the atomic processing claim (see
+ * {@link InboxFileRepository}) -- deliberately before any of the
+ * routing checks below, not after, so a permanently-unroutable file
+ * still gets a real, queryable {@code QUARANTINED} row instead of only
+ * a log line repeating every scan cycle forever, and so the claim
+ * covers this file's entire processing sequence, not just the final
+ * propose call. Only on a won claim: check the extension is supported;
+ * parse the filename (see {@link InboxFilenameParser}); resolve the
  * (clientId, feedType) route (see {@link CanonicalModelRegistry#resolveRoute});
  * resolve which of the workbook's actual worksheets matches the route's
  * candidate names (see {@link WorksheetResolver}), failing
  * deterministically on zero or more than one match, never guessing;
- * hash; record arrival and attempt the atomic processing claim (see
- * {@link InboxFileRepository}); only on a won claim, call
+ * only once all of that succeeds, call
  * {@link MappingWorkflowService#proposeInitialFromInbox}.
  *
  * A permanently unroutable file (bad filename, unknown client/feed,
@@ -156,45 +162,18 @@ public class InboxScanner {
         String filename = file.getFileName().toString();
         String relativePath = "inbox/" + filename;
 
-        String extension = filename.substring(Math.max(0, filename.lastIndexOf('.')));
-        if (!SUPPORTED_EXTENSIONS.contains(extension.toLowerCase(Locale.ROOT))) {
-            log.warn("Quarantining {} -- unsupported extension {}", filename, extension);
-            // Not yet in inbox_file at all (never hashed) -- nothing to
-            // quarantine there yet. A human moving this file out is the
-            // actual remediation; logging is the only record for now.
-            // Named gap, not silently dropped -- see this project's own
-            // Step 9 notes for the plan to close it (hash first, then
-            // quarantine through inbox_file like every other failure
-            // mode, rather than this one being log-only).
-            return;
-        }
-
-        Optional<InboxFilenameParser.ParsedFilename> parsed = filenameParser.parse(filename);
-        if (parsed.isEmpty()) {
-            log.warn("Quarantining {} -- doesn't match <feedType>_<client>_<yyyyMMdd> convention", filename);
-            return;
-        }
-
-        FeedRoute route;
-        try {
-            route = registry.resolveRoute(parsed.get().clientId(), parsed.get().feedType());
-        } catch (NoSuchElementException e) {
-            log.warn("Quarantining {} -- no feed route for client '{}', feed '{}'",
-                    filename, parsed.get().clientId(), parsed.get().feedType());
-            return;
-        }
-
-        String worksheet;
-        try {
-            worksheet = worksheetResolver.resolve(relativePath, route);
-        } catch (IllegalStateException e) {
-            log.warn("Quarantining {} -- {}", filename, e.getMessage());
-            return;
-        }
-
+        // Hashing (and therefore establishing this file's real
+        // inbox_file identity) happens first now, before any of the
+        // extension/filename/route/worksheet checks below -- moved here
+        // specifically so a permanently-unroutable file still gets a
+        // proper QUARANTINED row instead of only a log line that
+        // repeats every scan cycle forever. This also means the atomic
+        // claim now covers the entire per-file sequence, not just the
+        // propose call -- a second concurrent scanner instance can no
+        // longer redundantly parse/route/resolve-worksheet the same
+        // file before either one wins the claim.
         String contentHash = fileHasher.sha256(relativePath);
-        inboxFileRepository.recordArrival(filename, contentHash, relativePath,
-                parsed.get().feedType(), parsed.get().clientId(), parsed.get().sourceDate(), worksheet);
+        inboxFileRepository.recordArrival(filename, contentHash, relativePath);
 
         if (!inboxFileRepository.claimForProcessing(filename, contentHash, maxAttempts, leaseDuration)) {
             // Not eligible this cycle -- already succeeded, already
@@ -208,6 +187,38 @@ public class InboxScanner {
                 .orElseThrow(() -> new IllegalStateException(
                         "claimForProcessing succeeded but the row is missing -- should be unreachable"));
 
+        String extension = filename.substring(Math.max(0, filename.lastIndexOf('.')));
+        if (!SUPPORTED_EXTENSIONS.contains(extension.toLowerCase(Locale.ROOT))) {
+            quarantine(claimed.id(), filename, "unsupported extension " + extension);
+            return;
+        }
+
+        Optional<InboxFilenameParser.ParsedFilename> parsed = filenameParser.parse(filename);
+        if (parsed.isEmpty()) {
+            quarantine(claimed.id(), filename, "doesn't match <feedType>_<client>_<yyyyMMdd> convention");
+            return;
+        }
+
+        FeedRoute route;
+        try {
+            route = registry.resolveRoute(parsed.get().clientId(), parsed.get().feedType());
+        } catch (NoSuchElementException e) {
+            quarantine(claimed.id(), filename, "no feed route for client '" + parsed.get().clientId()
+                    + "', feed '" + parsed.get().feedType() + "'");
+            return;
+        }
+
+        String worksheet;
+        try {
+            worksheet = worksheetResolver.resolve(relativePath, route);
+        } catch (IllegalStateException e) {
+            quarantine(claimed.id(), filename, e.getMessage());
+            return;
+        }
+
+        inboxFileRepository.updateRouteMetadata(
+                claimed.id(), parsed.get().feedType(), parsed.get().clientId(), parsed.get().sourceDate(), worksheet);
+
         try {
             ProposeResponse response = workflowService.proposeInitialFromInbox(
                     route.modelId(), parsed.get().clientId(), relativePath, worksheet);
@@ -219,5 +230,14 @@ public class InboxScanner {
                     filename, claimed.attemptCount(), maxAttempts, e);
             inboxFileRepository.markRetryWait(claimed.id(), e.getMessage(), Instant.now().plus(retryBackoff));
         }
+    }
+
+    /** A permanent, non-retryable problem -- recorded as a real,
+      * queryable {@code inbox_file} row (not just a log line), so a
+      * human can actually see and act on it rather than it silently
+      * repeating every scan cycle forever. */
+    private void quarantine(long inboxFileId, String filename, String reason) {
+        log.warn("Quarantining {} -- {}", filename, reason);
+        inboxFileRepository.markQuarantined(inboxFileId, reason);
     }
 }
