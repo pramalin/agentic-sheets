@@ -266,3 +266,115 @@ to work yet.
   through the browser (JSON-edit validation, risk-summary calculation,
   status-to-action availability) -- see `ui-notes.md`'s Step 8c section
   for where this was first discussed.
+
+## A second external review, after Checkpoint A's confirmed pass
+
+A thorough review of the actual checked-in golden-path test (not just
+the design, the real implementation) found one genuinely important gap
+and three real maintenance improvements. Verified each against the
+actual code or via direct lookup before fixing, same discipline as
+every review this project has gone through.
+
+**High: the test never verified the payload actually delivered.**
+Confirmed against the real `FakeTargetController` -- it accepted any
+string body and always returned success, storing nothing. The test
+checked `dispatch.outcome === SUCCESS` and `deliveryLog[0].statusCode
+=== 200`, but neither of those proves the *right data* crossed the
+delivery boundary -- a regression sending an empty array, wrong field
+values, or missing headers would report success identically. Fixed by
+adding a request journal to `FakeTargetController`
+(`POST /internal/fake-target/reset`,
+`GET /internal/fake-target/{service}/requests`) -- deliberately a full
+list, not just "the most recent request" (the review's own suggested
+endpoint shape), matching `GET /_llmsim/calls`'s exact pattern instead:
+a list gives both "what was received" *and* "exactly how many times"
+as one assertion (`.length`), which a singular "last request" endpoint
+can't support no matter how it's queried. The test now asserts exactly
+one delivery, the real `X-Import-Batch-Id`/`X-Mapping-Proposal-Id`
+headers matching the actual proposal, a non-empty `Idempotency-Key`,
+the correct row count, and representative exact values (`account_id`,
+`security_id`, `asset_class`, `quantity`, `currency`) from the real
+JPMC fixture's first row.
+
+**Medium: CI checked out `sheets-reader-mcp` unpinned.** An unrelated
+change to that repo's own `main` branch could silently break or change
+this project's E2E result with no change here at all. Fixed by pinning
+to a real commit (`b77f59679bcc4b443d54621868d4afd908b81135`), verified
+directly via `git ls-remote` against the actual repo, not assumed.
+Advance this deliberately (a dependency-update PR) when needed, not by
+letting it silently drift.
+
+**Low: fixed project name and ports don't support concurrent runs.**
+Two worktrees, or two simultaneous local runs, would have collided --
+and one run's cleanup could tear down the other's containers. Fixed:
+`run-golden-path.sh` now generates a unique project name per invocation
+(`GITHUB_RUN_ID` in CI, `$$` locally), and all three host ports
+(`POSTGRES_PORT`, `AGENTIC_SHEETS_BACKEND_PORT`, `LLMSIM_HOST_PORT`) are
+overridable (`${VAR:-default}`) rather than unconditionally assigned --
+a caller running two of these at once can now set distinct values for
+each. `compose.e2e.yaml`'s llmsim port mapping is parametrized to match
+(it wasn't before -- an override to `LLMSIM_HOST_PORT` would have had
+no effect on the actual container port binding otherwise, a real
+inconsistency caught while making this change, not before).
+
+**Low: three GitHub Actions were on deprecated, Node-20-based major
+versions.** Verified the actual current major version of each directly
+via `git ls-remote --tags` against their real repos, not trusted from
+the review's own claim alone: `actions/checkout` → `v7`,
+`actions/setup-node` → `v7`, `actions/setup-java` → `v5`, all three
+confirmed to actually exist before bumping to them.
+
+### Run 5: the payload-delivery fix itself had a real bug, found only by actually running it
+
+`mvn -B test` -- 72/72, including the Testcontainers test -- confirmed
+the backend changes compiled and didn't break anything existing. The
+actual E2E run got further than any prior run: past propose, past
+approve, past every business-result assertion, and into the *new*
+payload-delivery checks this same round added -- where it failed:
+
+```
+Expected: "1"
+Received: undefined
+  at delivery.headers["x-import-batch-id"]
+```
+
+The bug was in the fix itself, not the thing it was fixing: HTTP header
+names are case-insensitive by protocol (RFC 7230), but
+`FakeTargetController`'s original header capture used an exact-string
+`Map.get("x-import-batch-id")` -- and `Dispatcher` actually sends
+`X-Import-Batch-Id` (mixed case, confirmed directly against
+`Dispatcher.java`'s own `.header(...)` calls). The lookup came back
+null against whatever casing Spring actually preserved. The fix isn't
+"use the right casing" -- there is no one right casing to hardcode, any
+client or proxy could send any case -- it's matching header names
+case-insensitively regardless of what actually arrives, which the
+original version never should have assumed in the first place.
+
+Also added `FakeTargetControllerTest` -- a plain, fast unit test (no
+Docker, no Testcontainers; `FakeTargetController` has no external
+dependencies at all) that locks this specific behavior in directly,
+so a future regression here gets caught by `mvn test` in seconds, not
+by needing another live E2E run to notice.
+
+Worth naming as a pattern by now, not just this one instance: every
+single bug this E2E initiative has found -- the port collision, the
+auth key mismatch, the working-directory bug, the stale model string,
+and now this header-casing bug -- was something only an actual
+execution surfaced, never something static review or careful reasoning
+alone caught first. That's not a knock on the review process; it's
+the entire reason this initiative exists.
+
+**Confirmed passing.** `mvn -B test`: 77/77, including all 5 new
+`FakeTargetControllerTest` cases. `run-golden-path.sh`: `1 passed
+(3.4s)`, clean build, all containers healthy, clean teardown -- the
+payload-delivery assertions this whole round exists for genuinely pass
+now, not just "should." One small follow-up caught while reading that
+same test's own log output: `receive()`'s diagnostic log line did its
+own separate, still-case-sensitive `headers.get("x-import-batch-id")`
+lookup for the log message, printing a misleading `null` even though
+the actual capture logic right next to it was already fixed and
+working correctly (confirmed by all 5 unit tests passing). Not a
+functional bug -- purely cosmetic, log output only -- but worth fixing
+for the same reason as the real bug: moved the log statement to read
+from `captured` (guaranteed correctly-keyed by the fix above) instead
+of a second, independent lookup that was never going to match either.

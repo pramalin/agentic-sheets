@@ -8,29 +8,39 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-PROJECT_NAME="agentic-sheets-e2e"
+# Unique per invocation, not a fixed name -- an external review
+# correctly noted that a fixed project name means two worktrees, or two
+# simultaneous local runs, would collide, and one run's cleanup could
+# tear down the other's containers out from under it. GITHUB_RUN_ID is
+# genuinely unique per CI workflow run; $$ (this shell's own PID) is a
+# reasonable low-collision stand-in for local runs, where there's no
+# equivalent built-in identifier.
+RUN_ID="${GITHUB_RUN_ID:-$$}"
+PROJECT_NAME="agentic-sheets-e2e-${RUN_ID}"
 COMPOSE_ARGS=(-p "$PROJECT_NAME" -f compose.yaml -f compose.e2e.yaml)
 
 # Distinct host ports, not the defaults -- a real collision this
 # project actually hit: -p gives separate containers/networks/volumes,
 # but `ports: "5432:5432"` still tries to bind the literal host port
 # regardless of project name, so this collided with an ordinary dev
-# stack that happened to be running at the same time. Exported here so
+# stack that happened to be running at the same time. Overridable
+# (`${VAR:-default}`), not unconditionally assigned -- a caller running
+# two of these concurrently can set distinct values for each rather
+# than the script forcing the same ports every time. Exported here so
 # both the `docker compose` invocation below (via compose.yaml's own
 # ${POSTGRES_PORT:-5432} / ${AGENTIC_SHEETS_BACKEND_PORT:-8081}
 # interpolation) and Playwright's actual request target agree on the
 # same values -- not hardcoded twice in two places that could drift
 # apart.
-export POSTGRES_PORT=15432
-export AGENTIC_SHEETS_BACKEND_PORT=18081
-LLMSIM_HOST_PORT=18089  # matches compose.e2e.yaml's llmsim ports: mapping directly
+export POSTGRES_PORT="${POSTGRES_PORT:-15432}"
+export AGENTIC_SHEETS_BACKEND_PORT="${AGENTIC_SHEETS_BACKEND_PORT:-18081}"
+export LLMSIM_HOST_PORT="${LLMSIM_HOST_PORT:-18089}"
 
-# -p agentic-sheets-e2e is load-bearing, not cosmetic -- see
-# compose.e2e.yaml's own header comment for why reusing the ordinary
-# dev Compose project would make this suite nondeterministic (a
-# pre-existing postgres-data volume skips schema initialization
-# entirely, since Postgres only runs docker-entrypoint-initdb.d
-# against a brand-new volume).
+# -p is load-bearing, not cosmetic -- see compose.e2e.yaml's own
+# header comment for why reusing the ordinary dev Compose project would
+# make this suite nondeterministic (a pre-existing postgres-data volume
+# skips schema initialization entirely, since Postgres only runs
+# docker-entrypoint-initdb.d against a brand-new volume).
 cleanup() {
   # A real bug this project actually hit: the script cd's into e2e/
   # later on to run npm/playwright, and never cd's back before that --

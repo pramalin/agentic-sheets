@@ -451,7 +451,27 @@ network, and don't ship the `.env.example` default secret anywhere real.
       exactly the reason the test then ran into) before the fourth run
       came back clean: `1 passed (3.6s)`, confirming **the entire
       pipeline — propose through delivery — actually works end to
-      end**, on a real machine, not just internally verified. Also
+      end**, on a real machine, not just internally verified. A second
+      external review then found a real gap even in that confirmed-
+      passing test: it never verified the payload that actually crossed
+      the delivery boundary, only that dispatch reported success —
+      `FakeTargetController` accepted any body and stored nothing.
+      Fixed with a request journal mirroring llmsim's own
+      `GET /_llmsim/calls` pattern exactly (a full list, not just "the
+      most recent request" — gives both content *and* count as one
+      assertion). That fix had a real bug of its own, found the same
+      way every other bug in this initiative was found — an actual
+      execution: HTTP headers are case-insensitive by protocol, but the
+      capture logic did an exact-string lookup against Dispatcher's
+      real mixed-case header names. Fixed properly (case-insensitive
+      matching, not a casing guess), locked in with a new
+      `FakeTargetControllerTest`, and reconfirmed passing:
+      `mvn test` 77/77, `run-golden-path.sh` `1 passed (3.4s)`. Also
+      pinned `sheets-reader-mcp` in CI to a verified real commit,
+      made concurrent E2E runs safe (unique project name, overridable
+      ports), and bumped three GitHub Actions to their real current
+      major versions (all verified directly via `git ls-remote`, not
+      assumed). Also
       added: CI now
       builds/lints the frontend at all (previously only `mvn test`
       ran). See `e2e/README.md` for the full round-by-round history —

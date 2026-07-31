@@ -1,30 +1,33 @@
-# E2E overlay -- applied on top of compose.yaml, never used alone:
-#   docker compose -p agentic-sheets-e2e -f compose.yaml -f compose.e2e.yaml up --build --wait
+# E2E overlay -- applied on top of compose.yaml, never used alone. Not
+# meant to be invoked with a hand-typed -p directly (run-golden-path.sh
+# generates a unique project name per invocation -- see that script's
+# own comments for why a fixed name isn't safe for concurrent runs):
+#   docker compose -p <unique-name> -f compose.yaml -f compose.e2e.yaml up --build --wait
 #
-# -p agentic-sheets-e2e is load-bearing, not cosmetic: without a
-# distinct project name, this would reuse the same postgres-data volume
-# name as ordinary local development. Postgres only runs
-# db/init/*.sql against a *new* volume (docker-entrypoint-initdb.d
-# semantics) -- reusing a developer's existing volume would silently
-# skip schema initialization and make the E2E suite nondeterministic,
-# exactly the kind of "the volume already exists" trap this project's
-# own README has warned about repeatedly for ordinary local dev.
+# -p is load-bearing, not cosmetic: without a distinct project name,
+# this would reuse the same postgres-data volume name as ordinary local
+# development. Postgres only runs db/init/*.sql against a *new* volume
+# (docker-entrypoint-initdb.d semantics) -- reusing a developer's
+# existing volume would silently skip schema initialization and make
+# the E2E suite nondeterministic, exactly the kind of "the volume
+# already exists" trap this project's own README has warned about
+# repeatedly for ordinary local dev.
 #
 # -p alone does NOT isolate host port bindings, though -- a real live
 # collision this project actually hit: "5432 ... port is already
 # allocated" when an ordinary dev stack was running at the same time.
 # Distinct project names give separate containers/networks/volumes, but
 # `ports: "5432:5432"` still tries to bind the literal host port
-# regardless of project name. run-golden-path.sh sets POSTGRES_PORT and
-# AGENTIC_SHEETS_BACKEND_PORT to e2e-specific values before invoking
-# Compose, reusing the exact env-var-interpolation mechanism
-# compose.yaml's postgres service already used successfully (and which
-# backend's port mapping is now parametrized to support too, matching
-# that same pattern) -- deliberately not relying on override-file
-# list-merge semantics for `ports`, which aren't certain enough to bet
-# a port collision fix on. llmsim is a brand-new service with no base-
-# file definition to merge against, so its port here is just a plain,
-# distinct value with no such ambiguity.
+# regardless of project name. run-golden-path.sh exports POSTGRES_PORT,
+# AGENTIC_SHEETS_BACKEND_PORT, and LLMSIM_HOST_PORT (overridable, not
+# forced, so two concurrent runs can use distinct values) before
+# invoking Compose -- postgres's and backend's ports reuse the exact
+# env-var-interpolation mechanism compose.yaml's own postgres service
+# already used successfully; llmsim's is parametrized the identical way
+# here, in this overlay, since it has no base-file definition to merge
+# against. Deliberately not relying on override-file list-merge
+# semantics for `ports` across -f files, which aren't certain enough to
+# bet a port collision fix on.
 #
 # Compose merges `environment` and `depends_on` (the map-with-condition
 # form) by key across -f files -- this overlay only needs to state what
@@ -34,7 +37,7 @@ services:
   llmsim:
     build: ./e2e/llmsim
     ports:
-      - "18089:8089"
+      - "${LLMSIM_HOST_PORT:-18089}:8089"
 
   backend:
     environment:

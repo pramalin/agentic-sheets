@@ -38,11 +38,15 @@ test.describe("golden path: propose -> approve -> validate -> dispatch", () => {
   });
 
   test("JPMC holdings: propose through delivery, exactly one model call", async () => {
-    // Reset llmsim first -- makes this test independent of run order
-    // (not relying on being the first proposal ever made against this
-    // fixture) and rewinds the script back to its one scripted step.
+    // Reset llmsim and the fake-target journal first -- makes this test
+    // independent of run order (not relying on being the first
+    // proposal ever made against this fixture, or the first delivery
+    // ever sent) and rewinds llmsim's script back to its one scripted
+    // step.
     const resetResponse = await llmsimApi.post("/_llmsim/reset");
     expect(resetResponse.ok(), "llmsim reset should succeed").toBeTruthy();
+    const fakeTargetResetResponse = await api.post("/internal/fake-target/reset");
+    expect(fakeTargetResetResponse.ok(), "fake-target reset should succeed").toBeTruthy();
 
     // 1. Propose
     const proposeResponse = await api.post("/internal/mapping/propose", {
@@ -99,7 +103,36 @@ test.describe("golden path: propose -> approve -> validate -> dispatch", () => {
     expect(detailAfter.deliveryLog[0].outcome).toBe("SUCCESS");
     expect(detailAfter.deliveryLog[0].statusCode).toBe(200);
 
-    // 7. Confirm the agent was called exactly once. This is the actual
+    // 7. What actually crossed the delivery boundary -- not just that
+    // dispatch reported SUCCESS. FakeTargetController accepts any body
+    // and always returns success; without reading its own journal back,
+    // a regression sending an empty array, wrong field values, or
+    // missing headers would report success identically. This is the
+    // actual fix for the gap an external review correctly caught: the
+    // test previously verified everything *up to* the delivery
+    // boundary, but nothing that actually crossed it.
+    const fakeTargetRequestsResponse = await api.get("/internal/fake-target/holdings/requests");
+    const fakeTargetRequests = await fakeTargetRequestsResponse.json();
+    expect(fakeTargetRequests.length, "fake-target should have received exactly one delivery").toBe(1);
+
+    const delivery = fakeTargetRequests[0];
+    expect(delivery.headers["x-import-batch-id"]).toBe(String(approved.importBatchId));
+    expect(delivery.headers["x-mapping-proposal-id"]).toBe(String(proposalId));
+    expect(delivery.headers["idempotency-key"]?.length).toBeGreaterThan(0);
+
+    const deliveredRows = JSON.parse(delivery.body);
+    expect(deliveredRows.length).toBe(approved.validation.validRows.length);
+    // Representative exact values from the real JPMC fixture, not just
+    // "some rows arrived" -- the first row is deterministic (llmsim's
+    // scripted reply is exactly one fixed response, not a live model
+    // call that could reorder or vary anything).
+    expect(deliveredRows[0].account_id).toBe("ACC-1001");
+    expect(deliveredRows[0].security_id).toBe("037833100");
+    expect(deliveredRows[0].asset_class).toEqual({ type: "Equity" });
+    expect(deliveredRows[0].quantity).toBe(5000);
+    expect(deliveredRows[0].currency).toEqual({ type: "USD" });
+
+    // 8. Confirm the agent was called exactly once. This is the actual
     // point of resetting llmsim and using Script.exactly rather than
     // repeatingLast/cycling: a regression that makes a wasted second
     // model call (the exact class of bug Step 7.4/7.5's hardening

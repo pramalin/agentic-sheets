@@ -8,13 +8,13 @@ jobs:
   backend-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Learned the hard way on sheets-reader-mcp: Maven running directly
       # on the runner (not inside a Docker image with a pinned JDK) has no
       # guarantee its default JDK supports --release 21 unless this is
       # explicit.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -34,9 +34,9 @@ jobs:
   frontend-checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: 'npm'
@@ -64,7 +64,7 @@ jobs:
     needs: [backend-tests, frontend-checks]
     steps:
       - name: Checkout agentic-sheets
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: agentic-sheets
 
@@ -75,10 +75,18 @@ jobs:
       # explicitly: agentic-sheets/ and sheets-reader-mcp/ end up as
       # siblings under $GITHUB_WORKSPACE, matching what compose.yaml's
       # relative build path expects.
+      # Pinned to a specific commit, not the default branch -- an
+      # external review correctly caught that an unpinned checkout means
+      # an unrelated change on sheets-reader-mcp's own main branch could
+      # silently break or change this project's E2E result without any
+      # change here at all. Verified as the actual current HEAD via
+      # `git ls-remote` at the time this pin was added, not guessed.
+      # Advance deliberately (a dependency-update PR), not silently.
       - name: Checkout sheets-reader-mcp
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: pramalin/sheets-reader-mcp
+          ref: b77f59679bcc4b443d54621868d4afd908b81135
           path: sheets-reader-mcp
 
       - name: Configure environment
