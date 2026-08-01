@@ -2,7 +2,7 @@ package com.alai.agenticsheets.mapping;
 
 import java.util.List;
 
-/** Thrown by {@link MappingProposalService} when
+/** Thrown by {@link AgentMappingProposalService} when
   * {@link MappingProposalStructuralValidator} finds the agent's output
   * doesn't actually conform to the ADT it was shown -- caught by
   * {@link MappingController}, which returns 422 with the problem list

@@ -16,7 +16,8 @@ import java.util.List;
 public class MappingProposalRepository {
 
     private static final String SELECT_COLUMNS =
-            "id, import_batch_id, config_version, proposal, status, rejection_reason";
+            "id, import_batch_id, config_version, proposal, status, rejection_reason, origin, mapping_memory_id, "
+                    + "column_fingerprint, client_config_fingerprint";
 
     private final JdbcTemplate jdbcTemplate;
     private final JsonMapper jsonMapper;
@@ -26,12 +27,26 @@ public class MappingProposalRepository {
         this.jsonMapper = jsonMapper;
     }
 
+    /** @see #save(long, int, MappingProposal, String, Long, String, String) --
+      * this overload defaults origin to AGENT with no memory link or
+      * fingerprints, for any caller that hasn't been updated to think
+      * about Step 10 provenance explicitly (there are none left in this
+      * codebase, but keeping this narrows the blast radius of adding it
+      * back for a test or a future caller without immediately needing
+      * to plumb fingerprints through). */
     public long save(long importBatchId, int configVersion, MappingProposal proposal) {
+        return save(importBatchId, configVersion, proposal, ResolvedProposal.ORIGIN_AGENT, null, null, null);
+    }
+
+    public long save(long importBatchId, int configVersion, MappingProposal proposal, String origin,
+            Long mappingMemoryId, String columnFingerprint, String clientConfigFingerprint) {
         String json = jsonMapper.writeValueAsString(proposal);
         return jdbcTemplate.queryForObject(
-                "INSERT INTO mapping_proposal (import_batch_id, config_version, proposal) "
-                        + "VALUES (?, ?, ?::jsonb) RETURNING id",
-                Long.class, importBatchId, configVersion, json);
+                "INSERT INTO mapping_proposal (import_batch_id, config_version, proposal, origin, "
+                        + "mapping_memory_id, column_fingerprint, client_config_fingerprint) "
+                        + "VALUES (?, ?, ?::jsonb, ?, ?, ?, ?) RETURNING id",
+                Long.class, importBatchId, configVersion, json, origin, mappingMemoryId,
+                columnFingerprint, clientConfigFingerprint);
     }
 
     public StoredMappingProposal findById(long id) {
@@ -131,13 +146,19 @@ public class MappingProposalRepository {
     }
 
     private StoredMappingProposal mapRow(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
+        long mappingMemoryId = rs.getLong("mapping_memory_id");
+        boolean mappingMemoryIdWasNull = rs.wasNull();
         return new StoredMappingProposal(
                 rs.getLong("id"),
                 rs.getLong("import_batch_id"),
                 rs.getInt("config_version"),
                 jsonMapper.readValue(rs.getString("proposal"), MappingProposal.class),
                 rs.getString("status"),
-                rs.getString("rejection_reason"));
+                rs.getString("rejection_reason"),
+                rs.getString("origin"),
+                mappingMemoryIdWasNull ? null : mappingMemoryId,
+                rs.getString("column_fingerprint"),
+                rs.getString("client_config_fingerprint"));
     }
 
     /**

@@ -58,7 +58,7 @@ public class MappingController {
     private static final Set<String> ELIGIBLE_FOR_REDELIVER =
             Set.of("APPROVED", "DELIVERY_FAILED", "PROCESSING_ERROR");
 
-    private final MappingProposalService proposalService;
+    private final AgentMappingProposalService proposalService;
     private final MappingWorkflowService workflowService;
     private final ImportBatchRepository importBatchRepository;
     private final MappingProposalRepository mappingProposalRepository;
@@ -69,9 +69,10 @@ public class MappingController {
     private final ProposalValidationService validationService;
     private final Dispatcher dispatcher;
     private final ProposalDecisionService proposalDecisionService;
+    private final MappingMemoryService mappingMemoryService;
 
     public MappingController(
-            MappingProposalService proposalService,
+            AgentMappingProposalService proposalService,
             MappingWorkflowService workflowService,
             ImportBatchRepository importBatchRepository,
             MappingProposalRepository mappingProposalRepository,
@@ -81,7 +82,8 @@ public class MappingController {
             CanonicalModelRegistry registry,
             ProposalValidationService validationService,
             Dispatcher dispatcher,
-            ProposalDecisionService proposalDecisionService) {
+            ProposalDecisionService proposalDecisionService,
+            MappingMemoryService mappingMemoryService) {
         this.proposalService = proposalService;
         this.workflowService = workflowService;
         this.importBatchRepository = importBatchRepository;
@@ -93,6 +95,7 @@ public class MappingController {
         this.validationService = validationService;
         this.dispatcher = dispatcher;
         this.proposalDecisionService = proposalDecisionService;
+        this.mappingMemoryService = mappingMemoryService;
     }
 
     /**
@@ -138,7 +141,8 @@ public class MappingController {
         proposalService.validateEdited(editedProposal, model, batch.sourceFilename(), batch.worksheet());
 
         long newProposalId = proposalDecisionService.amendProposal(
-                id, stored.importBatchId(), model.version(), editedProposal);
+                id, stored.importBatchId(), model.version(), editedProposal,
+                stored.columnFingerprint(), stored.clientConfigFingerprint());
         return new ProposeResponse(stored.importBatchId(), newProposalId, editedProposal);
     }
 
@@ -213,6 +217,8 @@ public class MappingController {
             @RequestParam(required = false) String reason) {
         StoredMappingProposal stored = mappingProposalRepository.findById(id);
         proposalDecisionService.claimForRejection(id, stored.importBatchId(), reviewedBy, reason);
+        mappingMemoryService.invalidateIfMemoryDerived(stored,
+                "Rejected by " + reviewedBy + (reason != null ? ": " + reason : ""));
     }
 
     /**
@@ -330,6 +336,12 @@ public class MappingController {
                 importBatchRepository.updateStatus(batch.id(), "VALIDATION_FAILED");
                 return new ApproveResponse(batch.id(), proposalId, ValidationSummary.from(validationReport), null);
             }
+
+            // Delivery success is deliberately not a condition here -- a
+            // network failure below says nothing about whether the
+            // mapping itself was correct. Zero row errors is the actual
+            // bar; see MappingMemoryService's own javadoc.
+            mappingMemoryService.promoteIfEligible(stored, batch, currentModel, validationReport);
 
             DispatchResult dispatchResult = dispatcher.dispatch(
                     batch.id(), proposalId, currentModel.target(), validationReport.validRows());

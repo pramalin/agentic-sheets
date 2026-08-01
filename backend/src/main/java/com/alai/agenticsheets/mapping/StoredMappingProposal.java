@@ -8,5 +8,9 @@ public record StoredMappingProposal(
         int configVersion,
         MappingProposal proposal,
         String status,
-        String rejectionReason) {
+        String rejectionReason,
+        String origin,
+        Long mappingMemoryId,
+        String columnFingerprint,
+        String clientConfigFingerprint) {
 }

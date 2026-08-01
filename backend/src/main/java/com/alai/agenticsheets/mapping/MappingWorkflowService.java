@@ -12,11 +12,11 @@ import java.util.Set;
 
 /**
  * Proposal-creation orchestration -- hashing, batch creation, claims,
- * model invocation, and persistence -- extracted out of
- * {@link MappingController} as of Step 9. {@link MappingProposalService}
- * stays exactly what its own javadoc already says it is ("deliberately
- * does nothing else" but explore the spreadsheet and ask the model):
- * this class is everything *around* that call, not the call itself.
+ * resolution (agent call or memory reuse), and persistence -- extracted
+ * out of {@link MappingController} as of Step 9. {@link MappingResolutionService}
+ * (Step 10) is what actually decides whether a model call happens at
+ * all; this class is everything *around* that decision, not the
+ * decision itself.
  *
  * Two entry points, deliberately different business operations sharing
  * most of their implementation, not one method serving both:
@@ -60,7 +60,7 @@ public class MappingWorkflowService {
       * should decide on a person's behalf. */
     private static final Set<String> ELIGIBLE_FOR_INBOX_PROPOSE = Set.of("PENDING");
 
-    private final MappingProposalService proposalService;
+    private final MappingResolutionService resolutionService;
     private final ImportBatchRepository importBatchRepository;
     private final MappingProposalRepository mappingProposalRepository;
     private final FileHasher fileHasher;
@@ -68,13 +68,13 @@ public class MappingWorkflowService {
     private final ProposalDecisionService proposalDecisionService;
 
     public MappingWorkflowService(
-            MappingProposalService proposalService,
+            MappingResolutionService resolutionService,
             ImportBatchRepository importBatchRepository,
             MappingProposalRepository mappingProposalRepository,
             FileHasher fileHasher,
             CanonicalModelRegistry registry,
             ProposalDecisionService proposalDecisionService) {
-        this.proposalService = proposalService;
+        this.resolutionService = resolutionService;
         this.importBatchRepository = importBatchRepository;
         this.mappingProposalRepository = mappingProposalRepository;
         this.fileHasher = fileHasher;
@@ -165,24 +165,26 @@ public class MappingWorkflowService {
                             + "/redeliver instead of a fresh proposal)");
         }
 
-        MappingProposal proposal;
+        ResolvedProposal resolved;
         try {
-            proposal = proposalService.propose(model, client, path, worksheet);
+            resolved = resolutionService.resolve(model, client, path, worksheet);
         } catch (RuntimeException e) {
-            log.error("propose (model call) failed unexpectedly for batch {}", batchId, e);
+            log.error("propose (resolution) failed unexpectedly for batch {}", batchId, e);
             importBatchRepository.updateStatusIfCurrent(batchId, "PROPOSING", "PROPOSING_ERROR");
             throw e;
         }
 
         long proposalId;
         try {
-            proposalId = proposalDecisionService.saveProposalAndReleaseBatch(batchId, model.version(), proposal);
+            proposalId = proposalDecisionService.saveProposalAndReleaseBatch(
+                    batchId, model.version(), resolved.proposal(), resolved.origin(), resolved.mappingMemoryId(),
+                    resolved.columnFingerprint(), resolved.clientConfigFingerprint());
         } catch (RuntimeException e) {
             log.error("propose (persist+release) failed unexpectedly for batch {}", batchId, e);
             importBatchRepository.updateStatusIfCurrent(batchId, "PROPOSING", "PROPOSING_ERROR");
             throw e;
         }
 
-        return new ProposeResponse(batchId, proposalId, proposal);
+        return new ProposeResponse(batchId, proposalId, resolved.proposal());
     }
 }

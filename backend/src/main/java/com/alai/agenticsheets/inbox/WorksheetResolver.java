@@ -28,7 +28,7 @@ import java.util.List;
  * {@code .asText()}/{@code .asBoolean()} are the exact method names
  * already proven working elsewhere in this codebase against this same
  * {@code tools.jackson.databind.JsonNode} type (see
- * {@code MappingProposalService#extractColumnHeaders} and
+ * {@code AgentMappingProposalService#extractColumnHeaders} and
  * {@code ProposalValidationService}'s own {@code hasMore} check) --
  * not assumed from Jackson 2.x naming conventions, which this
  * project's actual Jackson 3.x dependency doesn't always share

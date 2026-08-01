@@ -99,8 +99,11 @@ public class ProposalDecisionService {
      * caller has to separately detect and repair.
      */
     @Transactional
-    public long saveProposalAndReleaseBatch(long importBatchId, int configVersion, MappingProposal proposal) {
-        long proposalId = mappingProposalRepository.save(importBatchId, configVersion, proposal);
+    public long saveProposalAndReleaseBatch(long importBatchId, int configVersion, MappingProposal proposal,
+            String origin, Long mappingMemoryId, String columnFingerprint, String clientConfigFingerprint) {
+        long proposalId = mappingProposalRepository.save(
+                importBatchId, configVersion, proposal, origin, mappingMemoryId,
+                columnFingerprint, clientConfigFingerprint);
         if (!importBatchRepository.updateStatusIfCurrent(importBatchId, "PROPOSING", "PENDING")) {
             throw new IllegalStateException(
                     "batch " + importBatchId + " was not PROPOSING when releasing it after a successful proposal "
@@ -135,12 +138,15 @@ public class ProposalDecisionService {
      * currently PENDING
      */
     @Transactional
-    public long amendProposal(long oldProposalId, long importBatchId, int configVersion, MappingProposal editedProposal) {
+    public long amendProposal(long oldProposalId, long importBatchId, int configVersion, MappingProposal editedProposal,
+            String columnFingerprint, String clientConfigFingerprint) {
         if (!mappingProposalRepository.supersede(oldProposalId)) {
             throw new IllegalStateException(
                     "proposal " + oldProposalId + " could not be amended -- not PENDING (already decided, or "
                             + "already amended by a concurrent request)");
         }
-        return mappingProposalRepository.save(importBatchId, configVersion, editedProposal);
+        return mappingProposalRepository.save(
+                importBatchId, configVersion, editedProposal, ResolvedProposal.ORIGIN_HUMAN_AMENDMENT, null,
+                columnFingerprint, clientConfigFingerprint);
     }
 }

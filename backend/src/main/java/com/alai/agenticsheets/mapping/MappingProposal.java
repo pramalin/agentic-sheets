@@ -6,7 +6,7 @@ import java.util.Map;
 /**
  * What the mapping agent proposes for one source file against one
  * canonical model -- bound directly from the chat model's structured
- * output (see {@link MappingProposalService}).
+ * output (see {@link AgentMappingProposalService}).
  *
  * Deliberately generic rather than typed to any one canonical model's
  * shape: canonical models are loaded from YAML at runtime (see

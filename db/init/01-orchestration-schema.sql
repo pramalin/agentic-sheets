@@ -64,6 +64,26 @@ CREATE TABLE mapping_proposal (
     -- Step 8: a human's stated reason for rejecting -- null for an
     -- approval, or for a proposal nobody has reviewed yet.
     rejection_reason    TEXT,
+    -- Step 10: AGENT (a real model call produced this -- the default,
+    -- and the only possibility before this column existed) / MEMORY
+    -- (reused from a prior clean-validated approval, no model call) /
+    -- HUMAN_AMENDMENT (a reviewer edited a proposal via /amend --
+    -- distinct from AGENT because the content is no longer purely
+    -- what the model said, same reasoning SUPERSEDED already applies
+    -- to status above).
+    origin               TEXT NOT NULL DEFAULT 'AGENT',
+    -- Set only when origin = MEMORY -- which mapping_memory row this
+    -- reuse came from. Nullable: most proposals aren't memory reuses.
+    mapping_memory_id    BIGINT,
+    -- Step 10: computed once at propose time (whichever path --
+    -- AGENT, MEMORY, or a human amendment inherits the proposal it
+    -- amended) and stored here so promotion at approval time can read
+    -- them back rather than re-computing via a second describe_table
+    -- call. Nullable only in the sense that old rows from before this
+    -- column existed won't have them -- every new proposal always
+    -- does.
+    column_fingerprint         TEXT,
+    client_config_fingerprint  TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -82,24 +102,64 @@ CREATE INDEX idx_mapping_proposal_status ON mapping_proposal (status);
 CREATE UNIQUE INDEX uq_mapping_proposal_active_batch
     ON mapping_proposal (import_batch_id) WHERE status = 'PENDING';
 
+-- Step 10: a reusable mapping, learned from a prior clean-validated
+-- human approval -- see mapping-notes.md's Step 10 section for the
+-- full design reasoning (three external review rounds, none of which
+-- is repeated here).
+--
+-- Deliberately scoped narrower than "reuse the whole proposal
+-- verbatim": mapping_memory only ever stores mappings safe to reapply
+-- against a *different* file with the same structure --
+-- sourceColumn/transformations/variantValueMap-based fields, never a
+-- mapping containing sourceConstant (a banner-derived literal value
+-- specific to the file it came from -- reusing it would silently
+-- apply the previous file's data as the current file's fact) or a
+-- data-derived selectedVariant (CanonicalRowBuilder trusts this
+-- immediately with zero row-level verification, unlike
+-- variantValueMap, which validates every row's own discriminator
+-- value -- confirmed by reading that class directly, not assumed).
+-- See MappingMemoryEligibility for the actual check.
 CREATE TABLE mapping_memory (
-    id                      BIGSERIAL PRIMARY KEY,
-    model_id                TEXT NOT NULL,
-    client_id               TEXT NOT NULL,
-    -- Part of the cache key, not just metadata: bumping a team's config
-    -- version naturally invalidates their old cached mappings instead of
-    -- silently reusing one built against fields that no longer exist or
-    -- mean something different now.
-    config_version          INTEGER NOT NULL,
-    column_fingerprint      TEXT NOT NULL,
-    mapping                 JSONB NOT NULL,
-    approved_from_batch_id  BIGINT NOT NULL REFERENCES import_batch (id),
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (model_id, client_id, config_version, column_fingerprint)
+    id                          BIGSERIAL PRIMARY KEY,
+    client_id                   TEXT NOT NULL,
+    -- Stands in for the "feed" concept -- always available on both the
+    -- manual /propose path and Step 9's scanner path (a feedType, by
+    -- contrast, only exists for scanner-originated proposals). Serves
+    -- the same distinguishing purpose an external review asked for:
+    -- two different reports from the same client rarely share a
+    -- worksheet name, even when their column layouts coincidentally
+    -- overlap.
+    worksheet                   TEXT NOT NULL,
+    model_id                    TEXT NOT NULL,
+    model_version               INTEGER NOT NULL,
+    -- A stable hash of ClientConfig's own mapping-relevant fields
+    -- (currently just dateFormat) -- ClientConfig has no version
+    -- number of its own to pin against, the way CanonicalModel does.
+    client_config_fingerprint   TEXT NOT NULL,
+    -- Sorted, duplicate-preserving multiset of (header, inferredType)
+    -- pairs -- see ColumnFingerprint. Column order is deliberately not
+    -- part of this: mappings are keyed by name, so a client reordering
+    -- columns shouldn't force a fresh agent call.
+    column_fingerprint          TEXT NOT NULL,
+    -- The final, human-approved MappingProposal (post-amendment if
+    -- amended) -- same JSON shape as mapping_proposal.proposal.
+    proposal_json                JSONB NOT NULL,
+    -- Provenance: which proposal taught us this, kept even after that
+    -- proposal's own batch is long since archived.
+    source_proposal_id           BIGINT NOT NULL REFERENCES mapping_proposal (id),
+    -- ACTIVE / INVALIDATED (a memory-derived proposal using this entry
+    -- was later rejected) / CONFLICTED (a second, differently-shaped
+    -- approved proposal appeared for the same scope key -- never
+    -- silently last-write-wins; see MappingMemoryService). Informal,
+    -- same reasoning as every other status column in this schema.
+    status                        TEXT NOT NULL DEFAULT 'ACTIVE',
+    invalidation_reason           TEXT,
+    created_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (client_id, worksheet, model_id, model_version, client_config_fingerprint, column_fingerprint)
 );
 
-CREATE INDEX idx_mapping_memory_lookup
-    ON mapping_memory (model_id, client_id, config_version, column_fingerprint);
+CREATE INDEX idx_mapping_memory_status ON mapping_memory (status);
 
 CREATE TABLE delivery_log (
     id                  BIGSERIAL PRIMARY KEY,

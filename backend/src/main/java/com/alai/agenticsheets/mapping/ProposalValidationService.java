@@ -44,7 +44,7 @@ public class ProposalValidationService {
                 .collect(Collectors.toMap(MappingProposal.FieldMapping::canonicalFieldPath, fm -> fm));
 
         // client_id is deliberately never in the agent's own proposal (see
-        // MappingProposalService's system prompt and mapping-notes.md) --
+        // AgentMappingProposalService's system prompt and mapping-notes.md) --
         // it's already known with certainty from the client parameter, not
         // something the agent should guess at. Without this, every row
         // would fail validation on a required field the proposal was

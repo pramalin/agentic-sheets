@@ -55,7 +55,7 @@ class ProposalValidationServiceTest {
                 explorer, new CanonicalRowBuilder(), jsonMapper);
 
         // Deliberately no client_id entry -- matching what the agent
-        // actually produces per MappingProposalService's system prompt.
+        // actually produces per AgentMappingProposalService's system prompt.
         MappingProposal proposal = new MappingProposal(
                 List.of(
                         new MappingProposal.FieldMapping("as_of_date", "As Of Date", null, null, null, null, 0.95, ""),
