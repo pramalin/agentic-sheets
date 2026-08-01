@@ -707,5 +707,56 @@ one place, since it's genuinely the point of this whole initiative:
    through to the ordinary receiver instead of 404ing.
 
 Checkpoint B (two Playwright browser journeys -- an approval flow and
-the Step 8c wrong-key-recovery path) is next, whenever that's picked
-up. Not started yet; no code exists for it.
+the Step 8c wrong-key-recovery path) is complete -- see "Checkpoint B:
+built, honestly unverified" and its follow-up sections above for the
+full round-by-round history. This section's own ending was never
+updated after that happened; corrected here rather than left
+contradicting the rest of the file.
+
+## Step 9: a third project, `inbox`
+
+`e2e/tests/inbox-scanner.spec.ts` -- the scanner/archiver pipeline,
+fully automated: drop a real file, wait through the scanner's own real
+scheduled cycles (not called directly), propose, approve, deliver,
+confirm the archiver's real file move. See `inbox-scanner-notes.md`
+for the full design history; this section is specifically about the
+E2E suite's own choices.
+
+Its own Compose overlay (`compose.e2e-inbox.yaml`), layered on top of
+both `compose.yaml` and `compose.e2e.yaml`, and its own runner
+(`run-inbox-tests.sh`) -- deliberately a third, separate overlay file
+rather than folding the scanner-enabling env vars into the shared
+`compose.e2e.yaml`: the other two suites rely on the scanner staying
+off (see `InboxScanner`'s own class javadoc for why racing an E2E test
+for llmsim's single scripted reply would be exactly the "unexpected
+extra model call" problem Step 7.4/7.5 already hardened against), and
+a shared file would have put that at risk.
+
+Isolated from `sample-input/` entirely, not just from the scanner's
+own production defaults -- a fresh `mktemp -d` workspace per run,
+mounted at a non-colliding container path (`/workspace-e2e-inbox`)
+rather than `/workspace`. This was a deliberate choice, not the
+obvious one: `InboxScanner` builds relative paths as `"inbox/" +
+filename` and hands them to `FileHasher`, which resolves against
+`agentic-sheets.workspace-root` -- `inbox.dir` and `workspace-root`
+are coupled, so isolating just the inbox subdirectory would have meant
+betting on Compose's exact volume list-merge semantics to override the
+*same* `/workspace` target across three stacked `-f` files, which
+isn't something to risk without being able to test it directly. A
+brand-new, non-overlapping mount target sidesteps the question
+entirely -- purely additive across the `-f` files, the well-established
+case for Compose's merge behavior.
+
+One real bug, first run: `__dirname is not defined`. `e2e/package.json`
+sets `"type": "module"` -- this was the first test file in the whole
+suite to need a path resolved relative to itself, so nothing earlier
+had hit this. Fixed with the standard ESM equivalent
+(`fileURLToPath(import.meta.url)`). Second run: `1 passed (7.4s)` --
+discovery through archive, zero manual steps, and the archived
+filename matched the by-hand run's own naming pattern exactly
+(`{batchId}-{hashPrefix}-{filename}`).
+
+Confirmed working locally, then added to CI as `e2e-inbox`, gated on
+the golden path passing first -- same bar Checkpoints A and B were
+held to before their own CI additions. The actual GitHub Actions run
+hasn't been watched yet as of this writing.

@@ -100,6 +100,8 @@ mapping-notes.md              The reasoning behind every mapping decision above,
                                written the way a human reviewer would see it
 ui-notes.md                   Review UI design decisions -- framework choice, auth,
                                kept separate from mapping-notes.md as a different concern
+inbox-scanner-notes.md        Step 9's design -- three external review rounds,
+                               scanner-vs-manual eligibility, the real bugs found
 ```
 
 ## Prerequisites
@@ -473,11 +475,28 @@ network, and don't ship the `.env.example` default secret anywhere real.
       round-by-round history, preserved in full rather than overwritten
       (matching how `mapping-notes.md` keeps every hardening round's
       history).
-- [ ] **Step 9** — Inbox scanner: scheduled poll, content-hash dedupe
-      (same filename + same hash → skip; same filename + different hash
-      → new batch), filename parsing
-      (`<feedType>_<client>_<yyyyMMdd>` → canonical model + client id),
-      auto-creating batches that feed Steps 5–8.
+- [x] **Step 9** — Inbox scanner: scheduled discovery, atomic
+      content-hash dedupe, strict filename parsing
+      (`<feedType>_<client>_<yyyyMMdd>` → canonical model + client via
+      a client-owned `feeds:` config, not inferred), route/worksheet
+      resolution, quarantine for every permanent failure mode, and a
+      separate delivered-only archiving pass — all feeding the
+      existing Steps 5–8 pipeline unchanged. Three rounds of external
+      review before any of it was built, each catching something real
+      (feed routing's actual home, why the scanner can't share
+      `/propose`'s manual eligibility, why a plain existence check
+      against `import_batch` is both a race and too broad in the other
+      direction). Proven twice: by hand first (a real file, discovery
+      through archive, confirmed via `ls` before and after), then
+      automated (`e2e/tests/inbox-scanner.spec.ts`, a third Playwright
+      project with its own isolated Compose overlay and workspace
+      mount, `1 passed (7.4s)`, now in CI as `e2e-inbox`). Two real
+      bugs found only by actually running it — an ambiguous column
+      reference across a JOIN, and `DateTimeFormatter`'s `yyyy` vs
+      `uuuu` under strict resolution — neither the kind of thing code
+      review reliably catches. See `inbox-scanner-notes.md` for the
+      full design history, and `e2e/README.md` for the E2E suite's own
+      account of the third project/overlay/runner.
 - [ ] **Step 10** — Mapping memory: fingerprint a source file's column
       layout together with the canonical model's `version`; skip the
       agent entirely when a fingerprint matches a previously approved
