@@ -1,0 +1,61 @@
+# Third E2E overlay, used only by run-inbox-tests.sh -- applied on top
+# of both compose.yaml AND compose.e2e.yaml:
+#   docker compose -p <unique-name> -f compose.yaml -f compose.e2e.yaml -f compose.e2e-inbox.yaml up --build --wait
+#
+# Deliberately a separate file, not folded into compose.e2e.yaml: the
+# other two E2E suites (run-golden-path.sh, run-browser-tests.sh) rely
+# on the inbox scanner staying OFF -- InboxScanner's own class javadoc
+# explains why (a background scan racing an E2E test for llmsim's
+# single scripted reply is exactly the "unexpected extra model call"
+# failure class Step 7.4/7.5 hardened against). Adding this as a THIRD,
+# separate overlay means those two scripts are completely unaffected --
+# they never reference this file at all.
+#
+# Workspace root deliberately isolated to its own mount target
+# (/workspace-e2e-inbox), not reusing /workspace (== sample-input) at
+# all -- two real considerations, not just caution for its own sake:
+#   1. sample-input/ is real, shared infrastructure now -- the exact
+#      fixtures pipeline-api.spec.ts and the browser tests depend on.
+#      Dropping E2E-inbox test files into sample-input/inbox/ would
+#      write real artifacts into the actual repo checkout every run.
+#   2. InboxScanner constructs relative paths as "inbox/" + filename
+#      and hands them to FileHasher, which resolves relative to
+#      agentic-sheets.workspace-root -- inbox.dir and workspace-root
+#      are coupled, both need to describe the same mount, or hashing
+#      silently resolves against the wrong root. Rather than bet on
+#      exact Compose volume list-merge semantics to override the
+#      *same* /workspace target cleanly across three -f files (genuinely
+#      uncertain without testing it directly), this uses a brand-new,
+#      non-colliding target instead -- purely additive, not an
+#      override, which is the well-established, unambiguous case for
+#      Compose's list-based merge.
+#
+# ${E2E_INBOX_HOST_DIR} is created fresh per invocation by
+# run-inbox-tests.sh (a real mktemp -d, not anything git-tracked) --
+# same per-run isolation principle as this project's other two E2E
+# scripts, applied to a filesystem path instead of a port number.
+services:
+  backend:
+    environment:
+      - AGENTIC_SHEETS_WORKSPACE_ROOT=/workspace-e2e-inbox
+      - AGENTIC_SHEETS_INBOX_ENABLED=true
+      - AGENTIC_SHEETS_INBOX_DIR=/workspace-e2e-inbox/inbox
+      # Short, not the production defaults (30s/60s/300s/600s/5min) --
+      # this suite needs to actually observe a scan happen without a
+      # test timeout measured in minutes. Still long enough to prove
+      # the real stability-gating and scheduling logic runs, not
+      # instant/bypassed.
+      - AGENTIC_SHEETS_INBOX_STABILITY_WINDOW_SECONDS=2
+      - AGENTIC_SHEETS_INBOX_SCAN_INTERVAL_MS=3000
+      - AGENTIC_SHEETS_INBOX_MAX_ATTEMPTS=5
+      - AGENTIC_SHEETS_INBOX_LEASE_SECONDS=30
+      - AGENTIC_SHEETS_INBOX_RETRY_BACKOFF_SECONDS=5
+      - AGENTIC_SHEETS_INBOX_ARCHIVE_INTERVAL_MS=3000
+    volumes:
+      - ${E2E_INBOX_HOST_DIR}:/workspace-e2e-inbox
+
+  sheets-mcp:
+    environment:
+      - SHEETS_READER_WORKSPACE_ROOT=/workspace-e2e-inbox
+    volumes:
+      - ${E2E_INBOX_HOST_DIR}:/workspace-e2e-inbox

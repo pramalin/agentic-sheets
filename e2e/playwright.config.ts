@@ -1,25 +1,28 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * Two projects, deliberately separate, sharing one config: `api`
+ * Three projects, deliberately separate, sharing one config: `api`
  * (Checkpoint A's pipeline-api.spec.ts -- Playwright's `request`
  * fixture / APIRequestContext, no browser at all despite this being
- * Playwright Test) and `browser` (Checkpoint B's review-approval.spec.ts
- * and api-key-recovery.spec.ts -- real Chromium, the actual frontend).
- * One TypeScript test framework for both, rather than a separate tool
- * for black-box API testing.
+ * Playwright Test), `browser` (Checkpoint B's review-approval.spec.ts
+ * and api-key-recovery.spec.ts -- real Chromium, the actual frontend),
+ * and `inbox` (Step 9's inbox-scanner.spec.ts -- API-only, same as
+ * `api`, but against a completely separate Compose environment with
+ * the scanner actually enabled; see run-inbox-tests.sh and
+ * compose.e2e-inbox.yaml for why that needs its own overlay rather
+ * than reusing compose.e2e.yaml). One TypeScript test framework for
+ * all three, rather than a separate tool for black-box API testing.
  *
- * Each runner script (run-golden-path.sh, run-browser-tests.sh) passes
- * `--project=<name>` explicitly -- not relying on `testMatch` filtering
- * alone to keep the two apart, since an omitted `--project` would
- * otherwise run every project against whatever spec files happen to be
- * present.
+ * Each runner script (run-golden-path.sh, run-browser-tests.sh,
+ * run-inbox-tests.sh) passes `--project=<name>` explicitly -- not
+ * relying on `testMatch` filtering alone to keep them apart, since an
+ * omitted `--project` would otherwise run every project against
+ * whatever spec files happen to be present.
  *
  * The Vite dev server (`webServer` below) only starts when
- * `E2E_START_FRONTEND` is set -- run-golden-path.sh never sets it, so
- * a pure API-only run never needs frontend/node_modules installed or
- * a browser downloaded, matching how it worked before this file grew a
- * second project.
+ * `E2E_START_FRONTEND` is set -- run-golden-path.sh and
+ * run-inbox-tests.sh never set it, so a pure API-only run never needs
+ * frontend/node_modules installed or a browser downloaded.
  *
  * `workers: 1` always, not just in CI -- Playwright's own
  * recommendation for CI reproducibility, but the reasoning applies
@@ -53,6 +56,17 @@ export default defineConfig({
         baseURL: process.env.E2E_FRONTEND_URL ?? "http://localhost:38173",
         trace: "retain-on-failure",
         screenshot: "only-on-failure",
+      },
+    },
+    {
+      name: "inbox",
+      testMatch: /inbox-scanner\.spec\.ts/,
+      // Needs real time to run (the scanner's own scheduled interval,
+      // deliberately shortened but still real -- see
+      // compose.e2e-inbox.yaml), not this project's usual 60s default.
+      timeout: 120_000,
+      use: {
+        baseURL: process.env.E2E_BACKEND_URL ?? "http://localhost:8081",
       },
     },
   ],
