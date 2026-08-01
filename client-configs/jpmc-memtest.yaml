@@ -1,0 +1,14 @@
+client: jpmc-memtest
+# Same convention as jpmc's real config -- this client's fixtures are
+# byte-identical copies of jpmc's own (see mapping-memory.spec.ts),
+# just registered under a distinct client id so this test's own
+# mapping-memory scope never overlaps with pipeline-api.spec.ts's.
+# A real, cross-test interaction a live run of both tests together
+# actually caught: once mapping-memory.spec.ts promotes an eligible
+# mapping for (jpmc, Holdings, Holdings, ...), pipeline-api.spec.ts's
+# own propose call against the same byte-identical fixture also hit
+# that memory entry and skipped the model call it expected -- correct
+# Step 10 behavior, but a real test-isolation gap that predates this
+# file. No feeds: needed -- this client is only ever used via the
+# manual /propose path in that one test, never Step 9's scanner.
+dateFormat: yyyy-MM-dd

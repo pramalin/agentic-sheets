@@ -34,9 +34,14 @@ cleanup() {
   # already at the repo root.
   cd "$REPO_ROOT"
   echo "--- Capturing Compose logs before teardown ---"
-  docker compose "${COMPOSE_ARGS[@]}" logs > "$REPO_ROOT/e2e/compose-logs-browser.txt" 2>&1 || true
+  timeout 60 docker compose "${COMPOSE_ARGS[@]}" logs > "$REPO_ROOT/e2e/compose-logs-browser.txt" 2>&1 || true
   echo "--- Tearing down E2E environment ($PROJECT_NAME) ---"
-  docker compose "${COMPOSE_ARGS[@]}" down --volumes --remove-orphans || true
+  # timeout, not just || true -- a real run of run-golden-path.sh's own
+  # equivalent call hung for 5+ minutes despite the CLI's own progress
+  # output showing every resource already Removed, needing a manual
+  # Ctrl-C. Same defensive bound applied here for consistency, even
+  # though this specific script hasn't shown the issue itself yet.
+  timeout 90 docker compose "${COMPOSE_ARGS[@]}" down --volumes --remove-orphans || true
 }
 trap cleanup EXIT
 

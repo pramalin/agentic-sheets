@@ -14,3 +14,4 @@ e2e/compose-logs-browser.txt
 e2e/compose-logs-inbox.txt
 e2e/playwright-report/
 e2e/test-results/
+sample-input/*_memtest_*.xlsx

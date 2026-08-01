@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs the golden-path E2E test against a fully isolated Compose
-# environment. Directory-independent -- resolves paths relative to this
-# script's own location, not wherever it happened to be invoked from.
+# Runs the api project's E2E tests against a fully isolated Compose
+# environment -- Checkpoint A's golden path (pipeline-api.spec.ts) and,
+# as of Step 10, mapping-memory.spec.ts (memory reuse across two
+# structurally-identical files). Both are pure API tests sharing this
+# same environment; see playwright.config.ts's own "api" project.
+# Directory-independent -- resolves paths relative to this script's own
+# location, not wherever it happened to be invoked from.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
@@ -63,9 +67,21 @@ cleanup() {
   # Captured *before* teardown, not queried afterward -- the containers
   # are gone by the time this function returns, so a separate "show
   # logs on failure" step later in a CI job would find nothing to query.
-  docker compose "${COMPOSE_ARGS[@]}" logs > "$REPO_ROOT/e2e/compose-logs.txt" 2>&1 || true
+  timeout 60 docker compose "${COMPOSE_ARGS[@]}" logs > "$REPO_ROOT/e2e/compose-logs.txt" 2>&1 || true
   echo "--- Tearing down E2E environment ($PROJECT_NAME) ---"
-  docker compose "${COMPOSE_ARGS[@]}" down --volumes --remove-orphans || true
+  # timeout, not just `|| true` -- a real run hung here for 5+ minutes
+  # (needed a manual Ctrl-C) despite the CLI's own progress output
+  # showing every container/volume/network already reported Removed --
+  # a known class of Docker Compose v2 issue where the CLI can hang
+  # *after* printing its completion summary, not before it. 90s is
+  # generous for what should normally take single-digit seconds; if it
+  # still doesn't return in that window, something is genuinely stuck
+  # and waiting longer wouldn't have helped either. Exit code 124 (the
+  # timeout itself firing) is swallowed by the same `|| true` as any
+  # other failure here -- this function's job is "try to clean up,
+  # never block the script forever," not to guarantee cleanup always
+  # fully succeeds.
+  timeout 90 docker compose "${COMPOSE_ARGS[@]}" down --volumes --remove-orphans || true
 }
 # Runs on normal exit *and* on failure -- a failed test run must not
 # leave a stray isolated environment behind for the next run to
@@ -107,4 +123,4 @@ npm ci
 E2E_BACKEND_URL="http://localhost:${AGENTIC_SHEETS_BACKEND_PORT}" \
 E2E_LLMSIM_URL="http://localhost:${LLMSIM_HOST_PORT}" \
 E2E_API_KEY="e2e-test-key" \
-  npx playwright test --project=api tests/pipeline-api.spec.ts
+  npx playwright test --project=api

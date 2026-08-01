@@ -1454,3 +1454,222 @@ correct one is the actual environment's real output (a real build
 succeeding with real dependency declarations), not a second round of
 different assumptions layered on top of the first.
 
+## Step 10: mapping memory
+
+Skips the model call entirely when a source file's column structure
+matches a previously, cleanly-approved mapping -- most files from a
+given client rarely change shape day to day, so most propose calls are
+paying full agent cost for a mapping this system already knows.
+
+### Three external review rounds, before any of it was built
+
+**Round 1** caught that my own first instinct -- adding `feedType`/
+`worksheetNames` fields to `canonical-models/*.yaml`, reasoning a
+canonical model is the natural owner of "what feed produces me" -- was
+backwards. `ClientConfig` already exists specifically for source-side
+conventions (confirmed by reading its own javadoc, not just deferring
+to the correction); a canonical model governs the *output* shape and
+has no reason to know which clients feed it. This was actually settled
+back in Step 9's own design (feed routing lives in `client-configs/`),
+and Step 10 just needed the same lesson applied to its own fingerprint
+scoping.
+
+**Round 2** caught a real correctness gap in my own first design: a
+plain fingerprint based on column headers alone isn't safe to reuse
+verbatim. Two field types are file-specific facts, not general rules:
+
+- `sourceConstant` -- a banner-derived literal value (e.g. a report
+  date pulled from free text above the real header). Reusing it
+  against a different file would silently claim the *previous* file's
+  date as the *current* file's fact. The clearest, most obvious proof
+  that reusing a whole proposal verbatim doesn't work -- I initially
+  under-weighted this as the smaller risk next to `selectedVariant`,
+  which the review round correctly reversed.
+- `selectedVariant` -- confirmed by reading `CanonicalRowBuilder`
+  directly (not assumed): it returns immediately with zero row-level
+  verification, unlike `variantValueMap`, which reads each row's own
+  discriminator value and errors on anything unmapped. A file that
+  happened to be all-USD doesn't mean the next file with the same
+  columns will be.
+
+**Round 3** caught that "remember mapping logic, not file-specific
+resolved values" needed a genuine identity separate from
+`import_batch`'s own -- and that my own first attempt at that identity
+(a plain existence check) was itself a real bug: a check-then-act race
+across concurrent instances loading different config versions, and
+separately too broad (a batch that hit `PROPOSING_ERROR` without ever
+producing a proposal would be permanently skipped forever, undermining
+Step 7.4's own recovery semantics for that status). Both problems
+closed the same way `inbox_file` closed the analogous problem in Step
+9: a separate table, its own narrower identity, its own atomic claim.
+
+One correction *to* a review round, not just from one: an earlier
+draft claimed `import_batch`'s unique constraint "serves the
+approval-time `CONFIG_CHANGED` detection." Checked against the real
+code before accepting that framing -- it doesn't. `CONFIG_CHANGED` is
+a runtime comparison (`currentModel.version() != stored.configVersion()`)
+at approval time; the constraint just keeps distinct config-version
+work units from colliding.
+
+### Architecture, as built
+
+```
+client fingerprint (dateFormat hash) + column fingerprint
+  (sorted, duplicate-preserving multiset of header+inferredType,
+  order-independent) + client/worksheet/model/model-version
+        |
+        v
+MappingResolutionService.resolve(...)
+    one describe_table call
+    -> MappingMemoryRepository.findActiveMatch(scope key)
+        hit  -> return remembered proposal, origin=MEMORY, no model call
+        miss -> AgentMappingProposalService.propose(..., already-fetched table)
+                (no second describe_table call on a miss)
+        |
+        v
+    (existing Steps 5-8 pipeline: review, approve/amend, validate, dispatch)
+        |
+        v
+On clean approval (zero row errors -- not merely status == APPROVED;
+confirmed a batch can reach DELIVERED with some rows valid and others
+erroring):
+    MappingMemoryEligibility.check(proposal)
+        any sourceConstant or selectedVariant anywhere -> not memorized
+        otherwise -> MappingMemoryRepository.promote(...)
+            new scope key       -> new ACTIVE entry
+            identical re-approval -> no-op confirmation
+            different mapping, same scope -> existing entry marked
+                CONFLICTED, never silently overwritten
+On rejection of a memory-derived proposal:
+    the mapping_memory entry it came from is INVALIDATED
+```
+
+Deliberately conservative (Step 10A): a proposal with even one
+disqualifying field is not memorized at all, no partial reuse. A
+`HUMAN_AMENDMENT`-origin proposal is treated exactly like an
+`AGENT`-origin one for promotion purposes -- an edited, corrected
+mapping is exactly what should be remembered, not the possibly-wrong
+draft it replaced. A future Step 10B could remember `sourceConstant`/
+`selectedVariant` fields too via executable bindings (extract the
+report date from *this banner pattern*, rather than retain the literal
+value) -- deliberately not built now, named rather than silently
+dropped, matching Step 9's own "10A/10B" convention for `inbox-file`
+quarantine.
+
+`MappingResolutionService` is the one shared entry point both the
+manual `/propose` path and Step 9's scanner call -- `AgentMappingProposalService`
+(renamed from `MappingProposalService`) now represents specifically
+"make a real model call," not "decide whether one is needed."
+
+### Bugs found before anything ran: verify, don't guess, applied to my own drafts
+
+Two real mistakes caught by re-reading my own code before it ever
+reached a compiler:
+
+- A broken Mockito matcher call while drafting `MappingMemoryServiceTest`
+  -- a nonsensical ternary mixed into an argument position, `anyLong()`
+  where a `String` parameter belonged.
+- A guessed `CanonicalModel` constructor while drafting
+  `MappingResolutionServiceTest` -- assumed `(modelId, version, synonyms,
+  sourceFile)`; the real record is six fields in a different order
+  (`modelId, version, target, root, synonyms, sourceFile`). Checked the
+  real record before using it, not after a test failure revealed it.
+
+### Bugs found only by actually running it
+
+**A stale schema duplicate.** `db/init/01-orchestration-schema.sql`
+already had an older, simpler `mapping_memory` table stub from an
+earlier session -- `(model_id, client_id, config_version,
+column_fingerprint, mapping, approved_from_batch_id)`, never carried
+through the actual three-round design above. Missed it when inserting
+the real table; `mvn test` caught it immediately (`relation
+"mapping_memory" already exists"`). Removed the stale stub, kept the
+real design.
+
+**A test-collision bug in the E2E test's own first draft.**
+`mapping-memory.spec.ts` and `pipeline-api.spec.ts` both used the exact
+same fixture filename (`holdings_jpmc_20260115.xlsx`) for their first
+propose call -- since `import_batch`'s own dedup key includes
+filename, whichever test ran second found the batch already
+`DELIVERED` by the first. Fixed by giving the memory test its own,
+never-reused filenames.
+
+**JPMC's real mapping confirmed ineligible, live.** A self-diagnosing
+check (added specifically because I suspected but didn't want to
+assume this) confirmed on a real run: JPMC's actual agent-generated
+Holdings mapping uses `selectedVariant("USD")` on currency, since
+every row in that fixture happens to be the same currency --
+disqualifying under `MappingMemoryEligibility`'s conservative rule.
+Not a bug in Step 10 -- correct behavior surfacing a real limitation of
+the conservative 10A rule against a real fixture. Rather than switch
+to a fixture llmsim's own script (`HoldingsHappyPath.scala`, scripted
+specifically for Holdings-shaped prompts) couldn't actually serve, the
+test now uses `/amend` to transform the disqualifying field into an
+equivalent `variantValueMap` before approving -- a genuinely realistic
+reviewer action, and exactly the `HUMAN_AMENDMENT` provenance path the
+design review specifically called for.
+
+**A real cross-test interaction, once memory actually worked.** Once
+the amend-based fix worked, a second, more interesting failure
+appeared: `pipeline-api.spec.ts` -- unchanged, already proven stable --
+started failing its own "exactly one model call" assertion, receiving
+zero calls instead. Not a Step 10 bug: `mapping-memory.spec.ts`
+running first had promoted an eligible mapping for `(jpmc, Holdings,
+Holdings, ...)`, and Step 10's memory scope is keyed on client/
+worksheet/model/fingerprints, not filename -- `pipeline-api.spec.ts`'s
+own propose call against the same byte-identical fixture correctly hit
+that same memory entry and skipped the model call *it* expected. Step
+10 working exactly as designed, exposing a real test-isolation gap
+that couldn't have existed before the feature did. Fixed with a
+dedicated test-only client (`client-configs/jpmc-memtest.yaml`) rather
+than touching the already-proven golden path at all.
+
+**A 5+ minute Docker Compose hang**, unrelated to any of the above --
+`docker compose down` hung after its own progress output had already
+reported every container/volume/network as `Removed`, needing a manual
+Ctrl-C. A known class of Docker Compose v2 issue (the CLI can hang
+*after* printing its completion summary, not before it), not something
+traceable to anything in this project's own script logic (confirmed by
+reading the full script -- nothing follows the `cleanup()` call that
+could itself hang). Fixed defensively with a `timeout` around both
+`docker compose down` and the log-capture call in all three E2E
+scripts, not just the one that showed it -- bounds the damage to 90s
+regardless of root cause, rather than leave the other two scripts with
+the same latent exposure.
+
+### What was proven
+
+**Unit and integration tests**: 128/128, including
+`MappingMemoryRepositoryTest` against a real Postgres via
+Testcontainers -- the conflict-detection path (a second, differently-
+shaped approval for the same scope key correctly marks the original
+entry `CONFLICTED` rather than silently overwriting it) had never
+actually executed before that test existed.
+
+**Live, twice**: `mapping-memory.spec.ts` against a real running
+stack -- real agent call, real `/amend`, real clean approval, real
+promotion, and a second file's propose call genuinely skipping the
+model entirely, confirmed both by the response's own `origin: MEMORY`
+and by llmsim's own script enforcement (nothing to fail loudly against,
+since no second call ever came). `pipeline-api.spec.ts` passing
+alongside it, unaffected, once properly isolated.
+
+### What's intentionally not covered
+
+- **Step 10B** -- executable bindings (`SourceBinding`/`VariantBinding`
+  sealed interfaces) that would let `sourceConstant`/data-derived
+  `selectedVariant` fields be safely remembered too, instead of
+  disqualifying the whole proposal. Real future work, not built
+  speculatively now.
+- **UI provenance surfacing** -- the review screen doesn't yet show
+  "Reused from mapping memory -- originally approved in proposal N,"
+  even though `origin`/`mappingMemoryId` are already in the API
+  response.
+- **The conflict-resolution UI** -- a `CONFLICTED` memory entry is
+  currently only visible by querying the database directly; no
+  endpoint or screen surfaces it for a human to actually resolve.
+- **The Docker Compose hang's actual root cause** -- mitigated with a
+  timeout, not diagnosed. If it recurs, `docker ps -a` / `docker network
+  ls` while it's hanging, and `ps aux | grep docker` to identify which
+  process is actually stuck, would be the next real diagnostic step.
+

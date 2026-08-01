@@ -497,10 +497,29 @@ network, and don't ship the `.env.example` default secret anywhere real.
       review reliably catches. See `inbox-scanner-notes.md` for the
       full design history, and `e2e/README.md` for the E2E suite's own
       account of the third project/overlay/runner.
-- [ ] **Step 10** — Mapping memory: fingerprint a source file's column
-      layout together with the canonical model's `version`; skip the
-      agent entirely when a fingerprint matches a previously approved
-      mapping, and only invoke it on genuine drift.
+- [x] **Step 10A** — Mapping memory: fingerprint a source file's column
+      layout (order-independent, duplicate-preserving) together with a
+      client-config hash and the canonical model's `version`; skip the
+      agent entirely when a fingerprint matches a previously,
+      cleanly-approved mapping. Deliberately conservative: a proposal
+      using `sourceConstant` (a banner-derived literal specific to the
+      file it came from) or a data-derived `selectedVariant` (confirmed
+      by reading `CanonicalRowBuilder` directly — trusted with zero
+      row-level verification, unlike `variantValueMap`) is never
+      memorized at all. Three rounds of external review before any of
+      it was built; conflict-aware promotion (a second, differently-
+      shaped approval for the same scope never silently overwrites the
+      first) confirmed against a real Postgres, since that path had
+      never actually executed before its own test did. Proven live: a
+      real agent call, a real `/amend` into an eligible form, a real
+      clean approval, and a second file's propose call genuinely
+      skipping the model — caught a real cross-test interaction along
+      the way (Step 10 working correctly, revealing a latent isolation
+      gap between two E2E tests that couldn't have existed before the
+      feature did). See `mapping-notes.md`'s Step 10 section for the
+      full history, including Step 10B's deliberately-deferred scope
+      (executable bindings that would let `sourceConstant`/
+      `selectedVariant` be remembered too).
 - [ ] **Step 11 (stretch)** — `mcp-gateway` in front of `sheets-reader-mcp`,
       only once there's an actual second MCP server or an
       environment-scoped exposure need — not before.

@@ -43,7 +43,7 @@ export default defineConfig({
   projects: [
     {
       name: "api",
-      testMatch: /pipeline-api\.spec\.ts/,
+      testMatch: /(pipeline-api|mapping-memory)\.spec\.ts/,
       use: {
         baseURL: process.env.E2E_BACKEND_URL ?? "http://localhost:8081",
       },
