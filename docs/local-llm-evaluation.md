@@ -1,7 +1,8 @@
 # Local LLM Evaluation
 
 Status: experimental  
-Initial evaluation date: 2026-08-02
+Initial evaluation date: 2026-08-02  
+Latest update: 2026-08-02
 
 ## Objective
 
@@ -47,8 +48,6 @@ near 245 seconds without a completed response.
 - Batch threads: 4
 - Temperature: 0
 - Top-k: 1
-- Initial hardware: CPU-only Chromebook Linux environment
-- Model Runner memory: approximately 3.31 GiB
 
 ## Simple structured-output test
 
@@ -64,7 +63,9 @@ Expected mappings:
 - `Security Description -> holding.securityName`
 - `Market Value -> holding.marketValue.amount`
 
-Observed results:
+All recorded runs returned the expected JSON mapping.
+
+### Initial Chromebook measurements
 
 | Run | Configuration | Elapsed | CPU | Result |
 |---|---|---:|---:|---|
@@ -74,6 +75,24 @@ Observed results:
 
 Four threads reduced CPU consumption substantially without increasing the warm
 latency in this small test.
+
+### Bundled Chromebook reproduction
+
+The checked-in scripts were rerun after a clean Compose restart:
+
+- Docker Engine: 29.2.1
+- Docker Compose: 5.0.2
+- Docker Model Runner: 1.2.6
+- Model Runner backend: llama.cpp
+- Available container memory: 14.15 GiB
+
+| Test | Elapsed | Peak observed Model Runner memory | Result |
+|---|---:|---:|---|
+| Simple mapping, model load included | 20.20 s | about 2.42 GiB | correct JSON |
+| Full holdings proposal | 190.84 s | not captured by this script | HTTP 422 |
+
+The simple-test CPU samples reached approximately 400%, consistent with the
+configured four inference threads.
 
 ## Agentic Sheets holdings fixture
 
@@ -100,15 +119,57 @@ Repeated validation problems:
 
 Recorded completed inference times:
 
-| Run | Elapsed | HTTP result |
-|---|---:|---|
-| 1 | 137.002 s | 422 structural-validation failure |
-| 2 | 197.157 s | 422 structural-validation failure |
-| 3 | 198.675 s | 422 structural-validation failure |
+| Run | Environment | Elapsed | HTTP result |
+|---|---|---:|---|
+| 1 | Chromebook CPU, initial evaluation | 137.002 s | 422 structural-validation failure |
+| 2 | Chromebook CPU, initial evaluation | 197.157 s | 422 structural-validation failure |
+| 3 | Chromebook CPU, initial evaluation | 198.675 s | 422 structural-validation failure |
+| 4 | Chromebook CPU, bundled reproduction | 190.84 s | 422 structural-validation failure |
+| 5 | Gaming laptop, CPU fallback before driver repair | 300.98 s | 422 structural-validation failure |
 
-The full rejected proposal showed that Qwen correctly mapped the semantic fields
-but omitted the conditional sum-type metadata. The deterministic validator
+Every completed full run reproduced the same two validation problems. The full
+rejected proposal showed that Qwen correctly mapped the semantic fields but
+omitted the conditional sum-type metadata. The deterministic validator
 prevented persistence of an incomplete proposal.
+
+## Gaming-laptop result
+
+The gaming laptop has an NVIDIA GeForce GTX 1050 Ti with 4 GiB VRAM. After a
+reboot, the NVIDIA 580.173.02 driver, loaded kernel module, and installed module
+version matched. GPU access from an ordinary Docker container was also verified
+with `nvidia-smi`.
+
+Docker Model Runner was then reinstalled with:
+
+```bash
+docker model reinstall-runner \
+  --backend llama.cpp \
+  --gpu cuda
+```
+
+The runner pulled its CUDA image but reported:
+
+```text
+installed llama-server gpuSupport=false
+```
+
+Post-reboot simple-test measurements still showed CPU-dominant execution:
+
+| Run | Elapsed | Model Runner CPU | Model Runner memory | Result |
+|---|---:|---:|---:|---|
+| Model load included | 28.62 s | up to about 299% | about 3.37 GiB | correct JSON |
+| Warm | 15.44 s | about 270-298% | about 3.37 GiB | correct JSON |
+
+This is not a successful GPU benchmark. It is a CPU-fallback result on the
+gaming laptop.
+
+The compatibility explanation is documented in
+[`local-llm-gpu-comparison.md`](local-llm-gpu-comparison.md). In summary, the
+GTX 10 series uses NVIDIA's Pascal architecture, while the current Docker Model
+Runner CUDA variant is based on a CUDA 13 llama.cpp server. NVIDIA removed
+Pascal offline-compilation and library support from CUDA Toolkit 13.0. The same
+GPU remains usable with software built using a CUDA 12.x toolchain, but that
+would be a separate experiment from the current Docker Model Runner setup.
 
 ## Interpretation
 
@@ -121,11 +182,15 @@ The validator must not be weakened. Candidate follow-up work includes:
 1. Prompt and output-schema hardening.
 2. A deterministic `SumTypeMappingResolver` between model output and structural
    validation, filling only unambiguous missing metadata.
-3. Comparison with stronger local models.
+3. Comparison with stronger local models on compatible hardware.
 
 A deterministic resolver must inspect all relevant distinct source values, not
 only display samples. A fixed `selectedVariant` is data-dependent and must not
 be inferred from a partial sample when a file can contain several variants.
+
+The gaming-laptop exercise also established an infrastructure result: host
+NVIDIA support and Docker GPU passthrough can be healthy while a particular
+inference image remains incompatible with an older GPU architecture.
 
 ## Reproduction
 
@@ -159,39 +224,23 @@ Run the holdings evaluation:
 Results are written under `build/local-llm-results/` and are intentionally not
 tracked by Git.
 
-### Bundled reproduction run
-
-Date: 2026-08-02
-
-Environment verification:
-
-- Docker Engine: 29.2.1
-- Docker Compose: 5.0.2
-- Docker Model Runner: 1.2.6
-- Backend: healthy
-- Sheets MCP: healthy
-- PostgreSQL: healthy
-- Model: `qwen2.5:3B-Q4_K_M`
-- Backend: llama.cpp
-- Context size: 4096
-- Threads: 4
-- OpenAI-compatible timeout: 5 minutes
-- OpenAI SDK retries: 0
-- Spring AI attempts: 1
-
-Results:
-
-| Test | Elapsed | Result |
-|---|---:|---|
-| Simple mapping, model load included | 20.20 s | Correct |
-| Full holdings proposal | 190.84 s | HTTP 422 |
-
-The full proposal again mapped all source columns correctly but omitted
-sum-type resolution for `asset_class` and `currency`.
-
 ## Current conclusion
 
-The local-model integration is operational. Qwen 2.5 3B is useful for continued
-experimentation and mapped all observed source columns correctly, but it does
-not yet produce an accepted holdings proposal without sum-type enrichment or
-stronger conditional instruction following.
+The local-model integration is operational and reproducible. Qwen 2.5 3B mapped
+all observed source columns correctly, but it does not yet produce an accepted
+holdings proposal without sum-type enrichment or stronger conditional
+instruction following.
+
+The attempted Docker Model Runner GPU comparison on the GTX 1050 Ti did not
+activate GPU inference because the current CUDA 13 runner path is incompatible
+with Pascal. The recorded gaming-laptop numbers are CPU-fallback measurements,
+not evidence of GPU performance.
+
+## References
+
+- [Docker Model Runner](https://docs.docker.com/ai/model-runner/)
+- [Docker Model Runner inference engines](https://docs.docker.com/ai/model-runner/inference-engines/)
+- [Docker Model Runner source: CUDA variant maps to llama.cpp `server-cuda13`](https://github.com/docker/model-runner)
+- [NVIDIA CUDA Toolkit 13.0 release notes: Pascal support removed](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-toolkit-release-notes/index.html)
+- [NVIDIA GeForce architecture comparison: GTX 10 Series is Pascal](https://www.nvidia.com/en-us/geforce/graphics-cards/compare/)
+- [llama.cpp Docker images: separate CUDA 12 and CUDA 13 variants](https://github.com/ggml-org/llama.cpp/blob/master/docs/docker.md)
