@@ -1,15 +1,19 @@
 package com.alai.agenticsheets.mapping;
 
-import com.alai.agenticsheets.canonical.CanonicalModel;
-import com.alai.agenticsheets.canonical.ClientConfig;
-import com.alai.agenticsheets.spreadsheet.SpreadsheetExplorerService;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.stereotype.Service;
-import tools.jackson.databind.JsonNode;
-
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.stereotype.Service;
+
+import com.alai.agenticsheets.canonical.CanonicalModel;
+import com.alai.agenticsheets.canonical.ClientConfig;
+import com.alai.agenticsheets.spreadsheet.SpreadsheetExplorerService;
+
+import tools.jackson.databind.JsonNode;
 
 /**
  * Step 6: proposes a mapping from a source spreadsheet's columns onto a
@@ -44,6 +48,9 @@ import java.util.Set;
  */
 @Service
 public class AgentMappingProposalService {
+
+    private static final Logger log =
+        LoggerFactory.getLogger(AgentMappingProposalService.class);
 
     private final ChatClient chatClient;
     private final CanonicalModelPromptRenderer renderer;
@@ -146,6 +153,8 @@ public class AgentMappingProposalService {
 
         List<String> problems = structuralValidator.validate(proposal, model, observedColumns);
         if (!problems.isEmpty()) {
+            log.warn("Model proposal failed structural validation: {}", problems);
+            log.debug("Rejected model proposal: {}", proposal);            
             throw new MappingProposalValidationException(problems);
         }
         return proposal;
