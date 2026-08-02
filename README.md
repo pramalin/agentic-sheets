@@ -221,6 +221,18 @@ network, and don't ship the `.env.example` default secret anywhere real.
 | `/internal/mapping/batches/{id}/recover-stuck` | POST | **Break-glass only** — manually recovers a batch stuck in `PROCESSING` or `PROPOSING`; only safe after confirming the previous process is actually gone, never for a merely-slow request |
 | `/internal/fake-target/{service}` | POST | Local-testing-only stand-in for a team's receiving service (no auth -- see `FakeTargetController`) |
 
+## Local LLM evaluation
+
+Agentic Sheets can run mapping proposals through Docker Model Runner using its
+OpenAI-compatible local endpoint. The local model replaces only hosted
+inference; structural validation, human approval, canonical conversion, and
+delivery remain deterministic application responsibilities.
+
+The current reference setup uses Qwen 2.5 3B with llama.cpp. See
+[Local LLM Evaluation](docs/local-llm-evaluation.md) for configuration,
+reproduction commands, measured CPU-only results, known limitations, and the
+GPU comparison plan.
+
 ## Roadmap
 
 - [x] **Step 1** — Empty repo, `compose.yaml` (Postgres only),

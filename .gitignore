@@ -15,3 +15,6 @@ e2e/compose-logs-inbox.txt
 e2e/playwright-report/
 e2e/test-results/
 sample-input/*_memtest_*.xlsx
+scripts/local-llm/environment.local.sh
+build/local-llm-results/
+*.local-llm.log

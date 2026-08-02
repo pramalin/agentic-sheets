@@ -1,0 +1,4 @@
+# Local LLM evaluation outputs and private overrides
+scripts/local-llm/environment.local.sh
+build/local-llm-results/
+*.local-llm.log

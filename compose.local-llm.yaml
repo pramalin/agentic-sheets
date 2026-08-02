@@ -1,0 +1,67 @@
+# Docker Model Runner overlay for local Agentic Sheets mapping proposals.
+#
+# Start the stack with:
+#
+#   docker compose \
+#     -f compose.yaml \
+#     -f compose.local-llm.yaml \
+#     up -d --build --wait
+#
+# The local model replaces only the hosted inference endpoint. Structural
+# validation, human approval, canonical-row construction, and delivery remain
+# deterministic application responsibilities.
+
+services:
+  backend:
+    extra_hosts:
+      # Stable route from the Compose network to Docker Model Runner on the host.
+      - "model-runner.docker.internal:host-gateway"
+
+    environment:
+      # Spring AI requires a non-empty API key. Docker Model Runner does not use
+      # it, and this value prevents an exported real key from reaching the backend.
+      OPENAI_API_KEY: local-model-runner
+
+      # Docker Model Runner's OpenAI-compatible API.
+      SPRING_AI_OPENAI_BASE_URL: >-
+        http://model-runner.docker.internal:12434/engines/v1
+
+      # Keep the Spring AI request model aligned with the Compose model.
+      SPRING_AI_OPENAI_CHAT_OPTIONS_MODEL: >-
+        ${AGENTIC_SHEETS_LOCAL_MODEL:-qwen2.5:3B-Q4_K_M}
+
+      # Deterministic generation for repeatable evaluation.
+      SPRING_AI_OPENAI_CHAT_OPTIONS_TEMPERATURE: "0.0"
+
+      # CPU-only inference for the full mapping prompt exceeds the default
+      # OpenAI client timeout. Five minutes allowed the request to complete.
+      SPRING_AI_OPENAI_TIMEOUT: "PT5M"
+
+      # Avoid retrying the same slow generation after a client-side failure.
+      SPRING_AI_OPENAI_MAX_RETRIES: "0"
+      SPRING_AI_RETRY_MAX_ATTEMPTS: "1"
+
+    models:
+      - mapping-model
+
+models:
+  mapping-model:
+    model: ${AGENTIC_SHEETS_LOCAL_MODEL:-qwen2.5:3B-Q4_K_M}
+
+    # Compose requires a literal YAML integer for this field.
+    context_size: 4096
+
+    runtime_flags:
+      # Four threads reduced CPU use substantially while preserving warm latency
+      # in the initial CPU-only benchmark.
+      - "--threads"
+      - "${AGENTIC_SHEETS_LOCAL_MODEL_THREADS:-4}"
+
+      - "--threads-batch"
+      - "${AGENTIC_SHEETS_LOCAL_MODEL_THREADS_BATCH:-4}"
+
+      - "--temp"
+      - "0"
+
+      - "--top-k"
+      - "1"

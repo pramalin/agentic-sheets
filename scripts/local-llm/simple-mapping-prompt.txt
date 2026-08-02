@@ -1,0 +1,23 @@
+You map spreadsheet source columns to canonical fields.
+
+Return JSON only, with exactly this shape:
+{
+  "mappings": [
+    {
+      "sourceColumn": "source column name",
+      "targetField": "canonical field path"
+    }
+  ]
+}
+
+Source columns:
+- Account Number
+- Security Description
+- Market Value
+
+Canonical fields:
+- account.id
+- holding.securityName
+- holding.marketValue.amount
+
+Map only clear semantic matches. Do not add commentary or Markdown fences.
