@@ -31,6 +31,22 @@ public class MappingProposalStructuralValidator {
         List<String> problems = new ArrayList<>();
         Set<String> seenPaths = new HashSet<>();
 
+        // fieldMappings can never be null here -- MappingProposal's own
+        // compact constructor normalizes that -- but empty is a real,
+        // reachable state (a genuinely malformed or truncated model
+        // response, per Step LLM-6's real Qwen 2.5 3B finding -- see
+        // docs/local-llm-enhancements.md) that the per-entry loop below
+        // would otherwise silently accept: an empty list has nothing to
+        // iterate, so it would report zero problems and pass structural
+        // validation clean, persisting a proposal that maps nothing with
+        // no signal to the reviewer about why. Flagged explicitly, once,
+        // here, rather than left to surface confusingly later (every row
+        // failing every field) at /approve time.
+        if (proposal.fieldMappings().isEmpty()) {
+            problems.add("the proposal contains no field mappings at all -- likely malformed or "
+                    + "truncated model output, not a legitimate empty mapping");
+        }
+
         for (MappingProposal.FieldMapping fm : proposal.fieldMappings()) {
             String path = fm.canonicalFieldPath();
 

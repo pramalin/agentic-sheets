@@ -219,6 +219,37 @@ class MappingProposalStructuralValidatorTest {
         assertThat(problems).isEmpty();
     }
 
+    // --- Local LLM phase, Step LLM-6's real finding: a model response
+    // that decodes to no field mappings at all -- see
+    // docs/local-llm-enhancements.md. MappingProposal's own compact
+    // constructor makes "null" and "empty" the same reachable state, so
+    // one test covers both origins.
+
+    @Test
+    void emptyFieldMappingsIsReportedNotSilentlyAccepted() throws Exception {
+        MappingProposal proposal = new MappingProposal(List.of(), List.of(), "nothing to map");
+
+        List<String> problems = validator.validate(proposal, holdings(), JPMC_COLUMNS);
+
+        assertThat(problems).hasSize(1);
+        assertThat(problems.get(0)).contains("no field mappings");
+    }
+
+    @Test
+    void nullFieldMappingsFromTheConstructorIsNormalizedThenReportedTheSameWay() throws Exception {
+        // What actually happened against real Qwen 2.5 3B output: the
+        // decoded proposal's fieldMappings was null, not an empty list.
+        MappingProposal proposal = new MappingProposal(null, null, "malformed model output");
+
+        assertThat(proposal.fieldMappings()).isEmpty();
+        assertThat(proposal.unmappedSourceColumns()).isEmpty();
+
+        List<String> problems = validator.validate(proposal, holdings(), JPMC_COLUMNS);
+
+        assertThat(problems).hasSize(1);
+        assertThat(problems.get(0)).contains("no field mappings");
+    }
+
     private MappingProposal withOneMapping(MappingProposal.FieldMapping fm) {
         return new MappingProposal(List.of(fm), List.of(), "test");
     }

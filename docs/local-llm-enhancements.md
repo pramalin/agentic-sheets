@@ -82,7 +82,13 @@ sees them, independent of whether memory has seen this layout before.
   resolved deterministically, rerun the 3B/7B/14B comparison against a
   narrower task -- a known file plus one deliberately unfamiliar column --
   to see whether a materially smaller model is sufficient once it's only
-  being asked to resolve genuine ambiguity.
+  being asked to resolve genuine ambiguity. First real run against
+  `qwen2.5:3B-Q4_K_M` complete for the baseline (a clean, fully-resolved
+  proposal -- confirms this phase's premise) but not yet for the actual
+  ambiguity question: the unfamiliar-column run surfaced a real
+  production bug instead (fixed this round, not a model limitation),
+  so the question this step exists to answer is still open pending a
+  re-run against the fix -- see build notes below.
 
 ## Step LLM-1 build notes
 
@@ -755,10 +761,163 @@ the suggestion-capture API is a complete, stable target either way.
 
 ## Step LLM-6
 
-Not started. The re-scoped benchmark -- rerun 3B/7B/14B against a known
-file plus one deliberately unfamiliar column, now that currency/
-asset_class resolution is fully out of the LLM's hands (Steps LLM-1
-through LLM-4) -- remains the step that would actually answer the
-question this whole phase set out to ask: does a smaller local model
-become sufficient once it's only resolving genuine ambiguity, not
-re-deriving facts the application already knows.
+Fixture and runner prepared; the actual benchmark run against real
+hardware has not happened yet -- this environment has no GPU, no
+Ollama/Docker Model Runner, and no way to pull or run model weights, so
+this step's output is a ready-to-run harness, not a result. Testing is
+planned to start with `qwen2.5:3B-Q4_K_M` (matching
+`compose.local-llm.yaml`'s own default, so no config change is needed to
+run it) before moving on to larger models or DGX Spark hardware.
+
+**Fixture.** `sample-input/holdings_jpmc_llm6_unfamiliar_column.xlsx` --
+byte-identical to the real `holdings_jpmc_20260115.xlsx` fixture except
+for exactly one cell: the `Price` header renamed to `Valuation Px`.
+Verified programmatically (not by eye) that this is the *only* cell that
+differs between the two files before committing it. Every other column,
+including `Currency` and `Asset Class` -- the two fields this entire
+phase was built around -- is untouched, and neither `Valuation Px` nor
+any variant of it appears anywhere in `jpmc.yaml`'s `fieldAliases` or
+this codebase generally. This isolates exactly the question Step LLM-6
+exists to ask: with known facts resolved deterministically, can a small
+model correctly resolve one genuinely unfamiliar column on its own,
+rather than testing whether it can reconstruct an entire mapping it may
+have partially memorized from repeated identical fixture runs.
+
+**Runner.** `scripts/local-llm/run-llm6-benchmark.sh` -- reuses the
+existing `run-holdings-proposal.sh` unchanged (deliberately: minimal
+surface area, no risk of the harness itself introducing a variable),
+run once against the original fixture (re-establishing today's baseline
+-- see below) and once against the unfamiliar-column fixture, with
+clearly labeled console output for each so the two runs' results can't
+be confused with each other in `build/local-llm-results/`.
+
+**A stale claim caught and corrected while writing this.**
+`scripts/local-llm/README.md` still said, before this round, that a
+Qwen 2.5 3B proposal against the original fixture is *expected* to be
+structurally rejected (curl exit 22) -- true when that note was
+written, before Steps LLM-1 through LLM-4 existed, and very likely
+false now: the whole point of those steps was to make the resolver fill
+in exactly the currency/asset_class gaps that caused that rejection.
+Left as a claim to *reconfirm*, not silently updated to a new assumed
+answer -- the runner's first fixture is the original file specifically
+so this gets re-tested for real before Step LLM-6's actual novel-column
+question is asked, rather than assuming the old baseline still holds.
+
+**What "success" looks like, stated before running it, not after.**
+`curl` exiting 0 means the proposal passed structural validation and
+this phase's deterministic resolver -- it does **not** by itself mean
+`Valuation Px` was correctly mapped to `market_price`. Three genuinely
+different, all-legitimate outcomes are possible and worth distinguishing
+when the results come back: the model correctly proposes
+`Valuation Px -> market_price`; the model leaves it in
+`unmappedSourceColumns` (a correct refusal to guess, not a failure --
+exactly the fail-closed behavior this whole phase has valued over a
+confident wrong guess); or the model proposes something wrong. Only the
+last of those is actually a bad outcome.
+
+### First real run, and what it found
+
+Run against `qwen2.5:3B-Q4_K_M`, CPU-only, matching
+`compose.local-llm.yaml`'s own default -- no config change needed.
+
+**Baseline (`holdings_jpmc_20260115.xlsx`): a real, confirmed success.**
+HTTP 200 in 3:13.97. The returned proposal correctly resolves `currency`
+to `selectedVariant: "USD"` and `asset_class` to a complete
+`variantValueMap` (`Equity -> Equity`, `Fixed Income -> FixedIncome`) --
+exactly the two fields that reliably broke every model in the original
+3B/7B/14B/32B benchmark (`docs/local-llm-evaluation.md`). This
+definitively retires `scripts/local-llm/README.md`'s old claim that a
+Qwen 2.5 3B proposal against this fixture is expected to be structurally
+rejected -- that was true before Steps LLM-1 through LLM-4 existed, and
+is now confirmed false, not just presumed false.
+
+**One real methodology gap this run exposed: the benchmark can't yet
+tell "the model got it right" from "the resolver quietly fixed it."**
+The response above is the *post-resolution* proposal. Nothing currently
+distinguishes what Qwen actually produced from what
+`SumTypeMappingResolver` filled in afterward -- both converge to the
+same final JSON by design, since that convergence is the entire point of
+Steps LLM-1 through LLM-4. For Step LLM-6's actual question (how much
+LLM capability is still needed once known facts are handled
+deterministically), that distinction matters and isn't visible yet.
+Worth fixing before drawing a strong conclusion from this baseline
+result -- see "not yet done" below.
+
+**Unfamiliar-column run: a real bug, not a model finding.** HTTP 500,
+not the expected clean-or-declined outcome:
+
+```
+NullPointerException: Cannot invoke "java.util.List.stream()" because
+the return value of "com.alai.agenticsheets.mapping.MappingProposal.fieldMappings()"
+is null
+```
+
+A real, previously-unexercised gap in this phase's own code, not the
+model being wrong: nothing before this run had ever passed
+`SumTypeMappingResolver.resolve()` a proposal decoded from *malformed*
+model output. Every one of this phase's own tests, across every step,
+always hand-constructed proposals with `List.of(...)` for
+`fieldMappings` -- never `null`. Faced with a column
+(`Valuation Px`) it apparently couldn't confidently handle, the 3B model
+produced something that decoded to `fieldMappings: null` entirely
+(plausibly: a smaller model under CPU-only inference truncating or
+malforming its structured-output JSON when genuinely unsure, though the
+raw model response itself wasn't captured to confirm the exact
+mechanism -- worth logging next time this happens). `SumTypeMappingResolver.resolve()`'s
+very first line (`proposal.fieldMappings().stream()...`, written back in
+Step LLM-2) crashed on exactly that, leaking a raw, unhelpful 500
+instead of the clean, reported validation failure a malformed proposal
+should always produce.
+
+**Fix.** Two changes, together closing this for good rather than
+patching just the one call site that happened to crash first:
+
+1. `MappingProposal` gained a compact constructor normalizing a `null`
+   `fieldMappings` or `unmappedSourceColumns` to an empty list --
+   regardless of which path constructs a `MappingProposal` (Spring AI's
+   structured-output decode, JSONB deserialization of an
+   already-persisted proposal, or a hand-built `/amend` request body).
+   Grep confirmed **five** separate call sites across four classes
+   (`MappingProposalStructuralValidator`, `SumTypeMappingResolver` --
+   twice, `ProposalValidationService`, `MappingMemoryEligibility`) all
+   assumed non-null `fieldMappings` without ever checking; normalizing
+   once at the type boundary closes all of them at once rather than
+   requiring every current and future call site to remember to guard
+   itself, which is exactly how this gap existed in the first place --
+   `SumTypeMappingResolver` alone had two separate unguarded uses,
+   written in the same step, by the same author, and still missed.
+2. `MappingProposalStructuralValidator.validate()` gained an explicit
+   check: an empty `fieldMappings` list is now reported as its own
+   problem ("the proposal contains no field mappings at all -- likely
+   malformed or truncated model output, not a legitimate empty
+   mapping"), rather than silently passing. This mattered independently
+   of the crash: the validator only ever inspects entries that exist in
+   the list, so before this fix, simply normalizing `null` to `[]`
+   (change 1 alone) would have silently *replaced a loud crash with a
+   silently-accepted, structurally-"valid" proposal that maps nothing*
+   -- persisted to the review queue with no signal to a reviewer about
+   why, only surfacing confusingly later (every row failing every field)
+   at `/approve` time. Worse than the crash it would have replaced, not
+   better. Explicitly checking for and reporting the empty case was the
+   actual fix; the compact constructor is what makes that check reliably
+   reachable instead of an NPE getting there first.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/MappingProposal.java` (modified -- compact constructor)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/MappingProposalStructuralValidator.java` (modified -- explicit empty-list check)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/MappingProposalTest.java` (new -- 4 tests for the compact constructor in isolation)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/MappingProposalStructuralValidatorTest.java` (modified -- 2 new tests: empty list reported, null-from-constructor normalized then reported the same way)
+
+**Confirmed live.** `mvn test` run against the real repo after
+overlaying these files: **195/195**, up from Step LLM-5's 189 by exactly
+the 6 new tests, no other test count moved.
+
+**Not yet done:** re-run `run-llm6-benchmark.sh` against the fix to see
+whether the unfamiliar-column question actually gets answered this
+time (correct mapping, correct decline, or wrong mapping -- all three
+remain legitimate, distinguishable outcomes, per the "what success looks
+like" note above). Also still open: the methodology gap noted above --
+distinguishing what the model itself proposed from what the resolver
+filled in, which would need the raw pre-resolution proposal logged or
+returned alongside the resolved one, not just the final result. Neither
+is blocked by this fix; both are natural next steps once it's applied.

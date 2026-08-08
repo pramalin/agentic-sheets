@@ -23,6 +23,46 @@ public record MappingProposal(
         String summary) {
 
     /**
+     * Normalizes a {@code null} list to empty at construction, regardless
+     * of which path constructs a {@code MappingProposal} -- Spring AI's
+     * structured-output decode of the chat model's response, JSONB
+     * deserialization of an already-persisted proposal, or a hand-built
+     * {@code /amend} request body. Found the hard way: a real Qwen 2.5 3B
+     * response, faced with a genuinely unfamiliar column (Local LLM
+     * phase, Step LLM-6 -- see {@code docs/local-llm-enhancements.md}),
+     * decoded to a proposal with {@code fieldMappings: null} rather than
+     * an empty list, which crashed {@link SumTypeMappingResolver#resolve}
+     * with an unhandled {@link NullPointerException} that leaked to the
+     * HTTP boundary as a raw 500 -- not a clean, reported validation
+     * failure the way a malformed proposal should always be. Every
+     * current call site that iterates {@link #fieldMappings()}
+     * ({@link MappingProposalStructuralValidator}, {@link SumTypeMappingResolver},
+     * {@link ProposalValidationService}, {@link MappingMemoryEligibility})
+     * assumed non-null; normalizing here, once, at the type boundary,
+     * closes that for all of them at once rather than patching each call
+     * site individually and risking missing one, which is exactly how
+     * this gap existed in the first place -- {@code SumTypeMappingResolver}
+     * itself had two separate unguarded uses.
+     *
+     * <p>Deliberately normalizes to empty rather than rejecting outright
+     * here: an empty list is a legitimate, well-defined state
+     * ({@link MappingProposalStructuralValidator} already treats it as
+     * an explicit problem to report, not a silent pass), whereas
+     * throwing from a record's compact constructor would surface as an
+     * unhelpfully generic exception at an unpredictable point in Spring
+     * AI's decode pipeline rather than this project's normal, structured
+     * validation-problem reporting.
+     */
+    public MappingProposal {
+        if (fieldMappings == null) {
+            fieldMappings = List.of();
+        }
+        if (unmappedSourceColumns == null) {
+            unmappedSourceColumns = List.of();
+        }
+    }
+
+    /**
      * One canonical field's proposed source. Exactly one of
      * {@code sourceColumn} or {@code sourceConstant} should be set, never
      * both -- a per-row column mapping, or a constant derived from
