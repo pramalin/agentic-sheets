@@ -42,14 +42,15 @@ sees them, independent of whether memory has seen this layout before.
   read can be reused by the resolver below instead of only ever seeing
   `describe_table`'s sample values. Confirmed live: 133/133 (up from 128 by
   exactly the five new tests), no other test count moved.
-- [ ] **Step LLM-2** -- Deterministic sum-type resolver
+- [x] **Step LLM-2** -- Deterministic sum-type resolver
   (`SumTypeMappingResolver`). Reads full observed source rows via
   `SpreadsheetRowReader`; fills a `selectedVariant`/`variantValueMap` the
   agent left unresolved when it's uniquely derivable from observed data;
   validates model-supplied variant metadata against every observed row, not
   just a sample; never guesses on ambiguous or contradictory input. No
   dependency on client configuration (Step LLM-3) -- canonical-name matching
-  only.
+  only. Confirmed live: 148/148 (up from 133 by exactly the 15 new
+  `SumTypeMappingResolverTest` cases), no other test count moved.
 - [ ] **Step LLM-3** -- Client conventions. Versioned field aliases and
   value vocabulary per client, initially still backed by
   `client-configs/*.yaml`; validated at load time against the current
@@ -139,3 +140,118 @@ the raw-type `Map.class` conversion, not just added a delegating call.
 signature (`(path, worksheet) -> List<Map<String, String>>`) is exactly the
 shape the resolver needs: full observed rows, keyed by source column header,
 values as strings ready for the normalized-matching rules already designed.
+
+## Step LLM-2 build notes
+
+**What was added.** `MappingResolutionProblem` (a typed record with a
+four-value `Kind` enum -- `UNRESOLVED`, `SEMANTIC_CONFLICT`,
+`CLIENT_CONFIGURATION`, `CONFIGURED_OVERRIDE_NOTABLE` -- and a `blocking`
+flag) and `SumTypeMappingResolver`, both new files in the `mapping`
+package. Only `UNRESOLVED` and `SEMANTIC_CONFLICT` are actually
+constructed by this resolver; the other two `Kind`s exist now so the type
+doesn't need to change shape again once client conventions (Step LLM-3)
+and their integration (Step LLM-4) land.
+
+**Resolution rules, exactly as designed across this phase's planning:**
+- A sum type field mapping with neither `selectedVariant` nor
+  `variantValueMap` set: collect every distinct non-blank value from its
+  `sourceColumn` across the full observed rows; if every value uniquely
+  resolves to one canonical variant, fill `selectedVariant`; if they
+  resolve to more than one, fill a complete `variantValueMap`; if any
+  value doesn't uniquely resolve, leave the field exactly as proposed and
+  report `UNRESOLVED` -- never guess.
+- An existing `selectedVariant` (with a `sourceColumn` present): every
+  distinct observed value must resolve to that same variant, or it's
+  reported as `SEMANTIC_CONFLICT` and left unrepaired. This is the check
+  that would have caught the 3B benchmark's `selectedVariant=Equity`
+  proposal against a column that actually contained both `Equity` and
+  `Fixed Income` rows.
+- An existing `variantValueMap`: every distinct observed value must be a
+  key in the map, or it's `SEMANTIC_CONFLICT`, unrepaired.
+- `selectedVariant` and `variantValueMap` both set (structurally
+  contradictory) is never touched -- left for
+  `MappingProposalStructuralValidator` to reject, unchanged, exactly as
+  designed.
+- Variant name matching is three-tier and strictly deterministic: exact
+  match after trimming whitespace, then case-insensitive, then normalized
+  (lowercased, `\s`/`_`/`-` stripped). A tier matching more than one
+  variant is treated as ambiguous, not resolved, and falls through (or, at
+  the last tier, is left unresolved). No edit distance, no embeddings, no
+  LLM call.
+- Non-sum-type field mappings are never inspected or altered.
+
+**Integration point, exactly where designed.** `AgentMappingProposalService.propose()`
+now calls `SumTypeMappingResolver.resolve(...)` immediately after decoding
+the model's structured output and before `MappingProposalStructuralValidator.validate(...)`
+-- the resolver's blocking problems and the structural validator's
+problems are combined into one list, and either non-empty list still
+throws the existing `MappingProposalValidationException` (no API change).
+The *resolved* proposal (not the raw model output) is what gets validated
+and, on success, returned and persisted. `validateEdited()` (the `/amend`
+path) deliberately does not call the resolver -- a human-edited proposal
+is validated exactly as submitted, never silently enriched, matching how
+Step 10's mapping memory also treats `/amend` output as authoritative
+rather than something to re-derive.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/MappingResolutionProblem.java` (new)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/SumTypeMappingResolver.java` (new)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- resolver wired into `propose()`, constructor takes the new dependency)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/SumTypeMappingResolverTest.java` (new)
+
+**Tests added** (`SumTypeMappingResolverTest`, against the real `canonical-models/holdings.yaml`
+test fixture -- `Currency` = `{USD,EUR,GBP,JPY,CAD}`, `AssetClass` =
+`{Equity,FixedIncome,Cash,Alternative}`):
+- `Currency={USD}` with no variant set -> fills `selectedVariant=USD`
+- `Asset Class={Equity, Fixed Income}` with no variant set -> fills a
+  complete `variantValueMap`, "Fixed Income" resolving to `FixedIncome`
+  via normalized matching
+- an existing correct `selectedVariant` -> preserved unchanged
+- an existing correct, complete `variantValueMap` -> preserved unchanged
+- `selectedVariant=Equity` against a column that also contains "Fixed
+  Income" -> `SEMANTIC_CONFLICT`, not repaired (the 3B benchmark's exact
+  failure mode)
+- an incomplete `variantValueMap` missing an observed value -> `SEMANTIC_CONFLICT`,
+  not repaired
+- an unknown source value (e.g. "Bitcoin") -> `UNRESOLVED`, no mapping
+  invented
+- an all-blank source column -> `UNRESOLVED` ("nothing to derive from"),
+  not treated the same as a genuine ambiguity
+- two variant names that collide after normalization (a synthetic model
+  built for this test, since no real fixture happens to have colliding
+  names) -> `UNRESOLVED`, not arbitrarily chosen
+- trailing/leading whitespace in an observed value (`"USD "`, `" USD"`)
+  -> still resolves via the trim-then-exact tier, not treated as a
+  different token
+- `selectedVariant` and `variantValueMap` both set -> untouched, zero
+  problems reported (left for the structural validator)
+- a non-sum-type field mapping alongside a sum-type one -> the primitive
+  field is returned byte-for-byte identical
+- a proposal with zero sum-type field mappings -> `SpreadsheetRowReader.readAll`
+  is never called at all (`verify(reader, never())...`)
+- a proposal with two sum-type fields -> `readAll` is called exactly
+  once, not once per field
+- 510 rows returned by a mocked reader -> every distinct value across the
+  full set is aggregated correctly (pagination itself is `SpreadsheetRowReader`'s
+  own tested responsibility; this confirms the resolver doesn't
+  re-implement or truncate it)
+
+**Written against the real source, not guessed at.** `MappingProposal.FieldMapping`'s
+exact 8-field constructor order, `CanonicalModel`'s 6-field record shape,
+`SumType`/`RecordType`/`TargetConfig`'s shapes, `CanonicalPaths.isSumTypePath`/`variantsAt`,
+and `CanonicalRowBuilder.resolveVariant`'s actual behavior (confirming
+`selectedVariant` really is trusted with zero row-level verification,
+exactly as `mapping-notes.md`'s Step 10 section already documented) were
+all read directly from the cloned repository before writing any of this,
+not assumed.
+
+**Confirmed live.** Unlike Step LLM-1, this landed clean on the first
+attempt -- `mvn test` run against the real repo after overlaying these
+files: **148/148**, up from Step LLM-1's 133 by exactly the 15 new
+`SumTypeMappingResolverTest` cases, no other test count moved. Spring's
+application context loaded successfully (`AgenticSheetsApplicationTests`
+passed), confirming `AgentMappingProposalService`'s new constructor
+parameter wired correctly with no bean-graph issues -- real evidence the
+manual trace against the actual source (record shapes, `CanonicalPaths`,
+`CanonicalRowBuilder`'s behavior) held up, not just a plausible-looking
+guess.

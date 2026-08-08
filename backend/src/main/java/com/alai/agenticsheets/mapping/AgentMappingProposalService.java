@@ -1,5 +1,6 @@
 package com.alai.agenticsheets.mapping;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -45,6 +46,16 @@ import tools.jackson.databind.JsonNode;
  * built here disagree with the {@code config_version} the caller
  * persists alongside it. One resolved snapshot threaded through the
  * whole operation closes that window.
+ *
+ * <p>As of the Local LLM phase's Step LLM-2 (see
+ * {@code docs/local-llm-enhancements.md}), the decoded proposal passes
+ * through {@link SumTypeMappingResolver} before structural validation --
+ * deterministically filling or validating sum type variant metadata
+ * (e.g. {@code currency}, {@code asset_class}) against the full observed
+ * source rows, rather than leaving that to the model. Only
+ * {@link #propose} does this; {@link #validateEdited} deliberately does
+ * not, since a human-edited proposal should be validated exactly as
+ * submitted, not silently enriched.
  */
 @Service
 public class AgentMappingProposalService {
@@ -55,16 +66,19 @@ public class AgentMappingProposalService {
     private final ChatClient chatClient;
     private final CanonicalModelPromptRenderer renderer;
     private final SpreadsheetExplorerService explorer;
+    private final SumTypeMappingResolver sumTypeResolver;
     private final MappingProposalStructuralValidator structuralValidator;
 
     public AgentMappingProposalService(
             ChatClient.Builder chatClientBuilder,
             CanonicalModelPromptRenderer renderer,
             SpreadsheetExplorerService explorer,
+            SumTypeMappingResolver sumTypeResolver,
             MappingProposalStructuralValidator structuralValidator) {
         this.chatClient = chatClientBuilder.build();
         this.renderer = renderer;
         this.explorer = explorer;
+        this.sumTypeResolver = sumTypeResolver;
         this.structuralValidator = structuralValidator;
     }
 
@@ -151,13 +165,24 @@ public class AgentMappingProposalService {
                 .call()
                 .entity(MappingProposal.class);
 
-        List<String> problems = structuralValidator.validate(proposal, model, observedColumns);
+        SumTypeMappingResolver.Result resolution =
+                sumTypeResolver.resolve(proposal, model, sourcePath, worksheet);
+        MappingProposal resolvedProposal = resolution.proposal();
+
+        List<String> problems = new ArrayList<>();
+        for (MappingResolutionProblem problem : resolution.problems()) {
+            if (problem.blocking()) {
+                problems.add(problem.message());
+            }
+        }
+        problems.addAll(structuralValidator.validate(resolvedProposal, model, observedColumns));
+
         if (!problems.isEmpty()) {
-            log.warn("Model proposal failed structural validation: {}", problems);
-            log.debug("Rejected model proposal: {}", proposal);            
+            log.warn("Model proposal failed validation: {}", problems);
+            log.debug("Rejected model proposal: {}", resolvedProposal);
             throw new MappingProposalValidationException(problems);
         }
-        return proposal;
+        return resolvedProposal;
     }
 
     /**
