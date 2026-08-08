@@ -78,17 +78,21 @@ sees them, independent of whether memory has seen this layout before.
   actual UI) -- writing the suggestion into `client-configs/*.yaml` itself
   ("apply") and any frontend affordance remain explicitly deferred; see
   build notes below for the full reasoning.
-- [ ] **Step LLM-6** -- Re-scoped benchmark. Once known conventions are
+- [x] **Step LLM-6** -- Re-scoped benchmark. Once known conventions are
   resolved deterministically, rerun the 3B/7B/14B comparison against a
   narrower task -- a known file plus one deliberately unfamiliar column --
   to see whether a materially smaller model is sufficient once it's only
-  being asked to resolve genuine ambiguity. First real run against
-  `qwen2.5:3B-Q4_K_M` complete for the baseline (a clean, fully-resolved
-  proposal -- confirms this phase's premise) but not yet for the actual
-  ambiguity question: the unfamiliar-column run surfaced a real
-  production bug instead (fixed this round, not a model limitation),
-  so the question this step exists to answer is still open pending a
-  re-run against the fix -- see build notes below.
+  being asked to resolve genuine ambiguity. Real findings against
+  `qwen2.5:3B-Q4_K_M`, confirmed from raw model output, not inferred:
+  the model does **not** resolve currency/asset_class itself -- the
+  deterministic resolver is doing exactly the work this phase built it
+  for -- and the unfamiliar-column run surfaced a distinct, specific
+  failure mode (the model echoing its own JSON-Schema formatting
+  instructions back as if they were response data, not a graceful
+  decline or a wrong guess), which this phase's own layers (the null
+  fix, the empty-mappings check) correctly caught as a clean 422. 7B/14B
+  and DGX Spark comparisons remain open, natural continuations of the
+  same benchmark, not blocking anything -- see build notes below.
 
 ## Step LLM-1 build notes
 
@@ -921,3 +925,156 @@ distinguishing what the model itself proposed from what the resolver
 filled in, which would need the raw pre-resolution proposal logged or
 returned alongside the resolved one, not just the final result. Neither
 is blocked by this fix; both are natural next steps once it's applied.
+
+### Raw model response logging, and a second null-safety guard
+
+Both natural next steps noted above got picked up in the same round,
+prompted directly by the confusing empty-mapping result (see above): the
+final decoded proposal was visible, but nothing about what the model had
+actually generated before decoding was -- no way to tell truncation from
+a genuinely empty response from a prose refusal instead of JSON.
+
+**Checked against Spring AI's own API before writing anything, not
+guessed at.** The obvious-looking approach -- call `.content()` for the
+raw text and `.entity(Class)` for the parsed proposal, on the same
+response spec -- is a real, documented Spring AI pitfall (confirmed
+against the framework's own GitHub issue tracker): calling two separate
+terminal methods on one `CallResponseSpec` triggers two separate model
+invocations, not one shared result. Using both would have silently
+doubled every real inference call this benchmark makes, and risked the
+logged raw text and the entity actually used coming from two different
+generations. The correct, single-call API -- confirmed directly against
+Spring AI 2.0.0's own javadoc, not a blog post or a guess -- is
+`responseEntity(Class<T>)`, returning `ResponseEntity<ChatResponse, T>`
+with both the raw `ChatResponse` and the converted entity from the exact
+same call.
+
+**What changed.** `AgentMappingProposalService.propose()` now calls
+`.responseEntity(MappingProposal.class)` instead of `.entity(MappingProposal.class)`,
+logs the raw text (`chatResponse.getResult().getOutput().getText()`,
+also confirmed against Spring AI's documented API rather than assumed)
+at `INFO` -- not `DEBUG`: this project's default log level
+(`application.yml`) is `INFO`, and the whole point is for this to
+actually show up in a normal `docker compose logs` run, not require
+remembering to turn on debug logging first -- and defends against
+`entity()` itself returning `null` (Spring AI's own javadoc: "the
+deserialized entity, or null if the response is empty"), a broader,
+one-level-up version of the `fieldMappings: null` case this same round
+already fixed. A null entity is now replaced with
+`new MappingProposal(null, null, null)`, which -- via the compact
+constructor from this round's earlier fix -- normalizes to empty lists
+and flows through the exact same clean, reported "no field mappings at
+all" validation failure as before, rather than crashing two lines later
+on a null `MappingProposal` reference itself.
+
+**Deliberately not unit-tested with a mocked `ChatClient`.** Mocking
+Spring AI's fluent builder chain (`.prompt().system().user().call().responseEntity(...)`)
+deeply enough to exercise this change would prove only that the mock
+does what the mock was told to do -- not that the real Spring AI API
+actually behaves the way its javadoc says, which is the exact thing
+worth being careful about here, given the double-invocation pitfall this
+change exists specifically to avoid. That's not a gap to quietly leave
+unmentioned: real confirmation is the full test suite (proving nothing
+else broke) plus the next actual benchmark run against live Docker Model
+Runner infrastructure, the same standard the rest of this phase has held
+to throughout rather than trusting a plausible-looking mock.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- `responseEntity()` instead of `entity()`, raw-text logging, null-entity guard)
+
+**Not run in this environment** -- no test count changed by this
+specific piece (see above for why), so the confirmed 195/195 from the
+`MappingProposal`/`MappingProposalStructuralValidator` fix still stands
+as the last actual test-suite confirmation. This piece specifically
+needs a real benchmark re-run to confirm, not `mvn test`.
+
+### Clearing state between benchmark runs
+
+The first re-run after the null-safety fix reused the original
+baseline's cached batch/proposal from Postgres (same `content_hash` ->
+`import_batch`'s own dedupe -- see that table's schema comment) rather
+than making a fresh model call, completing in 0.10s instead of the
+several minutes a real CPU inference call takes. Not a bug -- exactly
+`MappingController.propose()`'s documented fast path -- but worth
+clearing deliberately before a benchmark run where repeated, independent
+model calls are the actual point:
+
+```bash
+docker compose -f compose.yaml -f compose.local-llm.yaml down -v
+docker compose -f compose.yaml -f compose.local-llm.yaml up -d --build --wait
+```
+
+`-v` removes the named volumes declared in `compose.yaml`'s own
+top-level `volumes:` section (`postgres-data`) -- deliberately not
+naming the actual prefixed Docker volume directly (e.g.
+`agentic-sheets_postgres-data`), since Compose's own project-name
+prefixing isn't this project's concern to hardcode into a doc that could
+drift from whatever the actual project name resolves to on a given
+machine. This clears every table (`import_batch`, `mapping_proposal`,
+`mapping_memory`, `convention_suggestion`, everything) back to
+schema-only, empty, exactly like a first-ever run -- worth knowing
+before using it against anything other than a disposable local benchmark
+environment.
+
+### Second real run: both open questions answered, one important, one unexpected
+
+Volume cleared, stack rebuilt, both fixtures run fresh against
+`qwen2.5:3B-Q4_K_M` with raw-response logging active.
+
+**Finding 1 -- the methodology gap is closed, and the answer is exactly
+what this phase's premise predicted.** The raw model text for the
+baseline run shows `currency`'s `selectedVariant` as `null` and
+`asset_class`'s entry with no `variantValueMap` key at all -- the model
+left both genuinely unresolved, identical to the original pre-Step-LLM-1
+benchmark's finding. The clean `selectedVariant: "USD"` and complete
+`variantValueMap` in the final response the earlier run showed were
+never the model's own output; `SumTypeMappingResolver` filled them in
+silently, exactly as designed. This is now a confirmed fact from real
+raw model output, not an inference from the final JSON: **Qwen 2.5 3B
+still cannot resolve these sum-type fields on its own, and the
+deterministic layer this whole phase built is doing precisely the work
+it exists to do.** This is the strongest evidence yet for this phase's
+central premise, and it was only possible to state this confidently
+because of the raw-logging change -- before it, this exact question was
+explicitly listed as unanswerable from the final response alone.
+
+**Finding 2 -- the unfamiliar-column failure is not a graceful decline,
+and knowing that matters.** The raw text for that run is not truncated,
+not a refusal, not a wrong guess. It is the JSON Schema Spring AI's
+structured-output converter injects into the prompt as formatting
+instructions, echoed back nearly verbatim (`"$schema"`, `"type": "object"`,
+`"properties"`, `"required"`, `"additionalProperties": false`) as if that
+schema metadata were the response itself -- `fieldMappings` ends up
+holding the schema's own array-type definition, not actual mapping data,
+while `summary` and `unmappedSourceColumns` are filled with plausible,
+real-looking values. A genuinely distinct failure mode from either
+"correctly declines to guess" (the good outcome originally hoped for) or
+"guesses wrong" (the bad outcome originally anticipated): under whatever
+confusion the unfamiliar column triggered, the model's structured-output
+generation broke down and it fell back to reproducing visible context
+from its own prompt rather than generating a genuine instance. Worth
+naming precisely rather than lumping it in with either anticipated
+outcome, since the fix for "model panics and echoes its own
+instructions" is not the same fix as "model guesses wrong" or "model
+correctly abstains."
+
+**The system's own handling of this worked exactly as designed, at
+every layer this phase built.** No crash (the `NullPointerException`
+fix). No silent acceptance of garbage (the explicit empty-`fieldMappings`
+check, which is what actually caught this -- the schema-echo response
+technically has `fieldMappings` present as a JSON key, but Spring AI's
+binding of that malformed structure back to `MappingProposal` evidently
+produced an empty or null list all the same, since the same "no field
+mappings at all" message fired). A clean 422 with an accurate message,
+not a confusing empty-but-200 result. Three deliberately-built layers,
+all doing their job on a real, previously-unseen failure mode none of
+them were specifically designed around.
+
+**What this suggests for next steps, not yet acted on:** the schema-echo
+failure mode is worth checking for repeatability (same unfamiliar
+column, fresh run, does it recur or was this one generation's fluke) and
+worth testing against a larger model (7B/14B, or DGX Spark hardware) to
+see whether it's a 3B-specific breakdown under CPU-only inference or
+something more structural in how the prompt/schema is presented. Neither
+run yet; both are natural continuations of this step, not separate new
+work.

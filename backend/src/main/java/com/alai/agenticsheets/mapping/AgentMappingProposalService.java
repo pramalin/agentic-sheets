@@ -8,6 +8,8 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ResponseEntity;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.stereotype.Service;
 
 import com.alai.agenticsheets.canonical.CanonicalModel;
@@ -60,6 +62,15 @@ import tools.jackson.databind.JsonNode;
  * {@link #validateEdited} deliberately does not, since a human-edited
  * proposal should be validated exactly as submitted, not silently
  * enriched.
+ *
+ * <p>As of Step LLM-6, {@link #propose} logs the model's raw response
+ * text (via Spring AI's {@code responseEntity(Class)}, not two separate
+ * calls -- see that method's own inline comment for why) and defends
+ * against the model returning nothing parseable at all, not just missing
+ * individual fields. Both were added after a real Qwen 2.5 3B response
+ * against a genuinely unfamiliar column crashed downstream with an
+ * unhandled {@code NullPointerException} and left no way to see what the
+ * model had actually said.
  */
 @Service
 public class AgentMappingProposalService {
@@ -163,11 +174,45 @@ public class AgentMappingProposalService {
                 + table.toString()
                 + "\n----- END SOURCE TABLE -----\n";
 
-        MappingProposal proposal = chatClient.prompt()
+        // responseEntity(), not entity() -- the two are deliberately kept to
+        // one call here. Calling .content() and .entity() as two separate
+        // terminal methods on the same response spec is a known Spring AI
+        // pitfall (as of 2.0.0, confirmed against the framework's own
+        // issue tracker, not assumed): each terminal method call re-invokes
+        // the model, so using both would silently double real inference
+        // calls -- doubling cost/latency and, since nothing guarantees two
+        // separate generations are identical even at temperature 0 for
+        // every provider, risking the logged raw text and the entity
+        // actually used diverging. responseEntity() returns both the raw
+        // ChatResponse and the converted MappingProposal from the exact
+        // same single call.
+        ResponseEntity<ChatResponse, MappingProposal> responseEntity = chatClient.prompt()
                 .system(systemPrompt)
                 .user(userPrompt)
                 .call()
-                .entity(MappingProposal.class);
+                .responseEntity(MappingProposal.class);
+
+        logRawModelResponse(responseEntity.response());
+
+        MappingProposal proposal = responseEntity.entity();
+        if (proposal == null) {
+            // Local LLM phase, Step LLM-6 (see docs/local-llm-enhancements.md):
+            // entity() itself can return null ("the deserialized entity, or
+            // null if the response is empty" -- Spring AI's own javadoc) when
+            // the model's response is empty or completely unparseable as
+            // JSON, not just missing individual fields. A real Qwen 2.5 3B
+            // response against a genuinely unfamiliar column decoded to a
+            // proposal with fieldMappings: null (a narrower case,
+            // MappingProposal's own compact constructor now handles that);
+            // this guards the broader case one level up, for the same
+            // reason -- fail through the same clean, reported validation path
+            // every other malformed proposal already goes through, not an
+            // NPE two lines later.
+            log.warn("Model call for propose() returned no parseable entity at all -- treating as an "
+                    + "empty proposal so it fails clean structural validation rather than crashing "
+                    + "downstream. See the raw response text logged just above, if any.");
+            proposal = new MappingProposal(null, null, null);
+        }
 
         SumTypeMappingResolver.Result resolution =
                 sumTypeResolver.resolve(proposal, model, client, sourcePath, worksheet);
@@ -232,5 +277,29 @@ public class AgentMappingProposalService {
             }
         }
         return headers;
+    }
+
+    /**
+     * Logs the raw text the model actually returned, before any parsing,
+     * conversion, or downstream processing touches it -- Local LLM phase,
+     * Step LLM-6 (see {@code docs/local-llm-enhancements.md}). Added after
+     * a real gap this phase's own benchmark ran into: a malformed
+     * Qwen 2.5 3B response produced a confusing empty-mapping result with
+     * no way to tell, after the fact, whether the model truncated
+     * mid-generation, emitted a genuinely empty JSON object, refused in
+     * prose instead of JSON, or something else -- only the final
+     * (already-empty) decoded result was ever visible. Logged at {@code INFO},
+     * not {@code DEBUG}: this project's default log level
+     * ({@code application.yml}) is {@code INFO}, and the whole point of
+     * capturing this is for it to actually be visible in a normal
+     * {@code docker compose logs} run without extra configuration, not
+     * just theoretically available if someone remembers to turn on debug
+     * logging first.
+     */
+    private void logRawModelResponse(ChatResponse chatResponse) {
+        String rawText = (chatResponse != null && chatResponse.getResult() != null)
+                ? chatResponse.getResult().getOutput().getText()
+                : null;
+        log.info("Raw model response text for propose(): {}", rawText);
     }
 }
