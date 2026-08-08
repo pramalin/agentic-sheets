@@ -15,9 +15,19 @@ import java.util.Map;
  * for a client that never submits through the scanner. See
  * {@link FeedRoute}'s own javadoc for why this lives here and not on
  * {@link CanonicalModel}.
+ *
+ * {@code conventions} (Local LLM phase, Step LLM-3 -- see
+ * {@code docs/local-llm-enhancements.md}) is the same reasoning applied
+ * again: {@code modelId -> ClientModelConventions}, durable field-alias
+ * and variant-value knowledge about this client's data, empty for a
+ * client with none configured. Validated against the actual referenced
+ * canonical model at registry reload (see
+ * {@link ClientConventionsValidator}), the same way {@code feeds}'
+ * {@code modelId} references already are.
  */
 public record ClientConfig(
         String clientId,
         String dateFormat,
-        Map<String, FeedRoute> feeds) {
+        Map<String, FeedRoute> feeds,
+        Map<String, ClientModelConventions> conventions) {
 }

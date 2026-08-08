@@ -51,12 +51,13 @@ sees them, independent of whether memory has seen this layout before.
   dependency on client configuration (Step LLM-3) -- canonical-name matching
   only. Confirmed live: 148/148 (up from 133 by exactly the 15 new
   `SumTypeMappingResolverTest` cases), no other test count moved.
-- [ ] **Step LLM-3** -- Client conventions. Versioned field aliases and
+- [x] **Step LLM-3** -- Client conventions. Versioned field aliases and
   value vocabulary per client, initially still backed by
   `client-configs/*.yaml`; validated at load time against the current
   canonical model; a durable place for knowledge like "JPMC's 'Fixed Income'
   column value means canonical variant `FixedIncome`" that shouldn't have to
-  be rediscovered by the LLM on every file.
+  be rediscovered by the LLM on every file. Confirmed live: 167/167 (up
+  from 148 by exactly the 19 new tests), no other test count moved.
 - [ ] **Step LLM-4** -- Resolution integration. Wires client conventions
   ahead of canonical-name matching (explicit convention wins; canonical
   matching is the fallback for values a client hasn't configured), extends
@@ -255,3 +256,180 @@ parameter wired correctly with no bean-graph issues -- real evidence the
 manual trace against the actual source (record shapes, `CanonicalPaths`,
 `CanonicalRowBuilder`'s behavior) held up, not just a plausible-looking
 guess.
+
+## Step LLM-3 build notes
+
+**Schema, as added.** `ClientConfig` gains a fourth field,
+`conventions: Map<String, ClientModelConventions>`, keyed by canonical
+model id (a client can feed more than one model, and a field path like
+`currency` only means one specific thing within one specific model's
+ADT -- scoping per model, not flat across the client, avoids that
+ambiguity). `ClientModelConventions` carries two maps: `fieldAliases`
+(canonical field path -> known alternate source column header names) and
+`variantValues` (canonical sum-type field path -> {observed source value
+-> canonical variant name}). In YAML:
+
+```yaml
+conventions:
+  Holdings:
+    fieldAliases:
+      currency: [Currency, Ccy]
+      asset_class: [Asset Class]
+    variantValues:
+      currency:
+        USD: USD
+      asset_class:
+        Equity: Equity
+        Fixed Income: FixedIncome
+```
+
+**A real discovery that changed the plan: no new `version` field was
+needed.** The original design discussion (see this phase's planning
+history) assumed `ClientConfig` would need an explicit incrementing
+`version`, mirroring `CanonicalModel.version()`. Reading the actual
+source first found that Step 10 had already solved this exact problem a
+different way: `ClientConfigFingerprint` (used to scope mapping-memory
+lookups) hashes `ClientConfig`'s mapping-relevant content instead of
+relying on a version counter -- "a client's date convention... changing
+invalidates a remembered mapping's continued safety the same way a model
+version bump does," per its own javadoc. Reusing and extending that
+existing mechanism (folding `conventions` into the hash, alongside the
+already-hashed `dateFormat`) is simpler than introducing a second,
+parallel versioning concept, and closes exactly the staleness risk the
+original `version` field was meant to prevent: a mapping-memory entry
+approved under one convention now correctly misses (not hits) once that
+convention changes, because the fingerprint changes with it.
+
+**A real architectural constraint discovered while implementing
+validation.** Validating `fieldAliases`/`variantValues` against a
+canonical model's actual field paths and variant names needs an
+ADT-walking utility -- `CanonicalPaths` already does exactly this and is
+well-tested, but it lives in the `mapping` package, and nothing in
+`canonical` depends on `mapping` anywhere else in this codebase (the
+dependency only ever runs the other way, confirmed by checking: zero
+`canonical` files import from `mapping`, sixteen `mapping` files import
+from `canonical`). Since this validation has to run from
+`CanonicalModelRegistry` (itself in `canonical`, and already the single
+place `feeds`' `modelId` references are validated), importing
+`mapping.CanonicalPaths` from there would invert that established
+boundary for one call site. The new `ClientConventionsValidator` (package-private, `canonical` package) instead reimplements a small,
+deliberately narrow ADT walk -- just enough to know a model's valid
+field paths and, for sum-type paths, their valid variant names -- rather
+than moving or duplicating the full `CanonicalPaths` API. Documented
+plainly as a deliberate, bounded duplication in the new class's own
+javadoc, not something to "clean up" without noticing why it's there.
+
+**Validation, run at config-load time from
+`CanonicalModelRegistry.reloadClients`, in the same place and same style
+`feeds`' `modelId` references are already checked:**
+- a `conventions` entry's model id must exist in the current model
+  snapshot;
+- every `fieldAliases` key must be a real field path in that model;
+- every `variantValues` key must be a real sum-type field path in that
+  model, and every value it maps to must be a real variant of that
+  field;
+- no two distinct alias strings, across different canonical fields
+  within one model's conventions, may normalize to the same thing
+  (lowercased, whitespace/`_`/`-` stripped) -- an ambiguous alias would
+  leave Step LLM-4's future column-alias lookup unable to tell which
+  field a source header was actually meant for. The same alias string
+  repeated under the *same* field is fine; only a cross-field collision
+  is an error.
+
+A client config with an invalid `conventions` entry fails exactly like
+any other bad client config already does: logged, that one file's
+previous good config (if any) stays in place, every other client config
+still reloads normally -- no new failure mode, just the existing
+per-file isolation extended to cover this new content.
+
+**`ClientConfigFingerprint` iterates every map in sorted key order**,
+deliberately not relying on `ClientConfig`'s own map iteration order --
+`ClientConfigParser` builds its result maps via `Map.copyOf`, whose
+iteration order the JDK explicitly does not guarantee matches insertion
+order. Two semantically identical configs (same content, different
+incidental map ordering) must always hash the same; this was verified
+directly with a dedicated test, not just assumed from using a sorted
+stream.
+
+**The real `client-configs/jpmc.yaml` (and its byte-identical test
+resource copy, kept in sync per this project's own established
+schema-drift-avoidance discipline) now has a real `conventions:` block**,
+using JPMC's actual confirmed values from `mapping-notes.md`'s mapping
+table (`Fixed Income -> FixedIncome`, `Equity -> Equity`, `USD -> USD`)
+plus one illustrative extra alias (`Ccy`) for a column name JPMC's real
+fixture doesn't use but a different JPMC file plausibly could. This adds
+real, validated content with zero behavioral effect on anything else --
+nothing reads `ClientConfig.conventions()` at resolution time yet
+(that's Step LLM-4), so the mapping agent's prompt, the golden-path E2E
+test, and Step 10's mapping-memory test all see unchanged behavior. The
+one real effect: `ClientConfigFingerprint.hash()` for `jpmc` changes
+value (now includes real convention content), which only affects
+mapping-memory *lookup scoping*, not any test assertion about a specific
+hash value.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/canonical/ClientModelConventions.java` (new)
+- `backend/src/main/java/com/alai/agenticsheets/canonical/ClientConventionsValidator.java` (new, package-private)
+- `backend/src/main/java/com/alai/agenticsheets/canonical/ClientConfig.java` (modified -- new `conventions` field)
+- `backend/src/main/java/com/alai/agenticsheets/canonical/ClientConfigParser.java` (modified -- parses `conventions:`)
+- `backend/src/main/java/com/alai/agenticsheets/canonical/CanonicalModelRegistry.java` (modified -- calls the new validator in `reloadClients`)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/ClientConfigFingerprint.java` (modified -- conventions now included in the hash, deterministically sorted)
+- `backend/src/test/java/com/alai/agenticsheets/canonical/ClientConfigParserTest.java` (modified -- new parsing tests appended)
+- `backend/src/test/java/com/alai/agenticsheets/canonical/CanonicalModelRegistryTest.java` (modified -- new validation tests appended)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/ClientConfigFingerprintTest.java` (new -- no test existed for this class before)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/ProposalValidationServiceTest.java`, `MappingResolutionServiceTest.java`, `CanonicalRowBuilderTest.java` (modified -- updated to `ClientConfig`'s new 4-argument constructor; no behavioral change)
+- `client-configs/jpmc.yaml` and `backend/src/test/resources/client-configs/jpmc.yaml` (modified -- real example `conventions:` block, kept identical between the two copies)
+
+**Tests added:**
+- `ClientConfigParserTest`: parses the real `jpmc.yaml` conventions
+  correctly; an absent `conventions:` block parses to an empty map
+  (PIMCO's fixture, unchanged); structural rejections -- `conventions`
+  not a map, a `fieldAliases` entry not a list, a blank alias string, an
+  empty `variantValues` sub-map.
+- `CanonicalModelRegistryTest`: valid conventions load and are
+  retrievable; conventions for an unknown model fail that client alone,
+  not the whole registry (mirroring the existing `feeds` test exactly);
+  a `fieldAliases` path that isn't a real field fails; `variantValues`
+  against a non-sum-type field fails; `variantValues` mapping to an
+  invalid variant name fails; two aliases under different fields that
+  collide after normalization fail; the same alias repeated under the
+  *same* field is explicitly confirmed **not** an error.
+- `ClientConfigFingerprintTest` (new file): stable/deterministic for the
+  same input; changing `dateFormat` changes the hash (pre-existing
+  behavior, now covered); adding a field alias changes the hash;
+  changing a `variantValues` target changes the hash (the exact
+  "corrected a typo'd convention" scenario the design conversation
+  flagged as a real risk); semantically-identical configs with different
+  incidental map ordering hash identically; `feeds` is confirmed
+  excluded from the hash (routing metadata, no bearing on mapping
+  interpretation).
+
+**Not yet done, deliberately -- this is Step LLM-4's job:** nothing
+reads `ClientConfig.conventions()` at proposal-resolution time. The
+`SumTypeMappingResolver` built in Step LLM-2 still has zero dependency on
+`ClientConfig`, exactly as designed -- Step LLM-4 is where a
+`ConfiguredVariantVocabulary`-style lookup gets consulted ahead of
+canonical-name matching, with the `CONFIGURED_OVERRIDE_NOTABLE` problem
+kind (already defined in `MappingResolutionProblem` since Step LLM-2)
+finally getting used.
+
+**Also noted, not acted on:** `canonical-models/SCHEMA.md`'s "Source
+conventions" section documents `client` / `dateFormat` but was already
+out of date before this step -- it doesn't mention `feeds:` either, a
+real, shipped, tested Step 9 feature. Adding `conventions:` there too
+would only be consistent with an already-stale section, not a complete
+fix; left alone rather than partially patched, consistent with this
+phase's own docs living in `docs/local-llm-enhancements.md` instead.
+
+**Confirmed live.** Every claim above was written from a manual trace
+against the real cloned source, not run in the authoring environment
+(no Maven Central access there). Run against the real repo: **167/167**,
+up from Step LLM-2's 148 by exactly the 19 new tests -- 7 in
+`CanonicalModelRegistryTest`, 6 in `ClientConfigParserTest`, 6 in the new
+`ClientConfigFingerprintTest` -- no other test count moved, first
+attempt, no overlay ordering issue this time. Worth noting: every error
+message the live run actually produced (the ambiguous-alias message, the
+unknown-model message, the invalid-variant-target message) matched what
+was written by hand character-for-character, which is real corroboration
+the manual trace against `CanonicalModel`/`SumType`/`RecordType`'s actual
+shapes was accurate, not just plausible-looking.

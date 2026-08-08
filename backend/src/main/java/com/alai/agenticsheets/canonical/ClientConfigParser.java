@@ -53,7 +53,8 @@ public class ClientConfigParser {
         }
 
         Map<String, FeedRoute> feeds = parseFeeds(doc.get("feeds"), clientId, file);
-        return new ClientConfig(clientId, dateFormat, feeds);
+        Map<String, ClientModelConventions> conventions = parseConventions(doc.get("conventions"), clientId, file);
+        return new ClientConfig(clientId, dateFormat, feeds, conventions);
     }
 
     /** Optional -- empty for a client that never submits through Step
@@ -109,6 +110,133 @@ public class ClientConfigParser {
                     .toList();
 
             result.put(feedType, new FeedRoute(feedType, modelId, worksheetNames));
+        }
+        return Map.copyOf(result);
+    }
+
+    /** Optional -- empty for a client with no configured conventions.
+      * Purely structural here (right shapes, non-blank keys/values, no
+      * duplicate YAML keys -- caught for free by {@code SafeConstructor}'s
+      * {@code allowDuplicateKeys(false)} above); semantic validation
+      * against the actual referenced canonical model (real field paths,
+      * real variant names, no ambiguous aliases) happens in
+      * {@link CanonicalModelRegistry#reloadClients}, via
+      * {@link ClientConventionsValidator} -- this parser has no view of
+      * canonical models, same reasoning as {@link #parseFeeds}. */
+    private Map<String, ClientModelConventions> parseConventions(Object conventionsObj, String clientId, Path file) {
+        if (conventionsObj == null) {
+            return Map.of();
+        }
+        if (!(conventionsObj instanceof Map)) {
+            throw new CanonicalConfigException("'conventions' must be a map of modelId -> conventions: " + file);
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> conventionsMap = (Map<String, Object>) conventionsObj;
+
+        Map<String, ClientModelConventions> result = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : conventionsMap.entrySet()) {
+            String modelId = entry.getKey();
+            if (modelId == null || modelId.isBlank()) {
+                throw new CanonicalConfigException(
+                        "client '" + clientId + "' has a blank conventions model key: " + file);
+            }
+            if (!(entry.getValue() instanceof Map)) {
+                throw new CanonicalConfigException(
+                        "client '" + clientId + "' conventions for '" + modelId + "' must be a map: " + file);
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> modelConventions = (Map<String, Object>) entry.getValue();
+
+            Map<String, List<String>> fieldAliases =
+                    parseFieldAliases(modelConventions.get("fieldAliases"), clientId, modelId, file);
+            Map<String, Map<String, String>> variantValues =
+                    parseVariantValues(modelConventions.get("variantValues"), clientId, modelId, file);
+
+            result.put(modelId, new ClientModelConventions(fieldAliases, variantValues));
+        }
+        return Map.copyOf(result);
+    }
+
+    private Map<String, List<String>> parseFieldAliases(Object obj, String clientId, String modelId, Path file) {
+        if (obj == null) {
+            return Map.of();
+        }
+        if (!(obj instanceof Map)) {
+            throw new CanonicalConfigException(
+                    "client '" + clientId + "' model '" + modelId + "' fieldAliases must be a map: " + file);
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> map = (Map<String, Object>) obj;
+
+        Map<String, List<String>> result = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            String fieldPath = entry.getKey();
+            if (fieldPath == null || fieldPath.isBlank()) {
+                throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                        + "' has a blank fieldAliases key: " + file);
+            }
+            if (!(entry.getValue() instanceof List<?> rawList) || rawList.isEmpty()) {
+                throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                        + "' fieldAliases '" + fieldPath + "' must be a non-empty list: " + file);
+            }
+            List<String> aliases = rawList.stream()
+                    .map(item -> {
+                        if (!(item instanceof String s) || s.isBlank()) {
+                            throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                                    + "' fieldAliases '" + fieldPath + "' has a blank entry: " + file);
+                        }
+                        return s;
+                    })
+                    .toList();
+            result.put(fieldPath, aliases);
+        }
+        return Map.copyOf(result);
+    }
+
+    private Map<String, Map<String, String>> parseVariantValues(Object obj, String clientId, String modelId, Path file) {
+        if (obj == null) {
+            return Map.of();
+        }
+        if (!(obj instanceof Map)) {
+            throw new CanonicalConfigException(
+                    "client '" + clientId + "' model '" + modelId + "' variantValues must be a map: " + file);
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> map = (Map<String, Object>) obj;
+
+        Map<String, Map<String, String>> result = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            String fieldPath = entry.getKey();
+            if (fieldPath == null || fieldPath.isBlank()) {
+                throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                        + "' has a blank variantValues key: " + file);
+            }
+            if (!(entry.getValue() instanceof Map)) {
+                throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                        + "' variantValues '" + fieldPath + "' must be a map: " + file);
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> valueMap = (Map<String, Object>) entry.getValue();
+            if (valueMap.isEmpty()) {
+                throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                        + "' variantValues '" + fieldPath + "' must not be empty: " + file);
+            }
+
+            Map<String, String> parsed = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> valueEntry : valueMap.entrySet()) {
+                String sourceValue = valueEntry.getKey();
+                if (sourceValue == null || sourceValue.isBlank()) {
+                    throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                            + "' variantValues '" + fieldPath + "' has a blank source value key: " + file);
+                }
+                if (!(valueEntry.getValue() instanceof String variant) || variant.isBlank()) {
+                    throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                            + "' variantValues '" + fieldPath + "' -> '" + sourceValue
+                            + "' has a blank or non-string target variant: " + file);
+                }
+                parsed.put(sourceValue, variant);
+            }
+            result.put(fieldPath, Map.copyOf(parsed));
         }
         return Map.copyOf(result);
     }

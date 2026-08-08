@@ -134,4 +134,209 @@ class CanonicalModelRegistryTest {
         assertThatThrownBy(() -> registry.resolveRoute("broken", "someFeed"))
                 .isInstanceOf(java.util.NoSuchElementException.class);
     }
+
+    // --- Local LLM phase, Step LLM-3: conventions validation ---
+    // See docs/local-llm-enhancements.md. GOOD_MODEL has no sum type
+    // field, so these tests use a small model that does, to exercise
+    // variantValues validation as well as fieldAliases.
+
+    private static final String MODEL_WITH_SUM_TYPE = """
+            model: WithSumType
+            version: 1
+            target:
+              service: x
+              transport: rest
+              endpoint: https://example.com
+              auth: { type: api-key, secretRef: X }
+            types:
+              Thing:
+                kind: record
+                fields:
+                  name: String
+                  status: Status
+              Status:
+                kind: sum
+                variants:
+                  Active:
+                    kind: record
+                    fields: {}
+                  Inactive:
+                    kind: record
+                    fields: {}
+            root: Thing
+            """;
+
+    @Test
+    void validConventionsLoadSuccessfullyAndAreRetrievable(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        Files.writeString(modelsDir.resolve("model.yaml"), MODEL_WITH_SUM_TYPE);
+        Files.writeString(clientsDir.resolve("acme.yaml"), """
+                client: acme
+                dateFormat: yyyy-MM-dd
+                conventions:
+                  WithSumType:
+                    fieldAliases:
+                      name: [Full Name, Legal Name]
+                    variantValues:
+                      status:
+                        active: Active
+                        Inactive: Inactive
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        ClientModelConventions conventions = registry.getClient("acme").conventions().get("WithSumType");
+        assertThat(conventions.fieldAliases().get("name")).containsExactly("Full Name", "Legal Name");
+        assertThat(conventions.variantValues().get("status")).containsEntry("active", "Active");
+    }
+
+    @Test
+    void conventionsForUnknownModelFailsThatClientAloneNotEverything(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        Files.writeString(modelsDir.resolve("good.yaml"), GOOD_MODEL);
+        Files.writeString(clientsDir.resolve("broken.yaml"), """
+                client: broken
+                dateFormat: yyyy-MM-dd
+                conventions:
+                  NoSuchModel:
+                    fieldAliases:
+                      name: [Alias]
+                """);
+        Files.writeString(clientsDir.resolve("fine.yaml"), """
+                client: fine
+                dateFormat: yyyy-MM-dd
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThatThrownBy(() -> registry.getClient("broken"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+        assertThat(registry.getClient("fine")).isNotNull();
+    }
+
+    @Test
+    void fieldAliasesReferencingUnknownFieldPathFails(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        Files.writeString(modelsDir.resolve("model.yaml"), MODEL_WITH_SUM_TYPE);
+        Files.writeString(clientsDir.resolve("broken.yaml"), """
+                client: broken
+                dateFormat: yyyy-MM-dd
+                conventions:
+                  WithSumType:
+                    fieldAliases:
+                      nonexistent_field: [Alias]
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThatThrownBy(() -> registry.getClient("broken"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+    }
+
+    @Test
+    void variantValuesReferencingNonSumTypeFieldFails(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        Files.writeString(modelsDir.resolve("model.yaml"), MODEL_WITH_SUM_TYPE);
+        Files.writeString(clientsDir.resolve("broken.yaml"), """
+                client: broken
+                dateFormat: yyyy-MM-dd
+                conventions:
+                  WithSumType:
+                    variantValues:
+                      name:
+                        someValue: SomeVariant
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThatThrownBy(() -> registry.getClient("broken"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+    }
+
+    @Test
+    void variantValuesMappingToAnInvalidVariantNameFails(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        Files.writeString(modelsDir.resolve("model.yaml"), MODEL_WITH_SUM_TYPE);
+        Files.writeString(clientsDir.resolve("broken.yaml"), """
+                client: broken
+                dateFormat: yyyy-MM-dd
+                conventions:
+                  WithSumType:
+                    variantValues:
+                      status:
+                        pending: Pending
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThatThrownBy(() -> registry.getClient("broken"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+    }
+
+    @Test
+    void ambiguousFieldAliasesAcrossDifferentFieldsFails(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        // "Full-Name" (under name) and "full_name" (a hypothetical second
+        // field, here re-using "status" just to have two distinct paths)
+        // both normalize to "fullname" -- ambiguous, since a source
+        // column header couldn't be resolved to just one of them.
+        Files.writeString(modelsDir.resolve("model.yaml"), MODEL_WITH_SUM_TYPE);
+        Files.writeString(clientsDir.resolve("broken.yaml"), """
+                client: broken
+                dateFormat: yyyy-MM-dd
+                conventions:
+                  WithSumType:
+                    fieldAliases:
+                      name: ["Full-Name"]
+                      status: ["full_name"]
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThatThrownBy(() -> registry.getClient("broken"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+    }
+
+    @Test
+    void sameAliasRepeatedUnderTheSameFieldIsNotAmbiguous(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        // Two aliases that normalize the same, but both legitimately
+        // belong to the SAME field, are fine -- only a collision across
+        // two DIFFERENT fields is an error.
+        Files.writeString(modelsDir.resolve("model.yaml"), MODEL_WITH_SUM_TYPE);
+        Files.writeString(clientsDir.resolve("fine.yaml"), """
+                client: fine
+                dateFormat: yyyy-MM-dd
+                conventions:
+                  WithSumType:
+                    fieldAliases:
+                      name: ["Full Name", "full-name"]
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThat(registry.getClient("fine").conventions().get("WithSumType").fieldAliases().get("name"))
+                .containsExactly("Full Name", "full-name");
+    }
 }

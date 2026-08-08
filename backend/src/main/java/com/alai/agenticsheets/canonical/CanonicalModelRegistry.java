@@ -112,10 +112,13 @@ public class CanonicalModelRegistry {
 
     /** {@code models} is the just-computed, about-to-be-current model
       * map -- see {@link #reload}'s own comment on why. A client whose
-      * feed references a model id absent from it is treated exactly
-      * like any other parse failure: logged, that one file's previous
-      * good config (if any) stays in place, every other client config
-      * still reloads normally. */
+      * feed references a model id absent from it -- or, as of the Local
+      * LLM phase's Step LLM-3, whose conventions reference an unknown
+      * model, field path, or variant name (see
+      * {@link ClientConventionsValidator}) -- is treated exactly like
+      * any other parse failure: logged, that one file's previous good
+      * config (if any) stays in place, every other client config still
+      * reloads normally. */
     private Map<String, ClientConfig> reloadClients(Map<String, ClientConfig> previous, Map<String, CanonicalModel> models) {
         Map<String, ClientConfig> next = new LinkedHashMap<>(previous);
         for (Path file : listYamlFiles(clientConfigsDir)) {
@@ -128,6 +131,7 @@ public class CanonicalModelRegistry {
                                         + "' references unknown canonical model '" + route.modelId() + "': " + file);
                     }
                 }
+                ClientConventionsValidator.validate(parsed, models);
                 next.put(parsed.clientId(), parsed);
             } catch (Exception e) {
                 log.error("Failed to (re)load client config {} -- keeping previous version, if any", file, e);

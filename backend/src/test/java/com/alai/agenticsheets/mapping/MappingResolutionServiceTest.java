@@ -40,7 +40,7 @@ class MappingResolutionServiceTest {
     // CanonicalModel's own documented invariant ("never empty-vs-null
     // ambiguous") even in a test fixture.
     private final CanonicalModel model = new CanonicalModel("Holdings", 3, null, null, Map.of(), null);
-    private final ClientConfig client = new ClientConfig("jpmc", "yyyy-MM-dd", Map.of());
+    private final ClientConfig client = new ClientConfig("jpmc", "yyyy-MM-dd", Map.of(), Map.of());
     private final JsonNode table = jsonMapper.readTree("""
             {"columns": [{"header": "Account", "inferredType": "string"}]}
             """);

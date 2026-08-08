@@ -15,3 +15,25 @@ feeds:
     modelId: Holdings
     worksheetNames:
       - Holdings
+
+# Local LLM phase, Step LLM-3 (see docs/local-llm-enhancements.md):
+# durable knowledge about JPMC's own vocabulary, validated against
+# Holdings' actual ADT at registry reload. Not yet consulted by anything
+# at resolution time -- that's Step LLM-4. fieldAliases are additional
+# known names for a canonical field beyond its own name (JPMC's real
+# fixture already uses "Currency"/"Asset Class" directly, so these are
+# mostly illustrative of a client whose *other* files use different
+# column names for the same fields); variantValues are JPMC's confirmed
+# real source values for currency/asset_class, taken directly from
+# mapping-notes.md's JPMC mapping table.
+conventions:
+  Holdings:
+    fieldAliases:
+      currency: [Currency, Ccy]
+      asset_class: [Asset Class]
+    variantValues:
+      currency:
+        USD: USD
+      asset_class:
+        Equity: Equity
+        Fixed Income: FixedIncome
