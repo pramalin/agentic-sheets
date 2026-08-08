@@ -70,6 +70,8 @@ public class MappingController {
     private final Dispatcher dispatcher;
     private final ProposalDecisionService proposalDecisionService;
     private final MappingMemoryService mappingMemoryService;
+    private final ConventionSuggestionService conventionSuggestionService;
+    private final ConventionSuggestionRepository conventionSuggestionRepository;
 
     public MappingController(
             AgentMappingProposalService proposalService,
@@ -83,7 +85,9 @@ public class MappingController {
             ProposalValidationService validationService,
             Dispatcher dispatcher,
             ProposalDecisionService proposalDecisionService,
-            MappingMemoryService mappingMemoryService) {
+            MappingMemoryService mappingMemoryService,
+            ConventionSuggestionService conventionSuggestionService,
+            ConventionSuggestionRepository conventionSuggestionRepository) {
         this.proposalService = proposalService;
         this.workflowService = workflowService;
         this.importBatchRepository = importBatchRepository;
@@ -96,6 +100,8 @@ public class MappingController {
         this.dispatcher = dispatcher;
         this.proposalDecisionService = proposalDecisionService;
         this.mappingMemoryService = mappingMemoryService;
+        this.conventionSuggestionService = conventionSuggestionService;
+        this.conventionSuggestionRepository = conventionSuggestionRepository;
     }
 
     /**
@@ -250,6 +256,43 @@ public class MappingController {
     }
 
     /**
+     * A reviewer's "remember this" signal, captured during proposal
+     * review -- Local LLM phase, Step LLM-5 (see
+     * {@code docs/local-llm-enhancements.md}). Validated against the
+     * proposal's actual canonical model before being recorded (see
+     * {@link ConventionSuggestionService}); does not itself modify
+     * {@code client-configs/*.yaml} -- see that class's javadoc for why,
+     * and the docs for what's deliberately deferred.
+     */
+    @PostMapping("/proposals/{id}/suggest-convention")
+    public ConventionSuggestion suggestConvention(
+            @PathVariable long id,
+            @RequestBody SuggestConventionRequest request,
+            @RequestParam(defaultValue = "manual-api-call") String suggestedBy) {
+        return conventionSuggestionService.suggest(id, request.kind(), request.canonicalFieldPath(),
+                request.sourceValue(), request.targetVariant(), suggestedBy);
+    }
+
+    /** The queue an administrator would review before folding a
+      * suggestion into a client's actual {@code client-configs/<client>.yaml}. */
+    @GetMapping("/convention-suggestions")
+    public List<ConventionSuggestion> conventionSuggestions(
+            @RequestParam String clientId,
+            @RequestParam(defaultValue = "PENDING") String status) {
+        return conventionSuggestionRepository.findByClientAndStatus(clientId, status);
+    }
+
+    /** Reviewed and rejected as not worth remembering -- distinct from
+      * {@code APPLIED} (an administrator actually folded it into the
+      * YAML file), same "different facts worth keeping distinct"
+      * reasoning {@code SUPERSEDED} vs {@code REJECTED} already applies
+      * to a proposal's own status. */
+    @PostMapping("/convention-suggestions/{id}/dismiss")
+    public void dismissConventionSuggestion(@PathVariable long id) {
+        conventionSuggestionRepository.dismiss(id);
+    }
+
+    /**
      * BREAK-GLASS OPERATION -- not an ordinary review-screen action.
      * Confirm the previous process is actually gone before calling
      * this, never as a first response to slowness; it cannot tell the
@@ -363,6 +406,12 @@ public class MappingController {
                 .body(new ValidationErrorResponse(e.problems()));
     }
 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ValidationErrorResponse> handleBadRequest(IllegalArgumentException e) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(new ValidationErrorResponse(List.of(e.getMessage())));
+    }
+
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<ValidationErrorResponse> handleIllegalState(IllegalStateException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
@@ -394,5 +443,15 @@ public class MappingController {
     }
 
     public record ValidationErrorResponse(List<String> problems) {
+    }
+
+    /**
+     * @param kind {@link ConventionSuggestion#KIND_FIELD_ALIAS} or
+     * {@link ConventionSuggestion#KIND_VARIANT_VALUE}
+     * @param targetVariant required for {@code VARIANT_VALUE}, must be
+     * absent (null) for {@code FIELD_ALIAS}
+     */
+    public record SuggestConventionRequest(
+            String kind, String canonicalFieldPath, String sourceValue, String targetVariant) {
     }
 }

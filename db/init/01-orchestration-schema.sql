@@ -278,3 +278,61 @@ CREATE TABLE inbox_file (
 );
 
 CREATE INDEX idx_inbox_file_status ON inbox_file (status);
+
+-- Local LLM phase, Step LLM-5 (see docs/local-llm-enhancements.md):
+-- captures a reviewer's "remember this" signal during proposal review --
+-- a field alias or a variant-value mapping worth promoting into a
+-- client's durable conventions (ClientModelConventions, Step LLM-3).
+-- Deliberately does NOT write to client-configs/*.yaml itself: that
+-- file is CanonicalModelRegistry's atomically-reloaded, single-owner
+-- config, and round-tripping hand-authored YAML (including its
+-- extensive human-written comments) through a generic YAML writer
+-- risks silently discarding them -- a real, unresolved risk, not a
+-- theoretical one, given how much of client-configs/jpmc.yaml's own
+-- content is explanatory comments. This table is the human-reviewable
+-- queue between "a reviewer noticed a pattern" and "an administrator
+-- deliberately edits the YAML file" -- see this step's build notes in
+-- docs/local-llm-enhancements.md for the fuller reasoning and what
+-- remains explicitly deferred (Step LLM-5b: an "apply" action that
+-- actually writes the YAML).
+CREATE TABLE convention_suggestion (
+    id                    BIGSERIAL PRIMARY KEY,
+    source_proposal_id    BIGINT NOT NULL REFERENCES mapping_proposal (id),
+    client_id             TEXT NOT NULL,
+    model_id              TEXT NOT NULL,
+    -- FIELD_ALIAS (an alternate source column header name for a
+    -- canonical field) | VARIANT_VALUE (an observed source value's
+    -- mapping to a canonical sum-type variant). Informal, same
+    -- reasoning as every other status/kind column in this schema.
+    kind                  TEXT NOT NULL,
+    canonical_field_path  TEXT NOT NULL,
+    -- The alias text (FIELD_ALIAS) or the observed raw source value
+    -- (VARIANT_VALUE) -- one column, meaning depends on kind, same
+    -- "generic shape, meaning depends on a discriminator" pattern this
+    -- project already uses for MappingProposal.FieldMapping's
+    -- sourceColumn/sourceConstant pair.
+    source_value          TEXT NOT NULL,
+    -- Only set for VARIANT_VALUE -- the canonical variant name
+    -- source_value should resolve to. Null for FIELD_ALIAS.
+    target_variant        TEXT,
+    -- PENDING / APPLIED (an administrator folded this into the actual
+    -- YAML file -- set manually for now, since Step LLM-5b, the actual
+    -- "apply" action, isn't built) / DISMISSED (reviewed and rejected
+    -- as not worth remembering).
+    status                TEXT NOT NULL DEFAULT 'PENDING',
+    suggested_by          TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at           TIMESTAMPTZ
+);
+
+CREATE INDEX idx_convention_suggestion_client_status ON convention_suggestion (client_id, status);
+
+-- Two different reviewers (or the same reviewer on two different files)
+-- independently noticing the same convention is a confirmation, not a
+-- reason to create a second row -- a partial unique index (only over
+-- PENDING rows, mirroring uq_mapping_proposal_active_batch's own
+-- pattern above) lets ConventionSuggestionRepository upsert cleanly
+-- rather than accumulate duplicate suggestions of the same fact.
+CREATE UNIQUE INDEX uq_convention_suggestion_pending
+    ON convention_suggestion (client_id, model_id, kind, canonical_field_path, source_value)
+    WHERE status = 'PENDING';

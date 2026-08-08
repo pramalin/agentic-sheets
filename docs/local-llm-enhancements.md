@@ -69,10 +69,15 @@ sees them, independent of whether memory has seen this layout before.
   covered by Step LLM-3's `ClientConfigFingerprint` extension, and
   field-alias-driven column resolution is deliberately deferred, not
   built this round.
-- [ ] **Step LLM-5** -- Business-user authoring workflow for client
+- [x] **Step LLM-5** -- Business-user authoring workflow for client
   conventions (approve a proposal -> optionally "remember" a convention;
   flat/tabular editor, not hand-edited YAML). Deferred until LLM-1 through
-  LLM-4 are proven against the real `jpmc.yaml` fixture.
+  LLM-4 were proven against the real `jpmc.yaml` fixture, which they were.
+  Scoped to backend groundwork this round (a validated suggestion-capture
+  API, mirroring how Step 8a shipped backend groundwork ahead of Step 8b's
+  actual UI) -- writing the suggestion into `client-configs/*.yaml` itself
+  ("apply") and any frontend affordance remain explicitly deferred; see
+  build notes below for the full reasoning.
 - [ ] **Step LLM-6** -- Re-scoped benchmark. Once known conventions are
   resolved deterministically, rerun the 3B/7B/14B comparison against a
   narrower task -- a known file plus one deliberately unfamiliar column --
@@ -581,3 +586,179 @@ issue. The hand-traced fix for the double-reporting bug (found before
 this ever ran) held up: `staleConfiguredTargetFailsClosed` and every
 other new test passed on the first real execution, not after a
 correction round.
+
+## Step LLM-5 build notes
+
+**Scope decision, made before writing any code.** The roadmap's own
+description ("approve a proposal -> optionally 'remember' a convention;
+flat/tabular editor, not hand-edited YAML") implies three separable
+pieces: (1) capturing a reviewer's "remember this" signal, (2) actually
+folding that signal into `client-configs/<client>.yaml`, and (3) a
+frontend affordance to trigger (1). This round builds (1) only, as a
+real, tested backend API -- not a mock, not a stub. (2) and (3) are
+deliberately deferred, for reasons specific to each, not just "ran out
+of round." This mirrors how this project already split Step 8 into 8a
+(backend groundwork) and 8b (the actual review screen), rather than
+attempting both at once.
+
+**Why (2) -- actually writing to the YAML file -- is deferred, and it's
+not a small reason.** `client-configs/jpmc.yaml` is not a
+machine-generated artifact; roughly half its content is human-written
+explanatory comments (confirmed by rereading the actual file before
+writing this reasoning down, not assumed). `CanonicalModelRegistry` treats
+this file as the single, atomically-reloaded source of truth --
+round-tripping it through a generic YAML writer (SnakeYAML, the library
+this project already depends on for *reading* config) would very likely
+silently discard every comment on the next write, since standard
+YAML-emission libraries serialize the parsed data structure, not the
+original document with its comments preserved. That's a real, concrete
+risk to a file this project's own `mapping-notes.md` treats as carrying
+load-bearing documentation, not just data -- worth stating plainly as
+the reason this isn't built yet, rather than quietly deferred without
+explanation. A comment-preserving YAML round-trip (or a switch to a
+format/library that supports one) is real, separate work; building the
+suggestion-capture API first, independent of that unsolved problem,
+means (1) doesn't have to wait on it.
+
+**Why (3) -- a frontend affordance -- is deferred.** This session has no
+way to build or verify React changes: no `npm`/frontend build tooling
+available in this sandbox, and (per this whole phase's established
+practice) verifying a change means actually running it, not just writing
+plausible-looking code. The backend API this round produces
+(`POST /internal/mapping/proposals/{id}/suggest-convention`,
+`GET /internal/mapping/convention-suggestions`,
+`POST /internal/mapping/convention-suggestions/{id}/dismiss`) is a
+complete, self-contained target for a future frontend pass -- a
+"Remember this?" checkbox next to the review screen's existing
+approve/reject controls, and a small admin-facing suggestions queue --
+without that pass being blocked on anything backend-side.
+
+**What was actually built.** A new `convention_suggestion` table --
+captures one suggested fact (a `FIELD_ALIAS` or a `VARIANT_VALUE`) tied
+back to the proposal a reviewer was looking at when they noticed it.
+Deliberately does **not** write to `client-configs/*.yaml` (see above) --
+this is the queue between "a reviewer noticed a pattern" and "an
+administrator deliberately edits the YAML file," not an automatic
+pipeline. `ConventionSuggestionService` validates a suggestion against
+the *actual* canonical model (`CanonicalPaths`, the same utility
+`SumTypeMappingResolver` and `MappingProposalStructuralValidator` already
+use) before it's ever persisted -- the earliest point a mistake can be
+caught, matching the same "verify at the earliest useful point"
+discipline `ClientConventionsValidator` (Step LLM-3) already applies to
+conventions that have actually made it into a YAML file. Three new
+endpoints on `MappingController`, alongside the existing
+approve/reject/amend actions, since this is fundamentally a
+review-workflow action, not a config-registry-inspection one (`/internal/canonical`'s existing controller is read-only by design).
+
+**A real race avoided by following this project's own established
+lesson, not by accident.** The first design instinct for
+"suggesting the same fact twice shouldn't create two rows" was a
+check-then-insert (`findPending`, then insert if absent) in application
+code. Catching this before writing it: that's exactly the
+check-then-act race this project's own Step 6.1/7.3 hardening rounds
+found and fixed for `import_batch` -- two concurrent reviewers
+suggesting the same fact could both observe "nothing pending yet" and
+both insert. Used the same fix this project already proved out instead:
+a partial unique index (`uq_convention_suggestion_pending`, only over
+`PENDING` rows -- a dismissed suggestion must not block a fresh one for
+the same fact) plus `INSERT ... ON CONFLICT ... DO NOTHING RETURNING id`,
+the identical idiom `ImportBatchRepository.findOrCreate` already uses.
+Proven directly with a Testcontainers test
+(`suggestingTheSameFactTwiceReturnsTheSameRowNotADuplicate`), not just
+reasoned about.
+
+**Files changed:**
+- `db/init/01-orchestration-schema.sql` (modified -- new `convention_suggestion` table, `idx_convention_suggestion_client_status`, `uq_convention_suggestion_pending`)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/ConventionSuggestion.java` (new)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/ConventionSuggestionRepository.java` (new)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/ConventionSuggestionService.java` (new)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/MappingController.java` (modified -- three new endpoints, a new `SuggestConventionRequest` record, a new `IllegalArgumentException` -> 400 handler)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/ConventionSuggestionRepositoryTest.java` (new -- Testcontainers-backed, 7 tests)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/ConventionSuggestionServiceTest.java` (new -- mocked repositories, real canonical model, 9 tests)
+
+**Tests added** (16 new):
+- `ConventionSuggestionRepositoryTest` (real Postgres): a new suggestion
+  is created PENDING; suggesting the identical fact twice returns the
+  same row, not a duplicate (the race-avoidance proof above); dismissing
+  then re-suggesting the same fact creates a fresh row (the partial
+  index correctly scopes to PENDING only); dismissing sets status and
+  `resolved_at`; dismissing an already-resolved suggestion fails;
+  client-scoped filtering by status is correct and doesn't leak across
+  clients; `findPending` returns empty when nothing matches.
+- `ConventionSuggestionServiceTest` (mocked repositories, real
+  `holdings.yaml`): valid `FIELD_ALIAS` and `VARIANT_VALUE` suggestions
+  are persisted with the right arguments; a field-alias referencing an
+  unknown field path is rejected; a variant-value suggestion on a
+  non-sum-type field is rejected; a variant-value mapping to an invalid
+  variant name is rejected; a variant-value suggestion missing its
+  target is rejected; a field-alias suggestion that sets a target
+  (structurally contradictory) is rejected; an unknown `kind` is
+  rejected; a blank `sourceValue` is rejected.
+
+**Confirmed live -- with a real failure caught and fixed, not a clean
+first pass this time.** `mvn test` run against the real repo: 187 of the
+189 total passed; `ConventionSuggestionServiceTest.validVariantValueSuggestion_isPersisted`
+threw a `NullPointerException` (`Cannot invoke "java.lang.Long.longValue()"`),
+and the very next test in the same class,
+`variantValueMissingTargetVariant_rejected`, failed too with an
+unrelated-looking `InvalidUseOfMatchersException`.
+
+Root cause, one bug, two symptoms: `ConventionSuggestionRepository.suggest`'s
+first parameter is a primitive `long`
+(`sourceProposalId`), not a boxed `Long`. The broken stub used Mockito's
+generic `any()` for every one of the eight arguments, including that
+primitive position -- `any()` returns `null`, and `null` cannot be
+unboxed to a primitive `long`, hence the `NullPointerException` on the
+very first test that hit it. Mockito's internal matcher stack doesn't
+cleanly recover from a stubbing call that throws mid-registration, so
+the *next* test method's legitimate matcher usage got corrupted by the
+previous test's leftover unconsumed matcher state -- a real example of
+one root cause producing what looks like two unrelated failures, worth
+naming explicitly since it could easily read as "two bugs" and send
+troubleshooting in the wrong direction. Fixed by using `anyLong()` for
+the primitive position specifically (`any()` remains correct for the
+other seven, all reference-type `String` parameters) -- confirmed no
+other Mockito stub in either new test file made the same mistake by
+checking every `when(...)`/`verify(...)` call in both files by hand,
+not just the one that actually failed.
+
+This is a genuine example of the exact thing this whole phase has kept
+finding: a plausible-looking test that would have been wrong if trusted
+without actually running it. The fix is a one-line, two-import change
+(`ConventionSuggestionServiceTest.java` only -- no production code was
+at fault) -- but it has **not** yet been re-run. The 189/189 count below
+is what the fix should produce given the fault was isolated to exactly
+that one stub, not a confirmed result; that claim needs the same
+scrutiny as every other "should work" claim in this phase, not an
+exception because the bug and fix both feel small.
+
+**Not run in this environment, but the fix has now been confirmed.** The
+failure account above describes what actually happened when `pramalin`
+ran `mvn test` locally the first time: 187 of 189 passed, 2 failed for
+the one identified cause. After the `anyLong()` fix, a second real run
+confirmed **189/189**, all passing -- the fix genuinely resolved the
+NPE and the matcher-stack corruption it caused, and introduced nothing
+new. Per this whole phase's established pattern, a Testcontainers test
+is exactly the kind of thing most likely to reveal something a manual
+trace couldn't catch (real SQL, a real partial index, a real
+constraint) -- and this round is a reminder that a *mocked* test can
+just as easily hide a real bug, so "needs a real database" isn't the
+only category of test worth actually running before trusting it.
+
+**What Step LLM-5b would need, if and when it's picked up:** a
+comment-preserving YAML write path (or an accepted decision to drop
+comments, made deliberately rather than discovered by accident), an
+"apply" endpoint that actually edits `client-configs/<client>.yaml` and
+triggers `CanonicalModelRegistry.reload()`, and the frontend affordance
+described above. None of that is blocked by anything built this round --
+the suggestion-capture API is a complete, stable target either way.
+
+## Step LLM-6
+
+Not started. The re-scoped benchmark -- rerun 3B/7B/14B against a known
+file plus one deliberately unfamiliar column, now that currency/
+asset_class resolution is fully out of the LLM's hands (Steps LLM-1
+through LLM-4) -- remains the step that would actually answer the
+question this whole phase set out to ask: does a smaller local model
+become sufficient once it's only resolving genuine ambiguity, not
+re-deriving facts the application already knows.
