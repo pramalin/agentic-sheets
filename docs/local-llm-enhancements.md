@@ -40,7 +40,8 @@ sees them, independent of whether memory has seen this layout before.
   paginated `read_rows` loop out of `ProposalValidationService` into
   `SpreadsheetRowReader`, with no behavior change, so the same full-source-row
   read can be reused by the resolver below instead of only ever seeing
-  `describe_table`'s sample values.
+  `describe_table`'s sample values. Confirmed live: 133/133 (up from 128 by
+  exactly the five new tests), no other test count moved.
 - [ ] **Step LLM-2** -- Deterministic sum-type resolver
   (`SumTypeMappingResolver`). Reads full observed source rows via
   `SpreadsheetRowReader`; fills a `selectedVariant`/`variantValueMap` the
@@ -115,17 +116,24 @@ whatever `SpreadsheetExplorerService.readRows` itself throws -- currently an
   looping or making an unnecessary second request
 - MCP read failure -> propagates unchanged, not swallowed or wrapped
 
-**Not run in this environment.** This extraction was written against the
-real cloned source (`ProposalValidationService`, `SpreadsheetExplorerService`,
+**Confirmed live.** This extraction was written against the real cloned
+source (`ProposalValidationService`, `SpreadsheetExplorerService`,
 `ImportBatch`, and the existing `ProposalValidationServiceTest` were all read
 directly, not guessed at, consistent with this project's established
-"verify, don't guess" discipline -- see `mapping-notes.md`). It has **not**
-been run through `mvn test` here: this environment has no Maven Central
-access and no Docker (the project's own test suite needs Docker as of Step
-7.5's Testcontainers-backed test). Run `mvn test` locally to get the real
-`SpreadsheetRowReaderTest`/`ProposalValidationServiceTest` results and the
-full-suite pass count before treating this as confirmed, not just reasoned
-through.
+"verify, don't guess" discipline -- see `mapping-notes.md`), then actually
+run via `mvn test` locally. First run silently exercised the pre-existing
+code -- an overlay step didn't land before the build ran, caught by
+noticing the unchecked-operations compiler warning still pointed at
+`ProposalValidationService.java` instead of the newly extracted
+`SpreadsheetRowReader.java`, and by `SpreadsheetRowReaderTest` never
+appearing in the `Running ...` list even though the total (128) matched
+the pre-Step-LLM-1 count exactly. Re-run after confirming via `git status`
+that the new/changed files were actually present: **133/133**, up from the
+prior 128 by exactly the five new `SpreadsheetRowReaderTest` cases, nothing
+else moved. `SpreadsheetRowReader.java` now correctly carries the
+unchecked-operations warning that previously sat on
+`ProposalValidationService.java`, confirming the extraction actually moved
+the raw-type `Map.class` conversion, not just added a delegating call.
 
 **Nothing discovered here changes the plan for Step LLM-2.** `readAll`'s
 signature (`(path, worksheet) -> List<Map<String, String>>`) is exactly the
