@@ -58,12 +58,17 @@ sees them, independent of whether memory has seen this layout before.
   column value means canonical variant `FixedIncome`" that shouldn't have to
   be rediscovered by the LLM on every file. Confirmed live: 167/167 (up
   from 148 by exactly the 19 new tests), no other test count moved.
-- [ ] **Step LLM-4** -- Resolution integration. Wires client conventions
+- [x] **Step LLM-4** -- Resolution integration. Wires client conventions
   ahead of canonical-name matching (explicit convention wins; canonical
   matching is the fallback for values a client hasn't configured), extends
   mapping-memory provenance to include client-config version, and considers
   whether known field aliases can let deterministic code resolve some column
-  mappings before the LLM is invoked at all.
+  mappings before the LLM is invoked at all. Confirmed live: 173/173 (up
+  from 167 by exactly the 6 new tests), no other test count moved. See
+  build notes below -- mapping-memory provenance turned out to already be
+  covered by Step LLM-3's `ClientConfigFingerprint` extension, and
+  field-alias-driven column resolution is deliberately deferred, not
+  built this round.
 - [ ] **Step LLM-5** -- Business-user authoring workflow for client
   conventions (approve a proposal -> optionally "remember" a convention;
   flat/tabular editor, not hand-edited YAML). Deferred until LLM-1 through
@@ -433,3 +438,146 @@ unknown-model message, the invalid-variant-target message) matched what
 was written by hand character-for-character, which is real corroboration
 the manual trace against `CanonicalModel`/`SumType`/`RecordType`'s actual
 shapes was accurate, not just plausible-looking.
+
+## Step LLM-4 build notes
+
+**A real discovery that shrank this step's scope: mapping-memory
+provenance was already done.** The roadmap line for this step listed
+"extends mapping-memory provenance to include client-config version" as
+a deliverable. Reading `MappingResolutionService` and
+`ClientConfigFingerprint` before writing anything found this was already
+true -- Step LLM-3 extended `ClientConfigFingerprint.hash()` to include
+`conventions`, and `MappingResolutionService.resolve()` already threads
+that fingerprint into `mappingMemoryRepository.findActiveMatch(...)`'s
+lookup key. A client's convention changing already produces a different
+fingerprint, which already produces a mapping-memory miss instead of a
+stale hit -- no code change was needed here at all. Worth stating
+explicitly rather than silently skipping: this is exactly the kind of
+"read the real source first" discipline this whole phase has tried to
+hold to, catching a planned deliverable that turned out to already be
+satisfied by earlier work, rather than duplicating it.
+
+**Precedence, as implemented in `SumTypeMappingResolver`.** For every
+observed value being resolved (in the enrichment path *and* both
+cross-check paths -- one shared `resolveValue` helper, not three
+separate implementations that could drift):
+
+```
+observed value
+    |
+    v
+configured vocabulary entry for this exact raw value?
+    |
+    +-- yes, target is a valid variant of this field
+    |       -> use it (authoritative)
+    |       -> if canonical-name matching would have produced a
+    |          DIFFERENT variant, note it (CONFIGURED_OVERRIDE_NOTABLE,
+    |          non-blocking) -- still uses the configured target
+    |
+    +-- yes, target is NOT a valid variant (stale config)
+    |       -> CLIENT_CONFIGURATION (blocking)
+    |       -> fails closed for this value; does NOT fall back to
+    |          canonical-name matching
+    |
+    +-- no configured entry
+            -> canonical-name matching (Step LLM-2's original
+               three-tier exact/case-insensitive/normalized rule),
+               unchanged
+```
+
+This matches the precedence settled during this phase's design
+discussion exactly: an explicit, human-approved convention wins even
+when it disagrees with what canonical-name matching alone would have
+produced, and a stale convention fails closed rather than silently
+falling back to a guess for a value the client explicitly configured.
+
+**A real bug caught by tracing a test by hand before running anything.**
+The first draft of `fillUnresolved` reused the existing
+`ifPresentOrElse`-based loop unchanged, routing a `resolveValue` failure
+into the same generic "unresolvedValues" bucket regardless of *why* it
+failed. Tracing the `staleConfiguredTargetFailsClosed` test by hand
+found this would produce **two** problems for one root cause: the
+specific `CLIENT_CONFIGURATION` problem `resolveValue` itself already
+adds, *and* a second, generic `UNRESOLVED` problem from the bucket
+logic treating the same failure as if it were an ordinary unmatched
+value. Fixed by tracking whether a failed value actually had a
+configured entry (`configuredVocabulary.containsKey(value)`) -- if so,
+the specific problem already explains it and the value is excluded from
+the generic bucket; only a value with *no* configured entry that also
+failed canonical-name matching goes into the generic "doesn't resolve"
+message. This exact bug would not have been caught without deliberately
+tracing a test's expected assertion (`hasSize(1)`) against the code path
+by hand before treating the test as correct -- worth naming as a
+pattern, matching how Step LLM-1's overlay-ordering bug was also only
+caught by comparing an actual result against a specific, checkable
+expectation, not by writing plausible-looking code and assuming it works.
+
+**Not fully closed: the same double-reporting risk exists, unfixed, in
+the two cross-check paths** (`validateSelectedVariant`,
+`validateVariantValueMap`) -- if a value fails there specifically because
+of a stale configured entry, both `resolveValue`'s `CLIENT_CONFIGURATION`
+problem and the cross-check's own `SEMANTIC_CONFLICT` problem fire for
+the same value. Deliberately left as-is rather than generalizing the
+`fillUnresolved` fix everywhere: no test in this round exercises that
+specific combination (a cross-check path colliding with a stale
+configured entry), and the two-problems-for-one-cause outcome is
+redundant but not actively wrong -- a human reading both would still
+understand what's wrong. Worth revisiting if Step LLM-5's review UI ends
+up needing single-cause clarity here.
+
+**Non-blocking problems are now logged, not silently dropped.**
+`AgentMappingProposalService.propose()` already filtered
+`CONFIGURED_OVERRIDE_NOTABLE` out of the exception-triggering problem
+list correctly since Step LLM-2 (it only ever collected `blocking()`
+problems into that list) -- but nothing previously logged the non-blocking
+ones anywhere, so between Step LLM-2 and this step they were completely
+invisible, exactly the gap this phase's design discussion flagged
+("produces zero signal"). Now logged at `INFO` on every occurrence, so an
+operator (or, later, a log-scraping precursor to Step LLM-5's actual UI
+affordance) has *something* to see before that UI exists.
+
+**Field alias -> column matching before the LLM call: considered, not
+built.** The roadmap phrased this as "considers whether," not a firm
+deliverable, and this step keeps that framing. `ClientModelConventions.fieldAliases()`
+is real, validated (Step LLM-3), and completely unused by any resolution
+code as of this step. Wiring it in would mean a new, different kind of
+resolver -- one that matches *source column headers* against configured
+aliases to construct `FieldMapping` entries for *any* field kind
+(primitive or sum type), not variant values within an already-identified
+sum-type field, which is a meaningfully different piece of work from
+what `SumTypeMappingResolver` does. Deliberately deferred rather than
+bolted on to this step's scope creep-first instinct; a candidate for a
+dedicated future step if it turns out to matter once Step LLM-6's
+re-scoped benchmark shows how much LLM effort still goes into ordinary
+column-name matching that configured aliases could resolve instead.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/SumTypeMappingResolver.java` (modified -- `resolve()` takes a new `ClientConfig client` parameter; configured vocabulary consulted via the shared `resolveValue` helper ahead of the original `matchVariant` three-tier fallback)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- passes `client` through to the resolver; non-blocking problems now logged at `INFO`)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/SumTypeMappingResolverTest.java` (modified -- all 15 existing Step LLM-2 calls updated to pass a `noConventions()` client, preserving their original behavior exactly; 7 new Step LLM-4 tests appended)
+
+**Tests added** (6 new, all in `SumTypeMappingResolverTest`):
+- configured vocabulary fills a value that also happens to agree with
+  canonical-name matching -> no `CONFIGURED_OVERRIDE_NOTABLE` noted
+- configured vocabulary resolves a value canonical-name matching alone
+  could never have matched (e.g. a short client-specific code like "FI")
+- configured vocabulary deliberately diverges from what canonical-name
+  matching would produce -> the configured target wins,
+  `CONFIGURED_OVERRIDE_NOTABLE` recorded, non-blocking
+- a stale configured target (not a real variant of the field) -> fails
+  closed with a single `CLIENT_CONFIGURATION` problem, does not fall
+  back to canonical-name matching, and does **not** double-report via
+  the generic unresolved-values bucket (the bug found and fixed this
+  round)
+- configured vocabulary participates in the `selectedVariant` cross-check
+  path too, not just the enrichment path
+- a client with conventions configured for a *different* model falls
+  through to pure canonical-name matching, unchanged from Step LLM-2
+
+**Confirmed live.** `mvn test` run against the real repo after overlaying
+these files: **173/173**, up from Step LLM-3's 167 by exactly the 6 new
+tests, no other test count moved -- first attempt, no overlay ordering
+issue. The hand-traced fix for the double-reporting bug (found before
+this ever ran) held up: `staleConfiguredTargetFailsClosed` and every
+other new test passed on the first real execution, not after a
+correction round.

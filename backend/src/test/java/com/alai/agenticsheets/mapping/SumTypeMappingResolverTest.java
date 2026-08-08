@@ -2,6 +2,8 @@ package com.alai.agenticsheets.mapping;
 
 import com.alai.agenticsheets.canonical.CanonicalModel;
 import com.alai.agenticsheets.canonical.CanonicalModelParser;
+import com.alai.agenticsheets.canonical.ClientConfig;
+import com.alai.agenticsheets.canonical.ClientModelConventions;
 import com.alai.agenticsheets.canonical.RecordType;
 import com.alai.agenticsheets.canonical.SumType;
 import com.alai.agenticsheets.canonical.TargetConfig;
@@ -20,13 +22,19 @@ import static org.mockito.Mockito.when;
 
 /**
  * Acceptance tests for {@link SumTypeMappingResolver} (Local LLM phase,
- * Step LLM-2 -- see {@code docs/local-llm-enhancements.md}). Uses the
- * real {@code canonical-models/holdings.yaml} test fixture, whose
- * {@code Currency} sum type has variants {@code USD/EUR/GBP/JPY/CAD} and
- * whose {@code AssetClass} sum type has variants
- * {@code Equity/FixedIncome/Cash/Alternative} -- the same shape the
- * 3B/7B/14B/32B benchmark in {@code docs/local-llm-evaluation.md} was run
- * against.
+ * Steps LLM-2 and LLM-4 -- see {@code docs/local-llm-enhancements.md}).
+ * Uses the real {@code canonical-models/holdings.yaml} test fixture,
+ * whose {@code Currency} sum type has variants
+ * {@code USD/EUR/GBP/JPY/CAD} and whose {@code AssetClass} sum type has
+ * variants {@code Equity/FixedIncome/Cash/Alternative} -- the same shape
+ * the 3B/7B/14B/32B benchmark in {@code docs/local-llm-evaluation.md}
+ * was run against.
+ *
+ * <p>Most tests here use {@link #noConventions()} -- a client with no
+ * configured vocabulary at all -- so they exercise exactly the Step
+ * LLM-2 canonical-name-matching behavior unchanged. Step LLM-4's own
+ * tests (see the bottom of this file) use {@link #withVariantValues}
+ * to exercise the configured-vocabulary precedence rules specifically.
  */
 class SumTypeMappingResolverTest {
 
@@ -36,6 +44,15 @@ class SumTypeMappingResolverTest {
         Path file = Path.of(getClass().getClassLoader()
                 .getResource("canonical-models/holdings.yaml").toURI());
         return parser.parse(file);
+    }
+
+    private ClientConfig noConventions() {
+        return new ClientConfig("test-client", "yyyy-MM-dd", Map.of(), Map.of());
+    }
+
+    private ClientConfig withVariantValues(String modelId, String fieldPath, Map<String, String> variantValues) {
+        ClientModelConventions conventions = new ClientModelConventions(Map.of(), Map.of(fieldPath, variantValues));
+        return new ClientConfig("test-client", "yyyy-MM-dd", Map.of(), Map.of(modelId, conventions));
     }
 
     private MappingProposal.FieldMapping mapping(String path, String sourceColumn, String selectedVariant,
@@ -65,8 +82,8 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(mapping("currency", "Currency", null, null)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         assertThat(result.problems()).isEmpty();
         MappingProposal.FieldMapping resolved = result.proposal().fieldMappings().get(0);
@@ -86,8 +103,8 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(mapping("asset_class", "Asset Class", null, null)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         assertThat(result.problems()).isEmpty();
         MappingProposal.FieldMapping resolved = result.proposal().fieldMappings().get(0);
@@ -107,8 +124,8 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(mapping("currency", "Currency", "USD", null)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         assertThat(result.problems()).isEmpty();
         assertThat(result.proposal().fieldMappings().get(0).selectedVariant()).isEqualTo("USD");
@@ -124,8 +141,8 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(mapping("asset_class", "Asset Class", null, map)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         assertThat(result.problems()).isEmpty();
         assertThat(result.proposal().fieldMappings().get(0).variantValueMap()).isEqualTo(map);
@@ -144,8 +161,8 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(mapping("asset_class", "Asset Class", "Equity", null)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         assertThat(result.problems()).hasSize(1);
         MappingResolutionProblem problem = result.problems().get(0);
@@ -166,8 +183,8 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(mapping("asset_class", "Asset Class", null, incompleteMap)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         assertThat(result.problems()).hasSize(1);
         assertThat(result.problems().get(0).kind()).isEqualTo(MappingResolutionProblem.Kind.SEMANTIC_CONFLICT);
@@ -187,8 +204,8 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(mapping("currency", "Currency", null, null)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         assertThat(result.problems()).hasSize(1);
         assertThat(result.problems().get(0).kind()).isEqualTo(MappingResolutionProblem.Kind.UNRESOLVED);
@@ -207,8 +224,8 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(mapping("currency", "Currency", null, null)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         assertThat(result.problems()).hasSize(1);
         assertThat(result.problems().get(0).kind()).isEqualTo(MappingResolutionProblem.Kind.UNRESOLVED);
@@ -235,8 +252,8 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(mapping("code", "Code", null, null)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, model, "f.xlsx", "Sheet1");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, model, noConventions(), "f.xlsx", "Sheet1");
 
         assertThat(result.problems()).hasSize(1);
         assertThat(result.problems().get(0).kind()).isEqualTo(MappingResolutionProblem.Kind.UNRESOLVED);
@@ -252,8 +269,8 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(mapping("currency", "Currency", null, null)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         assertThat(result.problems()).isEmpty();
         assertThat(result.proposal().fieldMappings().get(0).selectedVariant()).isEqualTo("USD");
@@ -270,8 +287,8 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(mapping("currency", "Currency", "USD", map)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         assertThat(result.problems()).isEmpty(); // resolver adds nothing; structural validator's job
         MappingProposal.FieldMapping unchanged = result.proposal().fieldMappings().get(0);
@@ -291,8 +308,8 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(primitive, mapping("currency", "Currency", null, null)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         MappingProposal.FieldMapping untouchedPrimitive = result.proposal().fieldMappings().stream()
                 .filter(fm -> fm.canonicalFieldPath().equals("account_id"))
@@ -308,7 +325,7 @@ class SumTypeMappingResolverTest {
                 "account_id", "Account", null, null, null, null, 0.95, "");
         MappingProposal proposal = new MappingProposal(List.of(primitive), List.of(), "test");
 
-        new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        new SumTypeMappingResolver(reader).resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         verify(reader, never()).readAll(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
     }
@@ -326,7 +343,7 @@ class SumTypeMappingResolverTest {
                         mapping("asset_class", "Asset Class", null, null)),
                 List.of(), "test");
 
-        new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        new SumTypeMappingResolver(reader).resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         verify(reader, times(1)).readAll("f.xlsx", "Holdings");
     }
@@ -345,11 +362,156 @@ class SumTypeMappingResolverTest {
         MappingProposal proposal = new MappingProposal(
                 List.of(mapping("currency", "Currency", null, null)), List.of(), "test");
 
-        SumTypeMappingResolver.Result result =
-                new SumTypeMappingResolver(reader).resolve(proposal, holdings(), "f.xlsx", "Holdings");
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
 
         assertThat(result.problems()).isEmpty();
         assertThat(result.proposal().fieldMappings().get(0).variantValueMap())
                 .containsExactlyInAnyOrderEntriesOf(Map.of("USD", "USD", "EUR", "EUR"));
+    }
+
+    // =====================================================================
+    // Step LLM-4: configured client vocabulary, consulted ahead of
+    // canonical-name matching. See docs/local-llm-enhancements.md.
+    // =====================================================================
+
+    @Test
+    void configuredVocabularyFillsAValueCanonicalMatchingAgrees_noOverrideNoted() throws Exception {
+        // "Fixed Income" -> FixedIncome is what canonical-name matching
+        // would ALSO produce (via normalization) -- configured and
+        // canonical agree, so no CONFIGURED_OVERRIDE_NOTABLE.
+        SpreadsheetRowReader reader = mock(SpreadsheetRowReader.class);
+        when(reader.readAll("f.xlsx", "Holdings"))
+                .thenReturn(rowsWithColumn("Asset Class", "Fixed Income"));
+
+        MappingProposal proposal = new MappingProposal(
+                List.of(mapping("asset_class", "Asset Class", null, null)), List.of(), "test");
+        ClientConfig client = withVariantValues("Holdings", "asset_class", Map.of("Fixed Income", "FixedIncome"));
+
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), client, "f.xlsx", "Holdings");
+
+        assertThat(result.problems()).isEmpty();
+        assertThat(result.proposal().fieldMappings().get(0).selectedVariant()).isEqualTo("FixedIncome");
+    }
+
+    @Test
+    void configuredVocabularyWinsEvenWhenItDivergesFromCanonicalMatching_nonBlockingNote() throws Exception {
+        // A deliberately unusual client code "FI" for FixedIncome --
+        // canonical-name matching would never guess this from "FI" alone
+        // (no unique match), so this also demonstrates configured
+        // vocabulary resolving a value canonical-name matching alone
+        // could not.
+        SpreadsheetRowReader reader = mock(SpreadsheetRowReader.class);
+        when(reader.readAll("f.xlsx", "Holdings")).thenReturn(rowsWithColumn("Asset Class", "FI"));
+
+        MappingProposal proposal = new MappingProposal(
+                List.of(mapping("asset_class", "Asset Class", null, null)), List.of(), "test");
+        ClientConfig client = withVariantValues("Holdings", "asset_class", Map.of("FI", "FixedIncome"));
+
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), client, "f.xlsx", "Holdings");
+
+        assertThat(result.problems()).isEmpty(); // no canonical match exists to diverge from -- nothing to note
+        assertThat(result.proposal().fieldMappings().get(0).selectedVariant()).isEqualTo("FixedIncome");
+    }
+
+    @Test
+    void configuredVocabularyDivergesFromWhatCanonicalMatchingWouldPick_notableNonBlocking() throws Exception {
+        // A client convention that deliberately maps a value AWAY from
+        // what canonical-name matching alone would resolve it to --
+        // the configured convention wins, but it's flagged as notable.
+        SpreadsheetRowReader reader = mock(SpreadsheetRowReader.class);
+        when(reader.readAll("f.xlsx", "Holdings")).thenReturn(rowsWithColumn("Currency", "USD"));
+
+        MappingProposal proposal = new MappingProposal(
+                List.of(mapping("currency", "Currency", null, null)), List.of(), "test");
+        // Deliberately wrong-looking convention: "USD" literally equals a
+        // real variant name, but this (synthetic, unrealistic) client
+        // config maps it to EUR instead -- exercises that an explicit
+        // convention is authoritative even when it disagrees with an
+        // exact canonical-name match.
+        ClientConfig client = withVariantValues("Holdings", "currency", Map.of("USD", "EUR"));
+
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), client, "f.xlsx", "Holdings");
+
+        assertThat(result.problems()).hasSize(1);
+        MappingResolutionProblem problem = result.problems().get(0);
+        assertThat(problem.kind()).isEqualTo(MappingResolutionProblem.Kind.CONFIGURED_OVERRIDE_NOTABLE);
+        assertThat(problem.blocking()).isFalse();
+        assertThat(problem.message()).contains("USD").contains("EUR");
+        // The configured convention wins -- resolved to EUR, not USD.
+        assertThat(result.proposal().fieldMappings().get(0).selectedVariant()).isEqualTo("EUR");
+    }
+
+    @Test
+    void staleConfiguredTargetFailsClosed_doesNotFallBackToCanonicalMatching() throws Exception {
+        // Simulates a canonical model change that removed a variant a
+        // client's convention still references (defense in depth -- the
+        // registry itself already validates this at load time per Step
+        // LLM-3, but the resolver shouldn't trust a ClientConfig blindly
+        // regardless of how it was obtained).
+        SpreadsheetRowReader reader = mock(SpreadsheetRowReader.class);
+        when(reader.readAll("f.xlsx", "Holdings")).thenReturn(rowsWithColumn("Currency", "USD"));
+
+        MappingProposal proposal = new MappingProposal(
+                List.of(mapping("currency", "Currency", null, null)), List.of(), "test");
+        ClientConfig client = withVariantValues("Holdings", "currency", Map.of("USD", "NoSuchVariant"));
+
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), client, "f.xlsx", "Holdings");
+
+        assertThat(result.problems()).hasSize(1);
+        MappingResolutionProblem problem = result.problems().get(0);
+        assertThat(problem.kind()).isEqualTo(MappingResolutionProblem.Kind.CLIENT_CONFIGURATION);
+        assertThat(problem.blocking()).isTrue();
+        assertThat(problem.message()).contains("NoSuchVariant").contains("stale");
+        // Fails closed -- not silently resolved via canonical-name
+        // matching (which would have found USD -> USD).
+        MappingProposal.FieldMapping unresolved = result.proposal().fieldMappings().get(0);
+        assertThat(unresolved.selectedVariant()).isNull();
+        assertThat(unresolved.variantValueMap()).isNull();
+    }
+
+    @Test
+    void configuredVocabularyParticipatesInSelectedVariantCrossCheck() throws Exception {
+        // An agent-supplied selectedVariant is checked against observed
+        // data using configured vocabulary too, not just canonical-name
+        // matching -- a configured alias for a code canonical matching
+        // alone wouldn't resolve must still be recognized as consistent.
+        SpreadsheetRowReader reader = mock(SpreadsheetRowReader.class);
+        when(reader.readAll("f.xlsx", "Holdings")).thenReturn(rowsWithColumn("Asset Class", "FI", "FI"));
+
+        MappingProposal proposal = new MappingProposal(
+                List.of(mapping("asset_class", "Asset Class", "FixedIncome", null)), List.of(), "test");
+        ClientConfig client = withVariantValues("Holdings", "asset_class", Map.of("FI", "FixedIncome"));
+
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), client, "f.xlsx", "Holdings");
+
+        // Without configured vocabulary, "FI" wouldn't canonical-match
+        // anything, and this would incorrectly report a conflict.
+        assertThat(result.problems()).isEmpty();
+        assertThat(result.proposal().fieldMappings().get(0).selectedVariant()).isEqualTo("FixedIncome");
+    }
+
+    @Test
+    void clientWithNoConventionsForThisModel_behavesExactlyLikeStepLlm2() throws Exception {
+        // A client with conventions configured, but none for THIS
+        // model -- must fall through to pure canonical-name matching,
+        // not throw or behave differently from noConventions().
+        SpreadsheetRowReader reader = mock(SpreadsheetRowReader.class);
+        when(reader.readAll("f.xlsx", "Holdings")).thenReturn(rowsWithColumn("Currency", "USD"));
+
+        MappingProposal proposal = new MappingProposal(
+                List.of(mapping("currency", "Currency", null, null)), List.of(), "test");
+        ClientConfig client = withVariantValues("SomeOtherModel", "someField", Map.of("x", "y"));
+
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), client, "f.xlsx", "Holdings");
+
+        assertThat(result.problems()).isEmpty();
+        assertThat(result.proposal().fieldMappings().get(0).selectedVariant()).isEqualTo("USD");
     }
 }

@@ -52,10 +52,14 @@ import tools.jackson.databind.JsonNode;
  * through {@link SumTypeMappingResolver} before structural validation --
  * deterministically filling or validating sum type variant metadata
  * (e.g. {@code currency}, {@code asset_class}) against the full observed
- * source rows, rather than leaving that to the model. Only
- * {@link #propose} does this; {@link #validateEdited} deliberately does
- * not, since a human-edited proposal should be validated exactly as
- * submitted, not silently enriched.
+ * source rows, rather than leaving that to the model. As of Step LLM-4,
+ * that resolver also consults {@code client}'s configured vocabulary
+ * (Step LLM-3) ahead of canonical-name matching -- {@code client} is
+ * passed straight through, already resolved by the caller the same way
+ * {@code model} already was. Only {@link #propose} does any of this;
+ * {@link #validateEdited} deliberately does not, since a human-edited
+ * proposal should be validated exactly as submitted, not silently
+ * enriched.
  */
 @Service
 public class AgentMappingProposalService {
@@ -166,13 +170,20 @@ public class AgentMappingProposalService {
                 .entity(MappingProposal.class);
 
         SumTypeMappingResolver.Result resolution =
-                sumTypeResolver.resolve(proposal, model, sourcePath, worksheet);
+                sumTypeResolver.resolve(proposal, model, client, sourcePath, worksheet);
         MappingProposal resolvedProposal = resolution.proposal();
 
         List<String> problems = new ArrayList<>();
         for (MappingResolutionProblem problem : resolution.problems()) {
             if (problem.blocking()) {
                 problems.add(problem.message());
+            } else {
+                // Non-blocking (currently only CONFIGURED_OVERRIDE_NOTABLE,
+                // Step LLM-4) -- doesn't reject the proposal, but shouldn't
+                // be completely invisible either while Step LLM-5's review-UI
+                // affordance for it doesn't exist yet. Logged, not silently
+                // dropped.
+                log.info("Non-blocking mapping resolution note: {}", problem.message());
             }
         }
         problems.addAll(structuralValidator.validate(resolvedProposal, model, observedColumns));

@@ -1,6 +1,8 @@
 package com.alai.agenticsheets.mapping;
 
 import com.alai.agenticsheets.canonical.CanonicalModel;
+import com.alai.agenticsheets.canonical.ClientConfig;
+import com.alai.agenticsheets.canonical.ClientModelConventions;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -23,14 +25,24 @@ import java.util.function.Predicate;
  * field unresolved or wrong, even though the correct answer is already
  * derivable from data the application reads anyway.
  *
- * <p>Deliberately has no dependency on client configuration -- this is
- * canonical-name matching only (does an observed raw value correspond,
- * exactly or after light normalization, to one of the canonical model's
- * own variant names). Client-specific vocabulary (Step LLM-3, e.g. "JPMC's
- * 'Fixed Income' means canonical variant FixedIncome") is a separate,
- * higher-priority lookup that Step LLM-4 will consult ahead of this one --
- * this resolver stays the correct, narrower fallback for values a client
- * hasn't configured, or for a client with no configuration at all.
+ * <p>As of Step LLM-4, an observed value is resolved in two tiers, in
+ * order: first, the client's own configured vocabulary
+ * ({@link ClientModelConventions#variantValues()}, Step LLM-3) for this
+ * field, if the client has one for this exact raw value; second,
+ * canonical-name matching (the original Step LLM-2 behavior) as the
+ * fallback for values the client hasn't configured, or for a client with
+ * no conventions at all. An explicit, human-approved client convention
+ * wins even when it diverges from what canonical-name matching alone
+ * would have produced -- flagged as a non-blocking
+ * {@link MappingResolutionProblem.Kind#CONFIGURED_OVERRIDE_NOTABLE}, not
+ * a reason to reject, since the convention is presumed correct until a
+ * human says otherwise. A configured entry whose target isn't actually a
+ * valid variant of the field -- stale, e.g. after a canonical model
+ * change removed a variant a client's convention still references --
+ * fails closed for that one value ({@link MappingResolutionProblem.Kind#CLIENT_CONFIGURATION},
+ * blocking) rather than silently falling back to canonical-name matching,
+ * which could produce a different, unintended result for a value the
+ * client explicitly configured.
  *
  * <p>Conservative by design, matching this project's established stance on
  * deterministic code (see {@code MappingMemoryEligibility}'s similar
@@ -38,7 +50,11 @@ import java.util.function.Predicate;
  * derivable, or flags a conflict -- it never guesses, and it never repairs
  * a structurally contradictory proposal ({@code selectedVariant} and
  * {@code variantValueMap} both set). Non-sum-type field mappings are
- * never touched.
+ * never touched. Field name *aliases* ({@link ClientModelConventions#fieldAliases()})
+ * are deliberately not consulted here -- that's a column-to-field
+ * matching concern, not a variant-value one, and remains explicitly
+ * deferred (see {@code docs/local-llm-enhancements.md}'s Step LLM-4
+ * build notes for why).
  */
 @Component
 public class SumTypeMappingResolver {
@@ -54,11 +70,14 @@ public class SumTypeMappingResolver {
 
     /**
      * Resolves {@code proposal} against {@code model}'s ADT and the full
-     * observed rows of {@code sourcePath}/{@code worksheet}. Reads the
-     * source rows at most once per call, and only if the proposal actually
-     * has a sum-type field mapping to examine.
+     * observed rows of {@code sourcePath}/{@code worksheet}, consulting
+     * {@code client}'s configured vocabulary for {@code model.modelId()}
+     * (if any) ahead of canonical-name matching. Reads the source rows at
+     * most once per call, and only if the proposal actually has a
+     * sum-type field mapping to examine.
      */
-    public Result resolve(MappingProposal proposal, CanonicalModel model, String sourcePath, String worksheet) {
+    public Result resolve(MappingProposal proposal, CanonicalModel model, ClientConfig client,
+            String sourcePath, String worksheet) {
         CanonicalPaths paths = CanonicalPaths.of(model);
         List<MappingResolutionProblem> problems = new ArrayList<>();
 
@@ -68,6 +87,10 @@ public class SumTypeMappingResolver {
                 ? rowReader.readAll(sourcePath, worksheet)
                 : List.of();
 
+        ClientModelConventions conventions = client.conventions().get(model.modelId());
+        Map<String, Map<String, String>> variantValuesByPath =
+                conventions != null ? conventions.variantValues() : Map.of();
+
         List<MappingProposal.FieldMapping> resolvedMappings = new ArrayList<>();
         for (MappingProposal.FieldMapping fm : proposal.fieldMappings()) {
             String path = fm.canonicalFieldPath();
@@ -75,7 +98,9 @@ public class SumTypeMappingResolver {
                 resolvedMappings.add(fm);
                 continue;
             }
-            resolvedMappings.add(resolveOne(path, fm, paths.variantsAt(path), rows, problems));
+            Map<String, String> configuredVocabulary = variantValuesByPath.getOrDefault(path, Map.of());
+            resolvedMappings.add(
+                    resolveOne(path, fm, paths.variantsAt(path), configuredVocabulary, rows, problems));
         }
 
         MappingProposal resolvedProposal = new MappingProposal(
@@ -84,7 +109,8 @@ public class SumTypeMappingResolver {
     }
 
     private MappingProposal.FieldMapping resolveOne(String path, MappingProposal.FieldMapping fm,
-            Set<String> validVariants, List<Map<String, String>> rows, List<MappingResolutionProblem> problems) {
+            Set<String> validVariants, Map<String, String> configuredVocabulary,
+            List<Map<String, String>> rows, List<MappingResolutionProblem> problems) {
 
         boolean hasSelected = isSet(fm.selectedVariant());
         boolean hasMap = fm.variantValueMap() != null && !fm.variantValueMap().isEmpty();
@@ -96,12 +122,12 @@ public class SumTypeMappingResolver {
             return fm;
         }
         if (hasSelected) {
-            return validateSelectedVariant(path, fm, validVariants, rows, problems);
+            return validateSelectedVariant(path, fm, validVariants, configuredVocabulary, rows, problems);
         }
         if (hasMap) {
-            return validateVariantValueMap(path, fm, validVariants, rows, problems);
+            return validateVariantValueMap(path, fm, rows, problems);
         }
-        return fillUnresolved(path, fm, validVariants, rows, problems);
+        return fillUnresolved(path, fm, validVariants, configuredVocabulary, rows, problems);
     }
 
     /**
@@ -115,7 +141,8 @@ public class SumTypeMappingResolver {
      * stumbling on.
      */
     private MappingProposal.FieldMapping fillUnresolved(String path, MappingProposal.FieldMapping fm,
-            Set<String> validVariants, List<Map<String, String>> rows, List<MappingResolutionProblem> problems) {
+            Set<String> validVariants, Map<String, String> configuredVocabulary,
+            List<Map<String, String>> rows, List<MappingResolutionProblem> problems) {
 
         if (!isSet(fm.sourceColumn())) {
             problems.add(new MappingResolutionProblem(MappingResolutionProblem.Kind.UNRESOLVED, path,
@@ -136,10 +163,22 @@ public class SumTypeMappingResolver {
 
         Map<String, String> resolvedByValue = new LinkedHashMap<>();
         List<String> unresolvedValues = new ArrayList<>();
+        boolean anyConfigFailure = false;
         for (String value : distinctValues) {
-            matchVariant(value, validVariants).ifPresentOrElse(
-                    variant -> resolvedByValue.put(value, variant),
-                    () -> unresolvedValues.add(value));
+            Optional<String> resolved =
+                    resolveValue(path, fm.sourceColumn(), value, configuredVocabulary, validVariants, problems);
+            if (resolved.isPresent()) {
+                resolvedByValue.put(value, resolved.get());
+            } else if (configuredVocabulary.containsKey(value)) {
+                // resolveValue already recorded a specific
+                // CLIENT_CONFIGURATION problem for this exact value --
+                // don't also fold it into the generic "doesn't resolve"
+                // bucket below, which would report the same root cause
+                // twice under two different problem kinds.
+                anyConfigFailure = true;
+            } else {
+                unresolvedValues.add(value);
+            }
         }
 
         if (!unresolvedValues.isEmpty()) {
@@ -148,6 +187,12 @@ public class SumTypeMappingResolver {
                     "'" + path + "' observed value(s) " + unresolvedValues + " in column '" + fm.sourceColumn()
                             + "' do not uniquely resolve to any of " + validVariants
                             + " -- leaving unresolved rather than guessing", true));
+        }
+        if (!unresolvedValues.isEmpty() || anyConfigFailure) {
+            // Field isn't fully resolved -- either genuinely-unresolved
+            // values, a stale configured entry, or both. Either way the
+            // specific problem(s) are already recorded above; nothing
+            // more to add here.
             return fm;
         }
 
@@ -171,7 +216,8 @@ public class SumTypeMappingResolver {
      * that.
      */
     private MappingProposal.FieldMapping validateSelectedVariant(String path, MappingProposal.FieldMapping fm,
-            Set<String> validVariants, List<Map<String, String>> rows, List<MappingResolutionProblem> problems) {
+            Set<String> validVariants, Map<String, String> configuredVocabulary,
+            List<Map<String, String>> rows, List<MappingResolutionProblem> problems) {
 
         if (!isSet(fm.sourceColumn())) {
             return fm;
@@ -180,7 +226,8 @@ public class SumTypeMappingResolver {
         Set<String> distinctValues = distinctNonBlankValues(fm.sourceColumn(), rows);
         List<String> conflicting = new ArrayList<>();
         for (String value : distinctValues) {
-            Optional<String> matched = matchVariant(value, validVariants);
+            Optional<String> matched = resolveValue(path, fm.sourceColumn(), value, configuredVocabulary,
+                    validVariants, problems);
             if (matched.isEmpty() || !matched.get().equals(fm.selectedVariant())) {
                 conflicting.add(value);
             }
@@ -204,10 +251,13 @@ public class SumTypeMappingResolver {
      * distinct observed value in its (required) {@code sourceColumn}.
      * {@code variantValueMap} without a {@code sourceColumn} is already
      * structurally invalid (caught by {@link MappingProposalStructuralValidator});
-     * nothing for this resolver to add in that case.
+     * nothing for this resolver to add in that case. Deliberately doesn't
+     * consult configured vocabulary or canonical-name matching -- this
+     * checks whether the agent's *own* map covers what was observed, not
+     * whether those values are independently resolvable some other way.
      */
     private MappingProposal.FieldMapping validateVariantValueMap(String path, MappingProposal.FieldMapping fm,
-            Set<String> validVariants, List<Map<String, String>> rows, List<MappingResolutionProblem> problems) {
+            List<Map<String, String>> rows, List<MappingResolutionProblem> problems) {
 
         if (!isSet(fm.sourceColumn())) {
             return fm;
@@ -250,6 +300,47 @@ public class SumTypeMappingResolver {
             }
         }
         return values;
+    }
+
+    /**
+     * Resolves one observed raw value to a canonical variant name --
+     * configured client vocabulary first (exact raw-string match, same
+     * exact-key semantics {@code CanonicalRowBuilder} already uses for
+     * {@code variantValueMap}, no normalization), canonical-name matching
+     * as the fallback. See this class's own javadoc for the full
+     * precedence and problem-reporting rules. Shared by all three call
+     * sites (enrichment and both cross-check paths) so a stale or
+     * diverging configured entry is detected identically regardless of
+     * which one hit it.
+     */
+    private Optional<String> resolveValue(String path, String sourceColumn, String rawValue,
+            Map<String, String> configuredVocabulary, Set<String> validVariants,
+            List<MappingResolutionProblem> problems) {
+
+        String configuredTarget = configuredVocabulary.get(rawValue);
+        if (configuredTarget == null) {
+            return matchVariant(rawValue, validVariants);
+        }
+
+        if (!validVariants.contains(configuredTarget)) {
+            problems.add(new MappingResolutionProblem(MappingResolutionProblem.Kind.CLIENT_CONFIGURATION, path,
+                    sourceColumn,
+                    "configured convention maps '" + rawValue + "' to variant '" + configuredTarget
+                            + "', which is not a valid variant of '" + path + "' (" + validVariants
+                            + ") -- likely stale after a canonical model change; not falling back to "
+                            + "canonical-name matching for a value the client explicitly configured", true));
+            return Optional.empty();
+        }
+
+        Optional<String> canonicalGuess = matchVariant(rawValue, validVariants);
+        if (canonicalGuess.isPresent() && !canonicalGuess.get().equals(configuredTarget)) {
+            problems.add(new MappingResolutionProblem(MappingResolutionProblem.Kind.CONFIGURED_OVERRIDE_NOTABLE,
+                    path, sourceColumn,
+                    "configured convention maps '" + rawValue + "' to '" + configuredTarget
+                            + "', which diverges from canonical-name matching (would have resolved to '"
+                            + canonicalGuess.get() + "') -- using the configured convention", false));
+        }
+        return Optional.of(configuredTarget);
     }
 
     /**
