@@ -52,7 +52,7 @@ class ProposalValidationServiceTest {
                 .thenReturn(jsonMapper.readTree(rowsJson));
 
         ProposalValidationService service = new ProposalValidationService(
-                explorer, new CanonicalRowBuilder(), jsonMapper);
+                new SpreadsheetRowReader(explorer, jsonMapper), new CanonicalRowBuilder());
 
         // Deliberately no client_id entry -- matching what the agent
         // actually produces per AgentMappingProposalService's system prompt.

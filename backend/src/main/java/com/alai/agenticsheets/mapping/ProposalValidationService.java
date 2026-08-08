@@ -3,39 +3,38 @@ package com.alai.agenticsheets.mapping;
 import com.alai.agenticsheets.canonical.CanonicalModel;
 import com.alai.agenticsheets.canonical.CanonicalValue;
 import com.alai.agenticsheets.canonical.ClientConfig;
-import com.alai.agenticsheets.spreadsheet.SpreadsheetExplorerService;
 import org.springframework.stereotype.Service;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * Fetches every row of an approved proposal's source file (paginated,
- * since {@code read_rows} caps at 500 per call -- see
- * {@code sheets-reader-mcp}) and validates each against the ADT via
- * {@link CanonicalRowBuilder}. Deterministic, no LLM involved -- this is
- * a separate concern from {@link Dispatcher}, which only decides what to
- * do with rows that already passed here.
+ * Fetches every row of an approved proposal's source file (paginated via
+ * {@link SpreadsheetRowReader}, since {@code read_rows} caps at 500 per
+ * call -- see {@code sheets-reader-mcp}) and validates each against the
+ * ADT via {@link CanonicalRowBuilder}. Deterministic, no LLM involved --
+ * this is a separate concern from {@link Dispatcher}, which only decides
+ * what to do with rows that already passed here.
+ *
+ * <p>As of the Local LLM phase's Step LLM-1 (see
+ * {@code docs/local-llm-enhancements.md}), the paginated row-fetching
+ * logic previously private to this class lives in {@link
+ * SpreadsheetRowReader} instead, so it can be reused by other
+ * deterministic mapping logic without duplicating the paging loop. No
+ * behavior change here -- same page size, same row shape, same error
+ * propagation.
  */
 @Service
 public class ProposalValidationService {
 
-    private final SpreadsheetExplorerService explorer;
+    private final SpreadsheetRowReader rowReader;
     private final CanonicalRowBuilder rowBuilder;
-    private final JsonMapper jsonMapper;
 
-    private static final int PAGE_SIZE = 500;
-
-    public ProposalValidationService(SpreadsheetExplorerService explorer, CanonicalRowBuilder rowBuilder,
-            JsonMapper jsonMapper) {
-        this.explorer = explorer;
+    public ProposalValidationService(SpreadsheetRowReader rowReader, CanonicalRowBuilder rowBuilder) {
+        this.rowReader = rowReader;
         this.rowBuilder = rowBuilder;
-        this.jsonMapper = jsonMapper;
     }
 
     public ValidationReport validate(CanonicalModel model, ClientConfig client, ImportBatch batch,
@@ -57,7 +56,7 @@ public class ProposalValidationService {
         List<ValidationReport.RowError> rowErrors = new ArrayList<>();
 
         int rowIndex = 0;
-        for (Map<String, String> row : fetchAllRows(batch.sourceFilename(), batch.worksheet())) {
+        for (Map<String, String> row : rowReader.readAll(batch.sourceFilename(), batch.worksheet())) {
             CanonicalRowBuilder.Result result = rowBuilder.build(model.root(), mappingsByPath, client, row);
             if (result.isValid()) {
                 validRows.add(result.value());
@@ -68,34 +67,5 @@ public class ProposalValidationService {
         }
 
         return new ValidationReport(validRows, rowErrors);
-    }
-
-    private List<Map<String, String>> fetchAllRows(String path, String worksheet) {
-        List<Map<String, String>> allRows = new ArrayList<>();
-        int offset = 0;
-        while (true) {
-            JsonNode page = explorer.readRows(path, worksheet, offset, PAGE_SIZE);
-            JsonNode rowsNode = page.get("rows");
-            if (rowsNode != null && rowsNode.isArray()) {
-                for (JsonNode rowNode : rowsNode) {
-                    allRows.add(toStringMap(rowNode));
-                }
-            }
-            boolean hasMore = page.get("hasMore") != null && page.get("hasMore").asBoolean();
-            if (!hasMore) {
-                break;
-            }
-            offset += PAGE_SIZE;
-        }
-        return allRows;
-    }
-
-    private Map<String, String> toStringMap(JsonNode rowNode) {
-        Map<String, Object> raw = jsonMapper.convertValue(rowNode, Map.class);
-        Map<String, String> result = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> entry : raw.entrySet()) {
-            result.put(entry.getKey(), entry.getValue() == null ? null : entry.getValue().toString());
-        }
-        return result;
     }
 }
