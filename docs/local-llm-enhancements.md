@@ -2403,3 +2403,65 @@ handling of `Valuation Px`. New and unaddressed: the model inventing
 a plausible but nonexistent source column when declining to leave a
 sub-field unmapped. Worth another run to see whether that new pattern
 repeats before deciding whether it needs its own fix.
+
+## Eleventh real run: second clean baseline pass, and the fabricated-column pattern confirmed reproducible
+
+**A second fully clean baseline pass, back to back.** Same shape as the
+tenth run -- every field mapped, empty `unmappedSourceColumns`, the
+same stale-mention filtering and deterministic-garbage protection
+visible in the raw text and correctly handled. Two consecutive clean
+passes is real, repeated evidence this fixture's mapping has converged,
+not one good run.
+
+**The fabricated-column finding from the tenth round: confirmed, and
+more precisely than expected.** The unfamiliar-column run's raw
+response this time is nearly identical field-for-field to the tenth
+round's -- same fabricated `"Maturity Date"`, `"Coupon Rate"`,
+`"Credit Rating"` columns, same field order, even the same spurious
+`0.01` scale transformation applied to an unrelated field
+(`market_value`). This is not two independent guesses that happened to
+agree -- it's strong evidence of a deterministic response to this
+specific prompt, consistent with low-temperature CPU inference against
+a fixed model. That reproducibility is actually more useful than random
+variation would be: it means this exact prompt reliably triggers this
+exact failure, a real, fixable pattern rather than a rare fluke --
+crossing this step's own bar for a genuine fix rather than a watch
+item.
+
+**A precise, name-the-exact-failure fix, not a repeat of the same
+general wording.** The eighth round's instruction described a
+*condition* ("only if a column exists that's specifically about this
+data") without explicitly telling the model to check that condition
+against the real table -- the model appears to have satisfied it by
+imagining a plausible column into existence instead. The sub-field
+guidance now states directly that every `sourceColumn` must be copied
+character-for-character from the actual table, and names the exact
+failure observed: a field being called `maturity_date` in the schema
+is not evidence a column called "Maturity Date" exists in the file.
+Worth being clear about what was already working here regardless: the
+fabricated column was always correctly rejected by existing structural
+validation (`references sourceColumn ..., which was not in the
+observed table`) -- this fix addresses how often the model produces
+the failure, not whether the system catches it when it does, which it
+already did, every time.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- explicit instruction against fabricating column names, naming the exact observed failure directly; class javadoc updated with the full tenth- and eleventh-round account)
+
+**No new tests** -- confirmed no existing test asserts on the exact
+prompt text that changed; matching every prompt-wording change in this
+step, only a real model run can confirm whether it actually changes
+output, not a unit test.
+
+**Confirmed live.** `mvn test`: **241/241**, unchanged as expected --
+prompt text only, no code path a test exercises differently.
+
+**Where this leaves the 3B findings.** The baseline fixture now has two
+consecutive clean passes -- genuinely converged, as far as this
+benchmark can show. The unfamiliar-column fixture's `FixedIncome`
+sub-field guidance now has its third iteration, built from the
+strongest evidence yet (a reproducible, near-identical failure across
+two independent runs). Still open: whether this more precise wording
+actually breaks the reproducible pattern, and the two single-occurrence
+omission findings from the ninth round, still without a real theory to
+act on.

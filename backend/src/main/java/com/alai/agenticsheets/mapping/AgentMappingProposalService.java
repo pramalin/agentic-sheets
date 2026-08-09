@@ -154,6 +154,30 @@ import tools.jackson.databind.json.JsonMapper;
  * anything a wording fix has addressed so far, and single-occurrence
  * each; recorded as open watch items rather than patched without a
  * real theory of what would help.
+ *
+ * <p>A tenth run produced the first fully clean baseline pass this
+ * whole benchmark had ever seen, confirming the merge fix and
+ * deterministic-garbage protection live in the same run, and surfaced
+ * a new twist: rather than repurposing a real column for a
+ * {@code FixedIncome} sub-field (the pattern the seventh round's fix
+ * addressed), the model fabricated plausible-sounding column names
+ * that don't exist in the file at all ({@code "Maturity Date"},
+ * {@code "Coupon Rate"}, {@code "Credit Rating"}) and confidently used
+ * them. An eleventh run, against the same fixture, produced the exact
+ * same fabrication again -- field for field, in the same order, down
+ * to the same spurious scale transformation on an unrelated field --
+ * strong evidence this is a deterministic response to this specific
+ * prompt under this model's low-temperature CPU inference, not two
+ * independent guesses that happened to coincide. That crosses this
+ * step's own bar for "repeated, not reactive": the sub-field guidance
+ * now explicitly states that every sourceColumn must be copied
+ * character-for-character from the real table, naming the exact
+ * failure directly (a field being named {@code maturity_date} in the
+ * schema is not evidence a column called "Maturity Date" exists) --
+ * confirmed safe either way by existing structural validation
+ * (a fabricated sourceColumn was always correctly rejected; this
+ * addresses frequency, not correctness), and, like every prompt
+ * attempt in this list, unconfirmed until a real run says otherwise.
  */
 @Service
 public class AgentMappingProposalService {
@@ -367,6 +391,19 @@ public class AgentMappingProposalService {
                 to map, never a list of canonical fields you're declining to fill --
                 a sub-field with no matching column was never a source column in the
                 first place, so it has no place in either list.
+
+                CRITICAL, and a real, repeated, reproducible failure this exact
+                instruction is built from: every sourceColumn value you write must be
+                copied character-for-character from the actual column headers shown in
+                the SOURCE TABLE below -- never invented, guessed, or constructed by
+                title-casing a canonical field's own name. A field being named
+                maturity_date in the schema is NOT evidence that a column called
+                "Maturity Date" exists in this file -- check the actual table below for
+                that exact text; if it isn't there, the column does not exist, no
+                matter how plausible the name would be. Before writing any
+                sourceColumn value, confirm it appears verbatim in the table's actual
+                header row -- do not satisfy "a column specifically about this data"
+                by imagining one into existence.
 
                 Some values come from a banner row or other free text above the real
                 header, not a per-row column -- use sourceConstant for those, not
