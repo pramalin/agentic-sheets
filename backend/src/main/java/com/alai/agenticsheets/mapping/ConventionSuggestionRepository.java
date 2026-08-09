@@ -31,12 +31,35 @@ public class ConventionSuggestionRepository {
      * Inserts a new PENDING suggestion, or -- if an identical PENDING
      * suggestion already exists for this exact {@code (clientId, modelId,
      * kind, canonicalFieldPath, sourceValue)} -- returns the existing one
-     * unchanged. Race-safe via {@code ON CONFLICT ... DO NOTHING RETURNING
-     * id} against {@code uq_convention_suggestion_pending}, the same
-     * atomic-upsert idiom {@code ImportBatchRepository} already uses for
-     * exactly this reason (a plain check-then-insert would race two
-     * concurrent callers exactly the way this project's own Step 6.1/7.3
-     * hardening rounds found and fixed for other tables).
+     * unchanged, provided its target agrees. Race-safe via
+     * {@code ON CONFLICT ... DO NOTHING RETURNING id} against
+     * {@code uq_convention_suggestion_pending}, the same atomic-upsert
+     * idiom {@code ImportBatchRepository} already uses for exactly this
+     * reason (a plain check-then-insert would race two concurrent
+     * callers exactly the way this project's own Step 6.1/7.3 hardening
+     * rounds found and fixed for other tables).
+     *
+     * <p>Following an external review: the unique index deliberately
+     * doesn't include {@code target_variant} (see that index's own
+     * schema comment for why -- two reviewers independently suggesting
+     * the *same* fact should confirm, not duplicate). But that meant a
+     * genuinely *different* target for the same source value -- e.g.
+     * {@code USD -> USD} already pending, then someone suggests
+     * {@code USD -> EUR} -- hit the identical conflict target and
+     * silently returned the *first* row, with no signal that a
+     * different fact had been proposed and discarded. The conflict
+     * target and the *target* agreement are now two separate questions:
+     * a same-target conflict is still treated as confirmation (idempotent,
+     * returns the existing row); a different-target conflict is a real
+     * disagreement worth surfacing, not silently resolved by whichever
+     * suggestion happened to arrive first.
+     *
+     * @throws IllegalStateException if a PENDING suggestion for the same
+     * {@code (clientId, modelId, kind, canonicalFieldPath, sourceValue)}
+     * already exists with a genuinely different {@code targetVariant} --
+     * mapped to an HTTP 409 by {@code MappingController}'s existing
+     * {@code IllegalStateException} handler, the same status every other
+     * "already in a conflicting state" condition in this project uses.
      */
     public ConventionSuggestion suggest(long sourceProposalId, String clientId, String modelId, String kind,
             String canonicalFieldPath, String sourceValue, String targetVariant, String suggestedBy) {
@@ -51,12 +74,22 @@ public class ConventionSuggestionRepository {
                 sourceProposalId, clientId, modelId, kind, canonicalFieldPath, sourceValue, targetVariant,
                 suggestedBy);
 
-        long id = inserted.stream().findFirst().orElseGet(
-                () -> findPending(clientId, modelId, kind, canonicalFieldPath, sourceValue)
-                        .orElseThrow(() -> new IllegalStateException(
-                                "insert conflicted but no matching PENDING suggestion was found -- unexpected"))
-                        .id());
-        return findById(id);
+        if (!inserted.isEmpty()) {
+            return findById(inserted.get(0));
+        }
+
+        ConventionSuggestion existing = findPending(clientId, modelId, kind, canonicalFieldPath, sourceValue)
+                .orElseThrow(() -> new IllegalStateException(
+                        "insert conflicted but no matching PENDING suggestion was found -- unexpected"));
+
+        if (!java.util.Objects.equals(existing.targetVariant(), targetVariant)) {
+            throw new IllegalStateException("a conflicting PENDING convention suggestion already exists for "
+                    + clientId + "/" + modelId + "/" + kind + "/" + canonicalFieldPath + "/" + sourceValue
+                    + " -- existing target is '" + existing.targetVariant() + "', new suggestion proposes '"
+                    + targetVariant + "'. Dismiss the existing suggestion first if the new one is correct.");
+        }
+
+        return existing;
     }
 
     public Optional<ConventionSuggestion> findPending(String clientId, String modelId, String kind,

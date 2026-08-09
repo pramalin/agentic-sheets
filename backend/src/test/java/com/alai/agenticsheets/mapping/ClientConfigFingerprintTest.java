@@ -3,6 +3,7 @@ package com.alai.agenticsheets.mapping;
 import com.alai.agenticsheets.canonical.ClientConfig;
 import com.alai.agenticsheets.canonical.ClientModelConventions;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.List;
 import java.util.Map;
@@ -19,7 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ClientConfigFingerprintTest {
 
-    private final ClientConfigFingerprint fingerprint = new ClientConfigFingerprint();
+    private final JsonMapper jsonMapper = JsonMapper.builder().build();
+    private final ClientConfigFingerprint fingerprint = new ClientConfigFingerprint(jsonMapper);
 
     private ClientConfig withConventions(Map<String, List<String>> fieldAliases,
             Map<String, Map<String, String>> variantValues) {
@@ -88,5 +90,33 @@ class ClientConfigFingerprintTest {
                         "holdings", "Holdings", List.of("Holdings"))),
                 Map.of());
         assertThat(fingerprint.hash(a)).isEqualTo(fingerprint.hash(b));
+    }
+
+    // External review finding (post Step LLM-6): the original
+    // delimiter-based serialization had a real, verified hash collision.
+    // See docs/local-llm-enhancements.md.
+
+    @Test
+    void adversarialDelimiterCollisionInFieldAliases_stillHashesDifferently() {
+        // The review's exact example: with the old "," -joined
+        // serialization, alias lists ["a,b","c"] and ["a","b,c"], both
+        // sorted, both concatenated to the identical string "a,b,c,".
+        // Two semantically different configurations must never collide.
+        ClientConfig a = withConventions(Map.of("currency", List.of("a,b", "c")), Map.of());
+        ClientConfig b = withConventions(Map.of("currency", List.of("a", "b,c")), Map.of());
+
+        assertThat(fingerprint.hash(a)).isNotEqualTo(fingerprint.hash(b));
+    }
+
+    @Test
+    void adversarialDelimiterCollisionInVariantValues_stillHashesDifferently() {
+        // Same class of bug, the other serialization path: with the old
+        // "->" -joined serialization, a single entry {"A->B":"C"} and a
+        // single entry {"A":"B->C"} both concatenate to "A->B->C," --
+        // genuinely different key/value structures, same old hash input.
+        ClientConfig a = withConventions(Map.of(), Map.of("currency", Map.of("A->B", "C")));
+        ClientConfig b = withConventions(Map.of(), Map.of("currency", Map.of("A", "B->C")));
+
+        assertThat(fingerprint.hash(a)).isNotEqualTo(fingerprint.hash(b));
     }
 }

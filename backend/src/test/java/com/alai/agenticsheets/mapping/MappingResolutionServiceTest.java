@@ -25,7 +25,7 @@ class MappingResolutionServiceTest {
 
     private final JsonMapper jsonMapper = JsonMapper.builder().build();
     private final ColumnFingerprint columnFingerprint = new ColumnFingerprint();
-    private final ClientConfigFingerprint clientConfigFingerprint = new ClientConfigFingerprint();
+    private final ClientConfigFingerprint clientConfigFingerprint = new ClientConfigFingerprint(jsonMapper);
 
     private final SpreadsheetExplorerService explorer = mock(SpreadsheetExplorerService.class);
     private final MappingMemoryRepository mappingMemoryRepository = mock(MappingMemoryRepository.class);

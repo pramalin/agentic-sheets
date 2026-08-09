@@ -31,6 +31,19 @@
 # Requires the same stack as run-holdings-proposal.sh -- see this
 # directory's README for setup. Does not itself start or verify the
 # stack; run verify-local-llm.sh first if you haven't already.
+#
+# Following an external review after this step's first real run: this
+# script now WARNS (loudly, but never acts) if a run completes
+# suspiciously fast for real CPU inference -- exactly what happened the
+# first time this was run, when MappingController's own fast path
+# reused an already-persisted batch/proposal for a file whose content
+# hash it had already seen, completing in 0.10s instead of several
+# minutes. Deliberately does NOT auto-clear the Postgres volume or take
+# any destructive action on your behalf -- that's a real, separate
+# decision for you to make deliberately, not something a benchmark
+# script should do silently. See this file's own CACHE_HIT_THRESHOLD_SECONDS
+# below, and docs/local-llm-enhancements.md's "Clearing state between
+# benchmark runs" section for the actual clear-and-rerun commands.
 
 set -euo pipefail
 
@@ -41,10 +54,30 @@ WORKSHEET="${WORKSHEET:-Holdings}"
 MODEL_ID="${MODEL_ID:-Holdings}"
 CLIENT_ID="${CLIENT_ID:-jpmc}"
 RESULTS_DIR="${RESULTS_DIR:-build/local-llm-results}"
+# Real CPU inference for this fixture has always taken well over a
+# minute (observed: 1:38-3:14 across every genuine model call so far);
+# a cache hit completed in 0:00.10. 10 seconds is generously far below
+# any real inference time and generously far above any cache hit --
+# override via env var if your hardware is meaningfully different.
+CACHE_HIT_THRESHOLD_SECONDS="${CACHE_HIT_THRESHOLD_SECONDS:-10}"
 
 mkdir -p "$RESULTS_DIR"
 TIMESTAMP="$(date -u '+%Y%m%dT%H%M%SZ')"
 HOST_NAME="$(hostname | tr -cs '[:alnum:]_.-' '-')"
+
+# Parses GNU time's %E elapsed format (M:SS.ss, or H:MM:SS.ss for
+# anything over an hour) into whole seconds, truncated -- good enough
+# for a threshold check, avoids depending on `bc` (not guaranteed
+# installed) for a float comparison bash can't do natively.
+parse_elapsed_seconds() {
+    awk -F: -v t="$1" 'BEGIN {
+        n = split(t, a, ":");
+        if (n == 3) { s = a[1]*3600 + a[2]*60 + a[3]; }
+        else if (n == 2) { s = a[1]*60 + a[2]; }
+        else { s = a[1]; }
+        printf "%d\n", s;
+    }'
+}
 
 run_one() {
     local label="$1"
@@ -67,6 +100,25 @@ run_one() {
     cat "${out_prefix}-console.txt"
     echo
     echo "Full console output also saved to: ${out_prefix}-console.txt"
+
+    local elapsed
+    elapsed="$(grep -m1 '^Elapsed: ' "${out_prefix}-console.txt" 2>/dev/null | sed 's/^Elapsed: //')"
+    if [[ -n "$elapsed" ]]; then
+        local elapsed_seconds
+        elapsed_seconds="$(parse_elapsed_seconds "$elapsed")"
+        if (( elapsed_seconds < CACHE_HIT_THRESHOLD_SECONDS )); then
+            echo
+            echo "!! WARNING: ${label} completed in ${elapsed} (~${elapsed_seconds}s) -- suspiciously"
+            echo "!! fast for real CPU inference. This almost certainly means MappingController's"
+            echo "!! own fast path reused an already-persisted batch/proposal for this exact file"
+            echo "!! content, NOT a fresh model call. This result is NOT a valid benchmark data"
+            echo "!! point -- see docs/local-llm-enhancements.md's 'Clearing state between"
+            echo "!! benchmark runs' section. This script does not clear anything automatically;"
+            echo "!! if you need a genuinely fresh model call, clear it yourself:"
+            echo "!!   docker compose -f compose.yaml -f compose.local-llm.yaml down -v"
+            echo "!!   docker compose -f compose.yaml -f compose.local-llm.yaml up -d --build --wait"
+        fi
+    fi
     echo
 
     return "$status"
@@ -91,4 +143,6 @@ echo "response JSON files under $RESULTS_DIR and check, in particular,"
 echo "whether 'Valuation Px' -> market_price was actually proposed at"
 echo "all, or left in unmappedSourceColumns -- a model correctly"
 echo "declining to guess is a legitimate, useful outcome here, not a"
-echo "failure to record as one."
+echo "failure to record as one. If either run above printed a cache-hit"
+echo "WARNING, treat that result as invalid regardless of its curl exit"
+echo "status -- it didn't test the model at all."

@@ -238,4 +238,46 @@ class ConventionSuggestionRepositoryTest {
                 "no-such-client", "Holdings", ConventionSuggestion.KIND_FIELD_ALIAS, "currency", "X");
         assertThat(found).isEmpty();
     }
+
+    // External review finding (post Step LLM-6): the unique index
+    // doesn't include target_variant, so a genuinely conflicting
+    // suggestion (same source value, different target) was silently
+    // returning the FIRST row rather than surfacing the disagreement.
+    // See docs/local-llm-enhancements.md.
+
+    @Test
+    void conflictingTargetForSameSourceValue_throwsRatherThanSilentlyReturningTheFirstRow() {
+        long p1 = newSourceProposal("conflict-1");
+        long p2 = newSourceProposal("conflict-2");
+
+        // The review's own exact example.
+        suggestionRepository.suggest(
+                p1, "conflict-client", "Holdings", ConventionSuggestion.KIND_VARIANT_VALUE,
+                "currency", "USD", "USD", "reviewer-a");
+
+        assertThatThrownBy(() -> suggestionRepository.suggest(
+                p2, "conflict-client", "Holdings", ConventionSuggestion.KIND_VARIANT_VALUE,
+                "currency", "USD", "EUR", "reviewer-b"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("USD")
+                .hasMessageContaining("EUR")
+                .hasMessageContaining("conflicting");
+    }
+
+    @Test
+    void sameTargetForSameSourceValue_stillIdempotentNotAConflict() {
+        // The non-conflicting case must still behave exactly as before --
+        // confirming the same fact is not a disagreement.
+        long p1 = newSourceProposal("agree-1");
+        long p2 = newSourceProposal("agree-2");
+
+        ConventionSuggestion first = suggestionRepository.suggest(
+                p1, "agree-client", "Holdings", ConventionSuggestion.KIND_VARIANT_VALUE,
+                "currency", "USD", "USD", "reviewer-a");
+        ConventionSuggestion second = suggestionRepository.suggest(
+                p2, "agree-client", "Holdings", ConventionSuggestion.KIND_VARIANT_VALUE,
+                "currency", "USD", "USD", "reviewer-b");
+
+        assertThat(second.id()).isEqualTo(first.id());
+    }
 }

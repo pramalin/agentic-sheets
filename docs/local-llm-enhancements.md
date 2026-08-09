@@ -1188,8 +1188,111 @@ to avoid throughout.
   validator-side null-element handling, including alongside a genuinely
   invalid real entry in the same list
 
-**Not run in this environment.** Same limitation as every step in this
-phase. 8 new tests on top of the last confirmed count (195 from the
-`NullPointerException` fix), expected **203/203** -- an expectation from
-tracing each test by hand against the actual fixed code, not a
-confirmed result. Run `mvn test` locally for the real result.
+**Confirmed live.** `mvn test` run against the real repo after
+overlaying these files: **203/203**, up from 195 by exactly the 8 new
+tests, no other test count moved, no regressions.
+
+## External review, round 2: the remaining four findings
+
+All four were agreed with on their merits when the review first arrived
+(see round 1's own notes above for the full per-finding reasoning);
+deferred there specifically to keep each round independently verifiable
+rather than bundling seven changes into one. This round closes them out.
+
+**Fingerprint collision, fixed at the root rather than patched at the
+symptom.** The original `ClientConfigFingerprint` concatenated sorted
+values with hand-picked delimiters (`,`, `=`, `|`, `->`). Verified the
+review's claim by hand before touching anything: alias lists
+`["a,b", "c"]` and `["a", "b,c"]`, both sorted, both concatenated to the
+identical string `"a,b,c,"` -- a real collision, not a hypothetical one,
+in the exact mechanism built to guarantee two different configurations
+never hash the same. Escaping the specific delimiters found would have
+fixed that one case; it wouldn't have fixed the general problem, since
+any future alias or variant-value text containing a not-yet-anticipated
+character could reopen it. Rewritten instead to build a canonical,
+fully-`TreeMap`-sorted structure and serialize it through `JsonMapper`
+(the same library `MappingProposalRepository` already uses for JSONB
+persistence) -- real JSON quoting handles arbitrary string content
+correctly by construction, which is a structurally stronger guarantee
+than trying to anticipate and escape every delimiter a client's own
+text might someday contain. Two adversarial tests added, mirroring the
+review's own example plus the equivalent case on the variant-values
+serialization path.
+
+**Raw model logging made opt-in.** `agentic-sheets.log-raw-model-response`
+(env var `AGENTIC_SHEETS_LOG_RAW_MODEL_RESPONSE`), default `false`,
+following this project's established `@Value`-with-default constructor
+pattern (matching `FileHasher`, `InboxScanner`, `ApiKeyAuthFilter`, and
+others). When disabled, a `DEBUG`-level breadcrumb (character count
+only, never content) still confirms a response was received, without
+ever logging what it said by default. The capability that made Step
+LLM-6's real findings possible is entirely preserved -- it's an opt-in
+switch, not a removal.
+
+**Convention-suggestion conflicts now surfaced, not silently
+collapsed.** `uq_convention_suggestion_pending` deliberately excludes
+`target_variant` from its uniqueness (two reviewers independently
+suggesting the *same* fact should confirm it, not duplicate the row) --
+but that also meant a genuinely *different* target for the same source
+value hit the identical conflict target and silently returned whichever
+row got there first. `ConventionSuggestionRepository.suggest()` now
+checks the *existing* row's target against the *new* one after a
+conflict: agreement is still treated as idempotent confirmation
+(unchanged behavior); disagreement now throws `IllegalStateException`,
+which `MappingController`'s existing handler already maps to HTTP 409 --
+no new exception type or handler needed, since this is exactly the
+"already in a conflicting state" condition that handler already exists
+for. Both the schema comment on the index and this method's own javadoc
+now explain why `target_variant` is deliberately excluded from the
+*index* while still being checked in *application code* -- worth
+stating plainly so a future reader doesn't "fix" the index by adding it
+back and silently reintroduce the duplicate-row problem the exclusion
+was solving.
+
+**Benchmark script now warns on a suspiciously fast run, never acts.**
+`run-llm6-benchmark.sh` parses the elapsed time `run-holdings-proposal.sh`
+already captures and warns (loudly, but takes no action) if a run
+completes under `CACHE_HIT_THRESHOLD_SECONDS` (default 10, overridable).
+Verified the parser against the actual real elapsed times observed
+across this whole step -- `3:13.97`, `1:38.05`, `0:00.10`, and a
+synthetic `1:02:03.45` for the over-an-hour case -- all four parse to
+the correct whole-second count. Deliberately does not clear the
+Postgres volume automatically, matching the review's own explicit
+caution: a benchmark script silently destroying state is a worse
+failure mode than an occasional false "this might be cached" warning.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/ClientConfigFingerprint.java` (rewritten -- canonical JSON serialization via `JsonMapper` instead of delimiter concatenation)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- opt-in raw-response logging via new `@Value`-injected constructor parameter)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/ConventionSuggestionRepository.java` (modified -- `suggest()` now distinguishes a same-target conflict from a different-target one)
+- `backend/src/main/resources/application.yml` (modified -- new `agentic-sheets.log-raw-model-response` property, default `false`)
+- `db/init/01-orchestration-schema.sql` (modified -- `uq_convention_suggestion_pending`'s comment now explains the deliberate `target_variant` exclusion and where the corresponding application-code check lives)
+- `scripts/local-llm/run-llm6-benchmark.sh` (modified -- cache-hit detection, warning-only)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/ClientConfigFingerprintTest.java` (modified -- constructor updated for the new `JsonMapper` dependency; 2 new adversarial collision tests)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/ConventionSuggestionRepositoryTest.java` (modified -- 2 new tests: conflicting-target throws, same-target stays idempotent)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/MappingResolutionServiceTest.java` (modified -- `ClientConfigFingerprint` construction updated for the new dependency; no behavior change, no new tests)
+
+**Tests added** (4 new):
+- `adversarialDelimiterCollisionInFieldAliases_stillHashesDifferently` --
+  the review's own exact example, now hashing differently
+- `adversarialDelimiterCollisionInVariantValues_stillHashesDifferently`
+  -- the equivalent adversarial pair on the other serialization path
+  (`{"A->B":"C"}` vs `{"A":"B->C"}`, both old-style concatenating to
+  `"A->B->C,"`)
+- `conflictingTargetForSameSourceValue_throwsRatherThanSilentlyReturningTheFirstRow`
+  -- the review's own `USD -> USD` then `USD -> EUR` example, now a 409
+- `sameTargetForSameSourceValue_stillIdempotentNotAConflict` -- regression
+  coverage confirming the legitimate confirmation case is unaffected
+
+**Confirmed live.** `mvn test` run against the real repo after
+overlaying these files: **207/207**, up from round 1's 203 by exactly
+the 4 new tests, no other test count moved, no regressions.
+
+**What remains from the original review, now genuinely all addressed
+except the one deliberately-scoped architectural item:** the framing
+caveat (Finding 6 -- Step LLM-6 doesn't yet isolate a single ambiguity,
+since `fieldAliases` remains unused in resolution) was never a bug to
+fix, and stands as accurately stated in this doc's own Step LLM-6
+section already. Deterministic field-alias/header resolution before the
+LLM call remains the next real architectural step, not something either
+review round attempted to squeeze in alongside these seven fixes.

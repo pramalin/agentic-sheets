@@ -333,6 +333,17 @@ CREATE INDEX idx_convention_suggestion_client_status ON convention_suggestion (c
 -- PENDING rows, mirroring uq_mapping_proposal_active_batch's own
 -- pattern above) lets ConventionSuggestionRepository upsert cleanly
 -- rather than accumulate duplicate suggestions of the same fact.
+--
+-- Deliberately does NOT include target_variant: this index's job is to
+-- find a matching PENDING row to compare against, not to decide by
+-- itself whether two suggestions actually agree. ConventionSuggestionRepository.suggest()
+-- does that comparison in application code -- a same-target conflict
+-- confirms the existing row (idempotent); a different-target conflict
+-- (e.g. USD -> USD already pending, then someone suggests USD -> EUR)
+-- is a real disagreement, surfaced as an HTTP 409, not silently
+-- resolved by whichever suggestion happened to arrive first. Following
+-- an external review that found the original version of this method
+-- didn't make that distinction at all.
 CREATE UNIQUE INDEX uq_convention_suggestion_pending
     ON convention_suggestion (client_id, model_id, kind, canonical_field_path, source_value)
     WHERE status = 'PENDING';

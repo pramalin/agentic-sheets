@@ -60,6 +60,17 @@ agentic-sheets:
   # genuinely blank at runtime, rather than silently allowing requests
   # through.
   api-key: ${AGENTIC_SHEETS_API_KEY:}
+  # Local LLM phase (see docs/local-llm-enhancements.md): whether the raw
+  # model response text is logged at INFO in AgentMappingProposalService.
+  # Deliberately opt-in, following an external review after Step LLM-6 --
+  # capturing the raw response was genuinely necessary to diagnose that
+  # step's real findings (a 3B model's structured-output breakdown), but
+  # model output can echo spreadsheet values or prompt context back
+  # verbatim, and this pipeline's eventual real use is client financial
+  # data, not benchmark fixtures. Defaulting to always-on would have been
+  # the wrong default for that future even though it was the right call
+  # for one benchmarking session.
+  log-raw-model-response: ${AGENTIC_SHEETS_LOG_RAW_MODEL_RESPONSE:false}
 
 management:
   endpoints:

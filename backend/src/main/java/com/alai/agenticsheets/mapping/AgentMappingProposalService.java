@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ResponseEntity;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.alai.agenticsheets.canonical.CanonicalModel;
@@ -71,6 +72,16 @@ import tools.jackson.databind.JsonNode;
  * against a genuinely unfamiliar column crashed downstream with an
  * unhandled {@code NullPointerException} and left no way to see what the
  * model had actually said.
+ *
+ * <p>Following an external review after Step LLM-6, in two rounds: the
+ * model call is now also guarded against structured-output conversion
+ * throwing outright, not just returning a {@code null} entity (a second
+ * failure shape the review pointed out); and raw response logging is
+ * now opt-in ({@code agentic-sheets.log-raw-model-response}, default
+ * {@code false}) rather than always-on, since this pipeline's eventual
+ * real use is client financial data, not benchmark fixtures, and model
+ * output can echo spreadsheet values or prompt context back verbatim --
+ * see {@link #logRawModelResponse} for the full reasoning.
  */
 @Service
 public class AgentMappingProposalService {
@@ -83,18 +94,21 @@ public class AgentMappingProposalService {
     private final SpreadsheetExplorerService explorer;
     private final SumTypeMappingResolver sumTypeResolver;
     private final MappingProposalStructuralValidator structuralValidator;
+    private final boolean logRawModelResponse;
 
     public AgentMappingProposalService(
             ChatClient.Builder chatClientBuilder,
             CanonicalModelPromptRenderer renderer,
             SpreadsheetExplorerService explorer,
             SumTypeMappingResolver sumTypeResolver,
-            MappingProposalStructuralValidator structuralValidator) {
+            MappingProposalStructuralValidator structuralValidator,
+            @Value("${agentic-sheets.log-raw-model-response:false}") boolean logRawModelResponse) {
         this.chatClient = chatClientBuilder.build();
         this.renderer = renderer;
         this.explorer = explorer;
         this.sumTypeResolver = sumTypeResolver;
         this.structuralValidator = structuralValidator;
+        this.logRawModelResponse = logRawModelResponse;
     }
 
     /**
@@ -311,18 +325,32 @@ public class AgentMappingProposalService {
      * no way to tell, after the fact, whether the model truncated
      * mid-generation, emitted a genuinely empty JSON object, refused in
      * prose instead of JSON, or something else -- only the final
-     * (already-empty) decoded result was ever visible. Logged at {@code INFO},
-     * not {@code DEBUG}: this project's default log level
-     * ({@code application.yml}) is {@code INFO}, and the whole point of
-     * capturing this is for it to actually be visible in a normal
-     * {@code docker compose logs} run without extra configuration, not
-     * just theoretically available if someone remembers to turn on debug
-     * logging first.
+     * (already-empty) decoded result was ever visible.
+     *
+     * <p>Gated behind {@link #logRawModelResponse} -- following an
+     * external review, this is opt-in ({@code agentic-sheets.log-raw-model-response},
+     * default {@code false}), not always-on. Full text at {@code INFO}
+     * was necessary to diagnose Step LLM-6's real findings, but model
+     * output can echo spreadsheet values or prompt context back
+     * verbatim, and this pipeline's eventual real use is client
+     * financial data, not benchmark fixtures -- unconditional logging of
+     * complete responses was the right call for one benchmarking session
+     * and the wrong default for anything beyond it. When disabled, only
+     * length is logged (never content) at {@code DEBUG} -- a breadcrumb
+     * that a response was received, not evidence of what it said, and
+     * not at the default {@code INFO} level either, so an operator has
+     * to deliberately opt into knowing this exists before seeing even that.
      */
     private void logRawModelResponse(ChatResponse chatResponse) {
         String rawText = (chatResponse != null && chatResponse.getResult() != null)
                 ? chatResponse.getResult().getOutput().getText()
                 : null;
-        log.info("Raw model response text for propose(): {}", rawText);
+        if (logRawModelResponse) {
+            log.info("Raw model response text for propose(): {}", rawText);
+        } else {
+            log.debug("Raw model response received for propose() ({} chars) -- content not logged; "
+                    + "set agentic-sheets.log-raw-model-response=true to log full text",
+                    rawText == null ? 0 : rawText.length());
+        }
     }
 }
