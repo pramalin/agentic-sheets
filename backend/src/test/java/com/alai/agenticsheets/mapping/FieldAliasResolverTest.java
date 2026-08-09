@@ -47,7 +47,7 @@ class FieldAliasResolverTest {
     }
 
     private ClientConfig withFieldAliases(String modelId, String fieldPath, List<String> aliases) {
-        ClientModelConventions conventions = new ClientModelConventions(Map.of(fieldPath, aliases), Map.of());
+        ClientModelConventions conventions = new ClientModelConventions(Map.of(fieldPath, aliases), Map.of(), List.of());
         return new ClientConfig("test-client", "yyyy-MM-dd", Map.of(), Map.of(modelId, conventions));
     }
 
@@ -182,7 +182,7 @@ class FieldAliasResolverTest {
                 root, Map.of(), Path.of("test.yaml"));
 
         ClientModelConventions conventions = new ClientModelConventions(
-                Map.of("field_a", List.of("shared name"), "field_b", List.of("shared-name")), Map.of());
+                Map.of("field_a", List.of("shared name"), "field_b", List.of("shared-name")), Map.of(), List.of());
         ClientConfig client = new ClientConfig("test-client", "yyyy-MM-dd", Map.of(), Map.of("Test", conventions));
 
         FieldAliasResolver.Result result = resolver.resolve(model, client, Set.of("Shared Name"));

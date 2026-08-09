@@ -15,12 +15,18 @@ import java.util.Set;
  * validated), not deferred until a resolver actually tries to use a
  * bad entry at runtime.
  *
- * <p>Three things get checked:
+ * <p>Four things get checked:
  * <ul>
  *   <li>{@code fieldAliases} references a real field path in the
  *       referenced model;</li>
  *   <li>{@code variantValues} references a real sum-type field path, and
  *       every value it maps to is a real variant of that field;</li>
+ *   <li>{@code notProvidedFields} (post-benchmark hardening -- see
+ *       {@code docs/local-llm-enhancements.md}'s "twelfth real run"
+ *       section) references a real field path in the referenced model,
+ *       AND that field is genuinely optional in the schema -- excluding
+ *       a required field from what the model is shown would make this
+ *       client's feed permanently unsatisfiable, not just imprecise;</li>
  *   <li>no two distinct alias strings (within one model's conventions,
  *       across different canonical fields) normalize to the same thing
  *       -- an ambiguous alias would make column-header matching
@@ -55,6 +61,7 @@ final class ClientConventionsValidator {
             CanonicalFieldPaths paths = CanonicalFieldPaths.of(model.root());
             validateFieldAliases(client.clientId(), modelId, conventions.fieldAliases(), paths);
             validateVariantValues(client.clientId(), modelId, conventions.variantValues(), paths);
+            validateNotProvidedFields(client.clientId(), modelId, conventions.notProvidedFields(), paths);
         }
     }
 
@@ -99,6 +106,22 @@ final class ClientConventionsValidator {
                             + "' variantValues for '" + path + "' maps source value '" + mapping.getKey()
                             + "' to '" + target + "', which is not one of " + validVariants);
                 }
+            }
+        }
+    }
+
+    private static void validateNotProvidedFields(String clientId, String modelId,
+            List<String> notProvidedFields, CanonicalFieldPaths paths) {
+        for (String path : notProvidedFields) {
+            if (!paths.isValidPath(path)) {
+                throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                        + "' notProvidedFields references '" + path + "', which is not a field in " + modelId);
+            }
+            if (!paths.isOptionalPath(path)) {
+                throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                        + "' notProvidedFields references '" + path + "', which is a REQUIRED field in "
+                        + modelId + " -- excluding it would make this client's feed permanently "
+                        + "unsatisfiable; only genuinely optional fields may be declared not-provided");
             }
         }
     }

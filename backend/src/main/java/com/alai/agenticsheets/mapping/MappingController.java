@@ -143,8 +143,9 @@ public class MappingController {
         StoredMappingProposal stored = mappingProposalRepository.findById(id);
         ImportBatch batch = importBatchRepository.findById(stored.importBatchId());
         CanonicalModel model = registry.get(batch.modelId());
+        ClientConfig client = registry.getClient(batch.clientId());
 
-        proposalService.validateEdited(editedProposal, model, batch.sourceFilename(), batch.worksheet());
+        proposalService.validateEdited(editedProposal, model, client, batch.sourceFilename(), batch.worksheet());
 
         long newProposalId = proposalDecisionService.amendProposal(
                 id, stored.importBatchId(), model.version(), editedProposal,

@@ -51,7 +51,7 @@ class SumTypeMappingResolverTest {
     }
 
     private ClientConfig withVariantValues(String modelId, String fieldPath, Map<String, String> variantValues) {
-        ClientModelConventions conventions = new ClientModelConventions(Map.of(), Map.of(fieldPath, variantValues));
+        ClientModelConventions conventions = new ClientModelConventions(Map.of(), Map.of(fieldPath, variantValues), List.of());
         return new ClientConfig("test-client", "yyyy-MM-dd", Map.of(), Map.of(modelId, conventions));
     }
 

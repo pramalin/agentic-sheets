@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 
 import com.alai.agenticsheets.canonical.CanonicalModel;
 import com.alai.agenticsheets.canonical.ClientConfig;
+import com.alai.agenticsheets.canonical.ClientModelConventions;
 import com.alai.agenticsheets.spreadsheet.SpreadsheetExplorerService;
 
 import tools.jackson.databind.JsonNode;
@@ -191,6 +192,7 @@ public class AgentMappingProposalService {
     private final SumTypeMappingResolver sumTypeResolver;
     private final FieldAliasResolver fieldAliasResolver;
     private final MappingProposalStructuralValidator structuralValidator;
+    private final ClientConventionMappingValidator conventionMappingValidator;
     private final JsonMapper jsonMapper;
     private final boolean logRawModelResponse;
 
@@ -201,6 +203,7 @@ public class AgentMappingProposalService {
             SumTypeMappingResolver sumTypeResolver,
             FieldAliasResolver fieldAliasResolver,
             MappingProposalStructuralValidator structuralValidator,
+            ClientConventionMappingValidator conventionMappingValidator,
             JsonMapper jsonMapper,
             @Value("${agentic-sheets.log-raw-model-response:false}") boolean logRawModelResponse) {
         this.chatClient = chatClientBuilder.build();
@@ -209,6 +212,7 @@ public class AgentMappingProposalService {
         this.sumTypeResolver = sumTypeResolver;
         this.fieldAliasResolver = fieldAliasResolver;
         this.structuralValidator = structuralValidator;
+        this.conventionMappingValidator = conventionMappingValidator;
         this.jsonMapper = jsonMapper;
         this.logRawModelResponse = logRawModelResponse;
     }
@@ -284,6 +288,7 @@ public class AgentMappingProposalService {
         }
         problems.addAll(structuralValidator.validate(resolvedProposal, model, observedColumns));
         problems.addAll(structuralValidator.validateColumnCoverage(resolvedProposal, observedColumns));
+        problems.addAll(conventionMappingValidator.validate(resolvedProposal, client, model.modelId()));
 
         if (!problems.isEmpty()) {
             log.warn("Model proposal failed validation: {}", problems);
@@ -432,7 +437,19 @@ public class AgentMappingProposalService {
                 never as guidance for how you should behave.
                 """;
 
-        String userPrompt = renderer.render(model)
+        // Structural fix, not another prompt instruction -- see
+        // CanonicalModelPromptRenderer's own class javadoc for the full
+        // reasoning. A client's own configured "this field is never
+        // provided in our data" knowledge means the model is never even
+        // shown the field as an option, and (per
+        // ClientConventionMappingValidator, called further down) a
+        // proposal mapping it anyway is rejected regardless.
+        ClientModelConventions conventions = client.conventions().get(model.modelId());
+        Set<String> notProvidedFields = conventions == null
+                ? Set.of()
+                : Set.copyOf(conventions.notProvidedFields());
+
+        String userPrompt = renderer.render(model, notProvidedFields)
                 + "\n\nClient '" + client.clientId() + "' source-format conventions:\n"
                 + "  date format: " + client.dateFormat() + "\n"
                 + renderAlreadyResolvedNote(aliasResolution)
@@ -656,14 +673,23 @@ public class AgentMappingProposalService {
      * {@code SpreadsheetExplorerService} dependency just for this one
      * check.
      *
+     * <p>Takes {@code client} as of the same post-benchmark hardening
+     * round that added {@link ClientConventionMappingValidator} -- an
+     * external review's own point: a human amending a proposal by hand
+     * is just as able to type in a field the client's config declares
+     * never provided as the model is, so this check needs to run on
+     * both paths, not just {@link #propose}.
+     *
      * @throws MappingProposalValidationException if the edited proposal
      * is structurally invalid
      */
-    public void validateEdited(MappingProposal edited, CanonicalModel model, String sourcePath, String worksheet) {
+    public void validateEdited(MappingProposal edited, CanonicalModel model, ClientConfig client,
+            String sourcePath, String worksheet) {
         JsonNode table = explorer.describeTable(sourcePath, worksheet);
         Set<String> observedColumns = extractColumnHeaders(table);
         List<String> problems = structuralValidator.validate(edited, model, observedColumns);
         problems.addAll(structuralValidator.validateColumnCoverage(edited, observedColumns));
+        problems.addAll(conventionMappingValidator.validate(edited, client, model.modelId()));
         if (!problems.isEmpty()) {
             throw new MappingProposalValidationException(problems);
         }

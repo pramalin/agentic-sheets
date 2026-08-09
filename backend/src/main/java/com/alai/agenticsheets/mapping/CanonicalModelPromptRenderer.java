@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Turns any team's parsed {@link CanonicalModel} into a flattened,
@@ -48,11 +49,41 @@ import java.util.Map;
  * shortening as an equally wrong failure mode, with the same two
  * real examples named directly. Same caveat as above: an attempt, not
  * a confirmed fix, until a real run says otherwise.
+ *
+ * <p>Five distinct prompt-wording attempts across five real benchmark
+ * rounds all failed to reliably stop the model from inventing or
+ * repurposing a source column for one of a sum type's own
+ * variant-specific sub-fields (see {@code docs/local-llm-enhancements.md}'s
+ * "eleventh real run" section for the last of them) -- a structural fix
+ * followed instead, on an external review's own suggestion: a client
+ * can now declare, via
+ * {@link com.alai.agenticsheets.canonical.ClientModelConventions#notProvidedFields()},
+ * that specific optional fields are durably known to never appear in
+ * their data. {@link #render(CanonicalModel, Set)} omits those paths
+ * from the listing entirely -- if the model never sees a field as an
+ * option, it cannot hallucinate a source for it, a different kind of
+ * fix from every instruction attempted before it, none of which changed
+ * what the model was shown, only what it was told to do with what it
+ * saw. Enforced twice, not once: this omission is a hint an unrelated
+ * confusion could still defeat (a model can produce a path it never saw
+ * in this specific prompt from its own general training); the
+ * authoritative backstop is {@link ClientConventionMappingValidator},
+ * which rejects a proposal -- model-produced or human-amended -- that
+ * maps one of these paths regardless of whether the renderer omitted it.
  */
 @Component
 public class CanonicalModelPromptRenderer {
 
     public String render(CanonicalModel model) {
+        return render(model, Set.of());
+    }
+
+    /** @param excludedFieldPaths canonical field paths to omit from the
+      * rendered listing entirely -- see this class's own javadoc for the
+      * full reasoning. Sourced from
+      * {@link com.alai.agenticsheets.canonical.ClientModelConventions#notProvidedFields()}
+      * by {@link AgentMappingProposalService}. */
+    public String render(CanonicalModel model, Set<String> excludedFieldPaths) {
         StringBuilder sb = new StringBuilder();
         sb.append("Canonical model: ").append(model.modelId())
                 .append(" (version ").append(model.version()).append(")\n");
@@ -67,14 +98,17 @@ public class CanonicalModelPromptRenderer {
                 .append("prefix or dotted variant-qualifier, is one indivisible identifier -- copy it ")
                 .append("character for character from the listing below, don't reconstruct or ")
                 .append("paraphrase it from memory.\n\n");
-        renderField(sb, "", model.root(), true, "", model.synonyms());
+        renderField(sb, "", model.root(), true, "", model.synonyms(), excludedFieldPaths);
         return sb.toString();
     }
 
     private void renderField(StringBuilder sb, String path, CanonicalType type, boolean required,
-            String indent, Map<String, List<String>> synonyms) {
+            String indent, Map<String, List<String>> synonyms, Set<String> excludedFieldPaths) {
+        if (excludedFieldPaths.contains(path)) {
+            return;
+        }
         switch (type) {
-            case OptionType o -> renderField(sb, path, o.inner(), false, indent, synonyms);
+            case OptionType o -> renderField(sb, path, o.inner(), false, indent, synonyms, excludedFieldPaths);
 
             case PrimitiveType p -> {
                 sb.append(indent).append("- ").append(path).append(": ").append(primitiveName(p))
@@ -94,14 +128,35 @@ public class CanonicalModelPromptRenderer {
                 for (Map.Entry<String, RecordType> entry : s.variants().entrySet()) {
                     String variantPath = path + "." + entry.getKey();
                     RecordType variant = entry.getValue();
-                    if (variant.fields().isEmpty()) {
+                    // An external review caught a real bug in an earlier
+                    // draft here: checking variant.fields().isEmpty()
+                    // (the SCHEMA's own field count) doesn't account for
+                    // exclusions -- if a variant has fields but every one
+                    // of them is excluded, that earlier version still
+                    // took the "has fields" branch, printed the
+                    // "variant X:" header, then rendered nothing beneath
+                    // it (each child's own renderField call returning
+                    // immediately via the exclusion check above), leaving
+                    // a dangling, confusing header with no content.
+                    // Compute the actually-visible children first instead,
+                    // and render an explicit message distinguishing "this
+                    // variant genuinely has no extra fields in the
+                    // schema" from "it has fields, but none this client's
+                    // data provides."
+                    List<Map.Entry<String, CanonicalType>> visibleFields = variant.fields().entrySet().stream()
+                            .filter(fieldEntry -> !excludedFieldPaths.contains(
+                                    variantPath + "." + fieldEntry.getKey()))
+                            .toList();
+                    if (visibleFields.isEmpty()) {
                         sb.append(indent).append("  - variant ").append(entry.getKey())
-                                .append(": no extra fields\n");
+                                .append(variant.fields().isEmpty()
+                                        ? ": no extra fields\n"
+                                        : ": no source-provided extra fields for this client\n");
                     } else {
                         sb.append(indent).append("  - variant ").append(entry.getKey()).append(":\n");
-                        for (Map.Entry<String, CanonicalType> fieldEntry : variant.fields().entrySet()) {
+                        for (Map.Entry<String, CanonicalType> fieldEntry : visibleFields) {
                             renderField(sb, variantPath + "." + fieldEntry.getKey(), fieldEntry.getValue(),
-                                    true, indent + "    ", synonyms);
+                                    true, indent + "    ", synonyms, excludedFieldPaths);
                         }
                     }
                 }
@@ -110,7 +165,7 @@ public class CanonicalModelPromptRenderer {
             case RecordType r -> {
                 for (Map.Entry<String, CanonicalType> entry : r.fields().entrySet()) {
                     String fieldPath = path.isEmpty() ? entry.getKey() : path + "." + entry.getKey();
-                    renderField(sb, fieldPath, entry.getValue(), true, indent, synonyms);
+                    renderField(sb, fieldPath, entry.getValue(), true, indent, synonyms, excludedFieldPaths);
                 }
             }
         }

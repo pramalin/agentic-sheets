@@ -9,8 +9,10 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** The only code in this project that reads a
   * {@code client-configs/*.yaml} file. See {@link CanonicalModelParser}
@@ -151,8 +153,10 @@ public class ClientConfigParser {
                     parseFieldAliases(modelConventions.get("fieldAliases"), clientId, modelId, file);
             Map<String, Map<String, String>> variantValues =
                     parseVariantValues(modelConventions.get("variantValues"), clientId, modelId, file);
+            List<String> notProvidedFields =
+                    parseNotProvidedFields(modelConventions.get("notProvidedFields"), clientId, modelId, file);
 
-            result.put(modelId, new ClientModelConventions(fieldAliases, variantValues));
+            result.put(modelId, new ClientModelConventions(fieldAliases, variantValues, notProvidedFields));
         }
         return Map.copyOf(result);
     }
@@ -239,5 +243,45 @@ public class ClientConfigParser {
             result.put(fieldPath, Map.copyOf(parsed));
         }
         return Map.copyOf(result);
+    }
+
+    /** Optional -- empty for a client with no known-absent fields for
+      * this model. Purely structural here (a non-empty list of
+      * non-blank, non-duplicate path strings), same reasoning as every
+      * other parse method in this file -- semantic validation (that
+      * each path is actually real AND genuinely optional in the
+      * referenced canonical model) happens in
+      * {@link ClientConventionsValidator}, which has a view of the
+      * canonical model this parser doesn't. Duplicate entries ARE
+      * rejected here -- an external review correctly pointed out that
+      * silently tolerating a repeated path is a real, if minor, sign of
+      * a copy-paste mistake worth catching, the same "don't silently
+      * accept malformed config" discipline this parser already applies
+      * to duplicate YAML keys via {@code allowDuplicateKeys(false)}. */
+    private List<String> parseNotProvidedFields(Object obj, String clientId, String modelId, Path file) {
+        if (obj == null) {
+            return List.of();
+        }
+        if (!(obj instanceof List<?> rawList) || rawList.isEmpty()) {
+            throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                    + "' notProvidedFields must be a non-empty list: " + file);
+        }
+        List<String> result = rawList.stream()
+                .map(item -> {
+                    if (!(item instanceof String s) || s.isBlank()) {
+                        throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                                + "' notProvidedFields has a blank entry: " + file);
+                    }
+                    return s;
+                })
+                .toList();
+        Set<String> seen = new LinkedHashSet<>();
+        for (String path : result) {
+            if (!seen.add(path)) {
+                throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                        + "' notProvidedFields has a duplicate entry: '" + path + "': " + file);
+            }
+        }
+        return result;
     }
 }

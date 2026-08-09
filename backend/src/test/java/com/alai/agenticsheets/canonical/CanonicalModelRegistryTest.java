@@ -235,6 +235,33 @@ class CanonicalModelRegistryTest {
             root: Thing
             """;
 
+    // notProvidedFields (post-benchmark hardening -- see
+    // docs/local-llm-enhancements.md's "twelfth real run" section): an
+    // external review's own point -- excluding a REQUIRED field from
+    // what the model is ever shown would make a client's feed
+    // permanently unsatisfiable, not just imprecise, so validation must
+    // check optionality, not just that the path is real. Needs a model
+    // with at least one genuinely optional field to test that
+    // distinction; MODEL_WITH_SUM_TYPE's own two fields are both
+    // required, so a separate small constant covers this instead of
+    // extending that one's existing role in every other test above.
+    private static final String MODEL_WITH_OPTIONAL_FIELD = """
+            model: WithOptional
+            version: 1
+            target:
+              service: x
+              transport: rest
+              endpoint: https://example.com
+              auth: { type: api-key, secretRef: X }
+            types:
+              Thing:
+                kind: record
+                fields:
+                  name: String
+                  nickname: String?
+            root: Thing
+            """;
+
     @Test
     void validConventionsLoadSuccessfullyAndAreRetrievable(
             @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
@@ -323,6 +350,77 @@ class CanonicalModelRegistryTest {
                     variantValues:
                       name:
                         someValue: SomeVariant
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThatThrownBy(() -> registry.getClient("broken"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+    }
+
+    @Test
+    void notProvidedFieldsReferencingARequiredFieldFails(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        // The critical distinction an external review caught: "name" is
+        // a REAL field in WithOptional, so a check that only asked "is
+        // this a valid path" would wrongly accept it -- excluding a
+        // required field would make this client's feed permanently
+        // unsatisfiable, not just imprecise.
+        Files.writeString(modelsDir.resolve("model.yaml"), MODEL_WITH_OPTIONAL_FIELD);
+        Files.writeString(clientsDir.resolve("broken.yaml"), """
+                client: broken
+                dateFormat: yyyy-MM-dd
+                conventions:
+                  WithOptional:
+                    notProvidedFields:
+                      - name
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThatThrownBy(() -> registry.getClient("broken"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+    }
+
+    @Test
+    void notProvidedFieldsReferencingAGenuinelyOptionalFieldSucceeds(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        Files.writeString(modelsDir.resolve("model.yaml"), MODEL_WITH_OPTIONAL_FIELD);
+        Files.writeString(clientsDir.resolve("good.yaml"), """
+                client: good
+                dateFormat: yyyy-MM-dd
+                conventions:
+                  WithOptional:
+                    notProvidedFields:
+                      - nickname
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        ClientConfig client = registry.getClient("good");
+        assertThat(client.conventions().get("WithOptional").notProvidedFields()).containsExactly("nickname");
+    }
+
+    @Test
+    void notProvidedFieldsReferencingAnUnknownPathFails(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        Files.writeString(modelsDir.resolve("model.yaml"), MODEL_WITH_OPTIONAL_FIELD);
+        Files.writeString(clientsDir.resolve("broken.yaml"), """
+                client: broken
+                dateFormat: yyyy-MM-dd
+                conventions:
+                  WithOptional:
+                    notProvidedFields:
+                      - nonexistent_field
                 """);
 
         CanonicalModelRegistry registry = new CanonicalModelRegistry(

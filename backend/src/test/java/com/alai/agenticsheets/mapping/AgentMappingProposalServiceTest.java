@@ -41,6 +41,7 @@ class AgentMappingProposalServiceTest {
                 mock(SumTypeMappingResolver.class),
                 mock(FieldAliasResolver.class),
                 mock(MappingProposalStructuralValidator.class),
+                mock(ClientConventionMappingValidator.class),
                 jsonMapper,
                 false);
     }
@@ -158,7 +159,8 @@ class AgentMappingProposalServiceTest {
             ChatClient chatClient,
             FieldAliasResolver fieldAliasResolver,
             SumTypeMappingResolver sumTypeResolver,
-            MappingProposalStructuralValidator structuralValidator) {
+            MappingProposalStructuralValidator structuralValidator,
+            ClientConventionMappingValidator conventionMappingValidator) {
     }
 
     private Harness harness() {
@@ -168,6 +170,16 @@ class AgentMappingProposalServiceTest {
         FieldAliasResolver fieldAliasResolver = mock(FieldAliasResolver.class);
         SumTypeMappingResolver sumTypeResolver = mock(SumTypeMappingResolver.class);
         MappingProposalStructuralValidator structuralValidator = mock(MappingProposalStructuralValidator.class);
+        ClientConventionMappingValidator conventionMappingValidator = mock(ClientConventionMappingValidator.class);
+        // Safe default so every existing test that reaches this far
+        // doesn't NPE on problems.addAll(null) -- Mockito's unstubbed
+        // default for a List-returning method is null, not an empty
+        // list. Individual tests that specifically want to exercise a
+        // convention violation override this with their own stub, same
+        // pattern already used for structuralValidator's own two
+        // methods in the tests that need something other than "no
+        // problems."
+        when(conventionMappingValidator.validate(any(), any(), any())).thenReturn(List.of());
         AgentMappingProposalService service = new AgentMappingProposalService(
                 builder,
                 mock(CanonicalModelPromptRenderer.class),
@@ -175,19 +187,38 @@ class AgentMappingProposalServiceTest {
                 sumTypeResolver,
                 fieldAliasResolver,
                 structuralValidator,
+                conventionMappingValidator,
                 jsonMapper,
                 false);
-        return new Harness(service, chatClient, fieldAliasResolver, sumTypeResolver, structuralValidator);
+        return new Harness(service, chatClient, fieldAliasResolver, sumTypeResolver, structuralValidator,
+                conventionMappingValidator);
     }
 
     private com.alai.agenticsheets.canonical.CanonicalModel dummyModel() {
-        return mock(com.alai.agenticsheets.canonical.CanonicalModel.class);
+        com.alai.agenticsheets.canonical.CanonicalModel model =
+                mock(com.alai.agenticsheets.canonical.CanonicalModel.class);
+        // modelId() must be non-null: client.conventions().get(model.modelId())
+        // is called unconditionally in propose(), and Map.of().get(null)
+        // throws NullPointerException (verified directly, not assumed --
+        // Map.of()'s immutable-map implementation explicitly rejects a
+        // null key argument to get(), unlike HashMap). A bare unstubbed
+        // mock here would have broken every test using both dummyModel()
+        // and dummyClient() together through the propose() path.
+        when(model.modelId()).thenReturn("Holdings");
+        return model;
     }
 
     private com.alai.agenticsheets.canonical.ClientConfig dummyClient() {
         com.alai.agenticsheets.canonical.ClientConfig client =
                 mock(com.alai.agenticsheets.canonical.ClientConfig.class);
         when(client.clientId()).thenReturn("test-client");
+        // A real ClientConfig's conventions() is never null (Map.of()
+        // for a client with none configured, the common case) -- this
+        // mock needs the same default, now that propose() calls
+        // client.conventions().get(modelId) unconditionally to look up
+        // notProvidedFields, or every existing test using this mock
+        // would NPE on an unstubbed conventions() returning null.
+        when(client.conventions()).thenReturn(java.util.Map.of());
         return client;
     }
 

@@ -34,6 +34,14 @@ final class CanonicalFieldPaths {
 
     private final Set<String> paths = new LinkedHashSet<>();
     private final Map<String, Set<String>> variantsByPath = new LinkedHashMap<>();
+    // Post-benchmark hardening (see docs/local-llm-enhancements.md's
+    // "twelfth real run" section): which paths are wrapped in
+    // OptionType, tracked during the same walk that builds `paths`,
+    // rather than a second pass -- needed so ClientConventionsValidator
+    // can reject a client declaring a REQUIRED field as notProvidedFields,
+    // which would make that client's feed permanently unsatisfiable.
+
+    private final Set<String> optionalPaths = new LinkedHashSet<>();
 
     private CanonicalFieldPaths() {
     }
@@ -52,6 +60,15 @@ final class CanonicalFieldPaths {
         return paths.contains(path);
     }
 
+    /** @return whether {@code path} is wrapped in {@code OptionType} in
+      * the schema -- {@code false} for a path that isn't valid at all,
+      * same as a required field would report; callers checking
+      * optionality should already have confirmed {@link #isValidPath}
+      * first. */
+    boolean isOptionalPath(String path) {
+        return optionalPaths.contains(path);
+    }
+
     /** @return the valid variant names at {@code path}, or {@code null}
       * if {@code path} isn't a sum-type field -- {@code null}, not
       * empty, so callers can distinguish "not a sum type" from "a sum
@@ -63,7 +80,10 @@ final class CanonicalFieldPaths {
 
     private void walk(String path, CanonicalType type) {
         switch (type) {
-            case OptionType o -> walk(path, o.inner());
+            case OptionType o -> {
+                optionalPaths.add(path);
+                walk(path, o.inner());
+            }
             case PrimitiveType p -> paths.add(path);
             case SumType s -> {
                 paths.add(path);

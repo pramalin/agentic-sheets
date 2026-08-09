@@ -17,7 +17,14 @@ import java.util.TreeMap;
  * Step 10: a stable hash of {@link ClientConfig}'s mapping-relevant
  * fields -- {@code dateFormat}, and, as of the Local LLM phase's Step
  * LLM-3 (see {@code docs/local-llm-enhancements.md}), {@code conventions}
- * too. {@code ClientConfig} has no version number of its own the way
+ * too (all three of {@code fieldAliases}, {@code variantValues}, and,
+ * as of that same doc's "twelfth real run" section, {@code notProvidedFields} --
+ * an external review's own catch: a change to which fields a client's
+ * feed is declared to never provide changes how a mapping should be
+ * interpreted just as much as an alias or variant-value change does,
+ * and omitting it here would let a stale mapping memory silently
+ * survive a config change meant to invalidate it). {@code ClientConfig}
+ * has no version number of its own the way
  * {@link com.alai.agenticsheets.canonical.CanonicalModel} does, so a
  * content hash stands in for one -- a client's date convention, or now a
  * client's field-alias/variant-value vocabulary, changing invalidates a
@@ -86,6 +93,19 @@ public class ClientConfigFingerprint {
         conventions.variantValues().forEach(
                 (path, valueMap) -> sortedVariantValues.put(path, new TreeMap<>(valueMap)));
         result.put("variantValues", sortedVariantValues);
+
+        // Post-benchmark hardening (see docs/local-llm-enhancements.md's
+        // "twelfth real run" section): an external review's own,
+        // critical catch -- omitting this from the fingerprint would
+        // mean a mapping memory recorded before notProvidedFields
+        // changed could still be reused after, silently bypassing
+        // whatever new applicability rule the config change was meant
+        // to enforce. Sorted explicitly (not just relying on the list's
+        // own declared order) for the same reason every other field
+        // here is normalized before hashing: two semantically identical
+        // configs, differing only in the incidental order two entries
+        // happened to be written in, must hash the same.
+        result.put("notProvidedFields", conventions.notProvidedFields().stream().sorted().toList());
 
         return result;
     }

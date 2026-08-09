@@ -25,8 +25,13 @@ class ClientConfigFingerprintTest {
 
     private ClientConfig withConventions(Map<String, List<String>> fieldAliases,
             Map<String, Map<String, String>> variantValues) {
+        return withConventions(fieldAliases, variantValues, List.of());
+    }
+
+    private ClientConfig withConventions(Map<String, List<String>> fieldAliases,
+            Map<String, Map<String, String>> variantValues, List<String> notProvidedFields) {
         return new ClientConfig("jpmc", "yyyy-MM-dd", Map.of(),
-                Map.of("Holdings", new ClientModelConventions(fieldAliases, variantValues)));
+                Map.of("Holdings", new ClientModelConventions(fieldAliases, variantValues, notProvidedFields)));
     }
 
     @Test
@@ -59,6 +64,53 @@ class ClientConfigFingerprintTest {
         ClientConfig before = withConventions(Map.of(), Map.of("currency", Map.of("USD", "USD")));
         ClientConfig after = withConventions(Map.of(), Map.of("currency", Map.of("USD", "EUR")));
         assertThat(fingerprint.hash(before)).isNotEqualTo(fingerprint.hash(after));
+    }
+
+    // notProvidedFields: post-benchmark hardening (see
+    // docs/local-llm-enhancements.md's "twelfth real run" section). An
+    // external review's own, critical catch: the original implementation
+    // this section covers omitted this field from the hash entirely --
+    // a real correctness gap, not a style nitpick. A mapping memory
+    // entry approved while a field was declared not-provided must be
+    // invalidated if that declaration later changes, the exact same
+    // reasoning as changingAVariantValueTarget_changesTheHash above,
+    // just for a different convention.
+
+    @Test
+    void addingANotProvidedField_changesTheHash() {
+        ClientConfig before = withConventions(Map.of(), Map.of(), List.of());
+        ClientConfig after = withConventions(Map.of(), Map.of(),
+                List.of("asset_class.FixedIncome.maturity_date"));
+        assertThat(fingerprint.hash(before)).isNotEqualTo(fingerprint.hash(after));
+    }
+
+    @Test
+    void changingWhichFieldIsNotProvided_changesTheHash() {
+        // Not just "adding one changes it" -- swapping which field is
+        // declared absent must also change the hash, since that's a
+        // genuinely different applicability rule, not an addition.
+        ClientConfig a = withConventions(Map.of(), Map.of(),
+                List.of("asset_class.FixedIncome.maturity_date"));
+        ClientConfig b = withConventions(Map.of(), Map.of(),
+                List.of("asset_class.FixedIncome.coupon_rate"));
+        assertThat(fingerprint.hash(a)).isNotEqualTo(fingerprint.hash(b));
+    }
+
+    @Test
+    void notProvidedFieldsOrderIndependence_hashesTheSame() {
+        // Sorted explicitly before hashing (ClientConfigFingerprint's
+        // own canonicalize() does this) -- two configs listing the same
+        // set of not-provided fields in a different order must hash
+        // identically, same reasoning as every other field here.
+        ClientConfig a = withConventions(Map.of(), Map.of(), List.of(
+                "asset_class.FixedIncome.maturity_date",
+                "asset_class.FixedIncome.coupon_rate",
+                "asset_class.FixedIncome.credit_rating"));
+        ClientConfig b = withConventions(Map.of(), Map.of(), List.of(
+                "asset_class.FixedIncome.credit_rating",
+                "asset_class.FixedIncome.maturity_date",
+                "asset_class.FixedIncome.coupon_rate"));
+        assertThat(fingerprint.hash(a)).isEqualTo(fingerprint.hash(b));
     }
 
     @Test

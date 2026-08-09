@@ -2465,3 +2465,203 @@ two independent runs). Still open: whether this more precise wording
 actually breaks the reproducible pattern, and the two single-occurrence
 omission findings from the ninth round, still without a real theory to
 act on.
+
+## Twelfth real run: stopping the prompt-only approach, moving the fix into client configuration
+
+A twelfth real run reproduced the eleventh round's exact fabricated-column
+failure a *third* time -- and, worse, the baseline fixture, two rounds
+clean, regressed on the same underlying pattern. Five distinct
+prompt-wording attempts across five real benchmark rounds, all
+targeting the same `FixedIncome` sub-field confusion, had each worked
+partially and then either not held or shown a new variant of the same
+failure. At this point the problem stopped looking like "the model
+needs one more sentence" and started looking like a fundamental limit
+of asking a 3B model to hold an ever-growing list of increasingly
+specific prompt caveats in mind at once. Time to stop tweaking the
+prompt and reduce the model's candidate space using facts the
+application already has, deterministically -- not another wording
+attempt on a theory that had already failed four times.
+
+An external review of the resulting design (shared before any of this
+round's code was pushed) corrected and substantially strengthened the
+initial approach in five real ways, all adopted:
+
+**A more foundational fix than the one first attempted: promote already-known
+vocabulary into `fieldAliases`, not just declare absence.** The
+reviewer's own observation: `account_id`/`security_id`/`security_description`/
+`market_price` were never configured as aliases for `Account`/`CUSIP`/
+`Description`/`Price`, despite being this project's own documented,
+approved JPMC mapping the whole time (`mapping-notes.md`'s JPMC table,
+"direct" for all four -- verified against that table directly before
+promoting anything, not assumed). Promoting them means every column in
+the real baseline fixture now resolves deterministically without
+exception, so `propose()`'s existing skip-the-model-call optimization
+should fire for the whole baseline fixture as a direct consequence of
+already-built machinery, not a new mechanism -- and the unfamiliar-column
+fixture narrows to genuinely one open question, `Valuation Px`, the
+benchmark this whole step was originally meant to be before incidental
+complexity around `Account`/`CUSIP`/`Description`/`Price` started
+generating noise in nearly every recent run.
+
+**A more precise name for the negative convention.** `notApplicableFields`
+(the name first used) implied the canonical *concept* doesn't apply to
+this client's domain; the actual, narrower claim is that this
+client's specific *feed* never provides the value -- a fact about data
+format, not domain semantics. Renamed to `notProvidedFields` throughout.
+A real governance point that came with it, worth stating plainly: this
+is only appropriate as a durable, asserted fact about a client's real
+feed, not an observation about one sample file -- verified against
+`mapping-notes.md`'s own JPMC table (no maturity date, coupon rate, or
+credit rating column appears there at all) before declaring it, not
+inferred from a single fixture's absence.
+
+**A real correctness gap: `ClientConfigFingerprint` never included it.**
+The single most important catch. Mapping memory (Step 10) uses this
+fingerprint to decide whether a client's config has changed since a
+memory was recorded; omitting `notProvidedFields` from the hash would
+have meant a memory approved under old applicability rules could be
+silently reused after the config changed to newly exclude or include a
+field, completely bypassing the very convention the change was meant
+to enforce. Added, sorted before hashing (same discipline the fix
+already applies to `fieldAliases`/`variantValues`), with tests for both
+change-sensitivity and order-independence.
+
+**Authoritative enforcement, not just a rendering hint.** Omitting a
+field from what the model is shown is a real, structural fix for the
+specific failure it targets -- but it's a hint an unrelated confusion
+could still defeat: nothing stops a model from producing a path it
+never saw in *this* prompt from its own general training, and nothing
+stops a human amending a proposal by hand from typing one in either. A
+new, deliberately separate `ClientConventionMappingValidator` -- not
+folded into `MappingProposalStructuralValidator`, since it answers a
+different kind of question (a per-client convention, not a fact about
+the schema) -- rejects a proposal, model-produced or human-amended,
+that maps a declared not-provided field regardless of how it got
+there. Wired into both `propose()` and `validateEdited()` (which now
+takes `client` as a parameter for exactly this reason).
+
+**Validate that an excludable field is genuinely optional, and reject
+duplicates.** The original design only checked that a declared path
+was real, not that excluding it wouldn't make a client's feed
+permanently unsatisfiable -- a typo pointing `notProvidedFields` at
+`market_value` or `asset_class` instead of a similarly-spelled optional
+field would have silently created an impossible contract for that
+client. `CanonicalFieldPaths` extended with `isOptionalPath()`,
+tracked during the same walk that already builds `paths`, so
+`ClientConventionsValidator` can reject a required-field exclusion
+alongside its existing unknown-path check. Duplicate entries are now
+also rejected at parse time, matching this parser's existing "don't
+silently accept malformed config" discipline for duplicate YAML keys.
+
+**A real rendering bug the review caught by tracing the code, not
+guessing.** The original renderer decided whether a sum type's variant
+had "extra fields" by checking the *schema's* own field count, not
+which fields survived exclusion. If a variant had fields but every one
+was excluded (`FixedIncome`'s exact real shape once all three
+sub-fields are declared not-provided), the old logic still took the
+"has fields" branch, printed `"- variant FixedIncome:"`, then rendered
+nothing beneath it -- a dangling, confusing header with no content.
+Fixed by computing the actually-visible children first, and rendering
+an explicit, distinct message ("no source-provided extra fields for
+this client") rather than either the dangling header or the "no extra
+fields" message a variant with genuinely zero schema fields already
+uses -- the two mean different things to a human debugging a rendered
+prompt and must not collide.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/canonical/ClientModelConventions.java` (modified -- `notProvidedFields`, fully documented)
+- `backend/src/main/java/com/alai/agenticsheets/canonical/ClientConfigParser.java` (modified -- parses it, rejects duplicates)
+- `backend/src/main/java/com/alai/agenticsheets/canonical/CanonicalFieldPaths.java` (modified -- `isOptionalPath()`)
+- `backend/src/main/java/com/alai/agenticsheets/canonical/ClientConventionsValidator.java` (modified -- validates real-and-optional)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/CanonicalModelPromptRenderer.java` (modified -- exclusion overload, all-children-excluded fix)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/ClientConfigFingerprint.java` (modified -- `notProvidedFields` now in the hash)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/ClientConventionMappingValidator.java` (new -- the authoritative backstop)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- wires the new validator into both `propose()` and `validateEdited()`; `validateEdited()` now takes `client`)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/MappingController.java` (modified -- fetches and passes `client` to `validateEdited()`)
+- `client-configs/jpmc.yaml` + test resource copy (modified -- promoted `fieldAliases`, new `notProvidedFields`, verified against `mapping-notes.md` first)
+- Six test files modified, one new (`ClientConventionMappingValidatorTest.java`) -- 19 new tests total: 3 fingerprint (change-sensitivity, order-independence), 3 `ClientConventionsValidator` (required-field rejection, valid-optional success, unknown-path rejection), 5 `ClientConventionMappingValidatorTest`, 3 renderer (including the exact all-excluded-variant case), 5 parser (including duplicate rejection)
+
+**Two real, would-be bugs found and fixed along the way, in this
+round's own test fixtures, not the production code.** Both confirmed
+by direct verification, not assumed: `client.conventions().get(model.modelId())`
+would NPE if `model.modelId()` returned `null` (an unstubbed
+`dummyModel()` mock's default) -- `Map.of().get(null)` throws
+`NullPointerException`, confirmed by writing and running a two-line
+Java program rather than trusting memory of JDK internals. Fixed by
+stubbing `dummyModel().modelId()`. A second, related gap:
+`dummyClient()`'s `conventions()` was also unstubbed, defaulting to
+`null` rather than the empty map a real `ClientConfig` always has.
+Both would have broken every existing test reaching `propose()` the
+moment the new client-lookup code landed, if left unfixed.
+
+**Not run in this environment.** 19 new tests on top of the last
+confirmed count (241), expected **260/260** -- traced by hand against
+the actual fixed code, not yet confirmed by a real `mvn test` run.
+Given the number of cross-component changes this round touches
+(parser, validator, renderer, fingerprint, a new validator class, two
+service-layer signature changes), a real run matters more than usual
+here -- exactly the reviewer's own point about cross-component bugs
+being the most dangerous kind parser/renderer-only testing would miss.
+
+**Recommended next steps, in the order the review itself laid out.**
+Confirm the test suite first. Then a real benchmark re-run, watching
+specifically for two things: does the baseline fixture make zero model
+calls at all now (confirming the skip-the-LLM optimization actually
+fires with the promoted aliases in place), and does the unfamiliar-column
+fixture narrow to a clean pass or a clean decline on `Valuation Px`
+alone, with no fabricated or repurposed columns. If the 3B model
+handles that genuinely reduced, single-question benchmark cleanly, the
+review's own conclusion holds: the architecture has done its job, and
+there may be little reason to move to a larger model. If it still
+fails when its only real question is `Valuation Px`, a 7B/14B
+comparison on DGX Spark becomes a meaningful model-capability
+question, not compensation for information this step should have
+encoded deterministically from the start.
+
+**A real `mvn test` run: 258/260, two failures -- both a test-writing
+mistake, not a production bug.** Both failures were the same shape,
+`CanonicalModelPromptRendererTest`'s two new exclusion tests, both
+failing on a `doesNotContain("asset_class.FixedIncome.maturity_date")`
+assertion. Traced against the real, printed rendered output rather than
+guessed: the field *listing* itself was already completely correct in
+both cases -- `"- variant FixedIncome: no source-provided extra fields
+for this client"` for the fully-excluded case, and only
+`coupon_rate`/`credit_rating` (no `maturity_date`) for the
+partially-excluded one. The assertion was checking the wrong thing: a
+blanket substring search across the *entire* rendered string, including
+the instructional preamble above the field listing, which has used
+`asset_class.FixedIncome.maturity_date` as a worked example since an
+earlier round's path-shortening fix ("do NOT shorten or abbreviate a
+path... must never become just \"maturity_date\""). That prose is
+correctly unaffected by field exclusion -- it was never supposed to be
+filtered -- so a bare substring check against the whole output could
+never pass, exclusion logic notwithstanding.
+
+Fixed by making every such assertion check for the field-listing-specific
+format (`"- path:"`, the bullet-and-colon shape only a real rendered
+field entry has) rather than a bare substring anywhere in the output --
+applied consistently to all four such assertions across both tests, not
+just the two that happened to fail (`coupon_rate`/`credit_rating` never
+appear in the preamble's prose, so those two passed by coincidence, not
+because the assertion was actually correct). Verified against the exact
+real output from the failed run before packaging, not just reasoned
+about: extracted the actual printed field-listing snippet and confirmed
+the new, precise search string is genuinely absent from it.
+
+**Files changed:**
+- `backend/src/test/java/com/alai/agenticsheets/mapping/CanonicalModelPromptRendererTest.java` (modified -- four assertions made precise to the field-listing format, not a bare substring search)
+
+**No production code changed this round** -- confirmed by the real run
+itself: every other file from the twelfth round passed cleanly on the
+first real `mvn test`, including the fingerprint, the two validators,
+the parser, and the renderer's actual exclusion/all-excluded-variant
+logic. The bug was entirely in how two new tests checked their own
+correct output.
+
+**Confirmed live.** `mvn test`: **260/260**. The reviewer's corrected
+design -- promoted `fieldAliases`, `notProvidedFields`, the fingerprint
+fix, the authoritative validator, the optional-only check, the
+all-excluded-variant rendering fix -- all confirmed compiling and
+passing together on the first real run of this scale, with only a test
+assertion of my own needing correction, not any of the production
+logic itself.

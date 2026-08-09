@@ -24,18 +24,55 @@ feeds:
 # alias like these, before the LLM ever sees the file. (A second
 # external review round corrected FieldAliasResolver to stop also
 # treating canonical model synonyms as deterministic -- see that
-# class's own javadoc.) fieldAliases here are additional known names for
-# a canonical field beyond its own name (JPMC's real fixture already
-# uses "Currency"/"Asset Class" directly, which already match by own
-# name alone -- "Ccy" is the one alias here that actually changes
-# anything, illustrating a client whose *other* files use a different
-# column name for the same field); variantValues are JPMC's confirmed
-# real source values for currency/asset_class, taken directly from
-# mapping-notes.md's JPMC mapping table, consulted by
-# SumTypeMappingResolver (Step LLM-4) ahead of canonical-name matching.
+# class's own javadoc.)
+#
+# Post-benchmark hardening (see docs/local-llm-enhancements.md's
+# "twelfth real run" section): account_id/security_id/security_description/
+# market_price were promoted here from an external review's own
+# suggestion -- these four are already this project's own documented,
+# approved JPMC mapping (mapping-notes.md's JPMC table, "direct" for
+# all four), just never previously declared as configured aliases, so
+# they'd never resolved deterministically despite being well-understood,
+# durable knowledge. Promoting them means every column in the real
+# baseline fixture now resolves deterministically without exception --
+# propose()'s existing "skip the model call entirely" optimization
+# should trigger for the baseline fixture as a direct consequence, not
+# a new mechanism -- and the unfamiliar-column fixture narrows to
+# genuinely one open question (Valuation Px), the benchmark this whole
+# step was originally meant to be. currency/asset_class were already
+# here and already match by own name alone -- "Ccy" is the one alias
+# that actually changes anything on its own, illustrating a client
+# whose *other* files use a different column name for the same field.
+#
+# variantValues are JPMC's confirmed real source values for
+# currency/asset_class, taken directly from mapping-notes.md's JPMC
+# mapping table, consulted by SumTypeMappingResolver (Step LLM-4) ahead
+# of canonical-name matching.
+#
+# notProvidedFields (same post-benchmark hardening round): a durable,
+# asserted fact about this sample client's own real Holdings feed, not
+# an observation about one fixture file -- JPMC's Holdings feed never
+# includes FixedIncome-specific detail columns, confirmed against
+# mapping-notes.md's own JPMC table (no maturity date, coupon rate, or
+# credit rating column appears there at all) and against this whole
+# phase's actual benchmark fixtures, none of which have ever included
+# one. A structural fix, not a prompt instruction: five separate
+# prompt-wording attempts across five real benchmark rounds all failed
+# to reliably stop a 3B model from inventing or repurposing a column
+# for one of these exact sub-fields, while every deterministic
+# mechanism in this whole phase held up perfectly every single time.
+# Enforced twice -- CanonicalModelPromptRenderer omits these paths from
+# what the model is ever shown, and ClientConventionMappingValidator
+# rejects a proposal (model-produced or human-amended) that maps one of
+# them regardless, an authoritative constraint the renderer's omission
+# alone couldn't guarantee on its own.
 conventions:
   Holdings:
     fieldAliases:
+      account_id: [Account]
+      security_id: [CUSIP]
+      security_description: [Description]
+      market_price: [Price]
       currency: [Currency, Ccy]
       asset_class: [Asset Class]
     variantValues:
@@ -44,3 +81,7 @@ conventions:
       asset_class:
         Equity: Equity
         Fixed Income: FixedIncome
+    notProvidedFields:
+      - asset_class.FixedIncome.maturity_date
+      - asset_class.FixedIncome.coupon_rate
+      - asset_class.FixedIncome.credit_rating
