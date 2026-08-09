@@ -1918,7 +1918,126 @@ stacking narrow, reactive instructions instead of keeping the prompt
 fundamentally clear. Recorded here as a watch item -- if it recurs on a
 future run, that's the point to actually fix it, not this one.
 
-**Not run in this environment; no code changed this round.** This
-round is analysis of real output only -- no files changed, so the
-last confirmed/expected test count (238, itself still not confirmed by
-a real `mvn test` run) is unaffected either way.
+**Confirmed live.** `mvn test`: **238/238** -- this round changed no
+code path a test would exercise differently, and the real run confirms
+nothing else moved either.
+
+## Sixth round: the two remaining single-occurrence findings, addressed on direct instruction
+
+Both were explicitly left as watch items rather than fixed reactively
+-- every prompt fix before this one came from genuine, repeated
+evidence (two runs for the `Holdings.` prefix, five fields in one
+response for the `selectedVariant` echo), and neither of these had
+recurred. Addressed now on direct instruction to resolve the remaining
+3B findings before moving to model comparisons, not because new
+repeated evidence appeared.
+
+**`unmappedSourceColumns` receiving a canonical field name instead of a
+source column header.** The baseline run's one remaining problem: the
+model correctly mapped `"Description"` to `security_description` in
+`fieldMappings`, then separately listed `security_description` (the
+*canonical path*, not a column at all) in `unmappedSourceColumns`. The
+system prompt now explicitly states `unmappedSourceColumns` must
+contain the exact source column header text, never a canonical field
+name or path, and explicitly says a column already used in a
+`fieldMappings` entry isn't unmapped and shouldn't be listed in both
+places.
+
+**One column proposed for multiple canonical fields simultaneously.**
+The baseline run's separate finding: `"Price"` mapped to `market_price`
+*and* to three different `FixedIncome` sub-fields
+(`maturity_date`/`coupon_rate`/`credit_rating`) at once, as if one
+column of numbers could encode several unrelated facts. The system
+prompt now explicitly states each source column supplies at most one
+canonical field, and that proposing multiple different fields from the
+same column is only legitimate when they genuinely represent the same
+underlying value -- named as rare, not a normal case.
+
+**The case-sensitivity question, deliberately still not resolved --
+correctly, not left incomplete.** Re-examined rather than silently
+carried forward: `validateColumnCoverage`'s exact-string matching
+flagging a lowercase `"description"` against the real `"Description"`
+header isn't a defect to fix -- it's the validator correctly reporting
+a genuine model inconsistency, the same "don't silently repair, always
+surface" principle this whole phase has held to throughout. Nothing
+changed here, deliberately -- this was never actually a problem with
+the code, and loosening it to be lenient would trade away a real
+signal about model reliability for convenience, a design tradeoff still
+worth a real conversation rather than a unilateral change bundled into
+an unrelated fix.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- two further system prompt clarifications, class javadoc updated with the full findings history from this whole benchmark round)
+
+**No new tests** -- confirmed no existing test asserts on the exact
+prompt text that changed; matching every other prompt-wording attempt
+in this step, only a real model run can confirm whether either change
+actually affects output.
+
+**Not run in this environment.** Same 238 expected -- prompt text only,
+no code path a test exercises differently.
+
+**Recommended next step:** re-run with raw logging enabled once more,
+watching specifically for whether `unmappedSourceColumns` now contains
+only real column headers and whether any single source column still
+gets proposed for more than one canonical field. If both are clean,
+that's confirmation; if either recurs, that's real evidence the
+wording didn't land, which is exactly the outcome worth knowing plainly
+rather than assuming success.
+
+## CI investigation: real logs, a real (and reassuring) finding, and an unrelated fix
+
+Real CI logs requested and reviewed after three consecutive failing
+runs. `frontend-checks` ruled out directly (run locally: lint and build
+both clean). The real failure was in `e2e-browser`, specifically one
+assertion in `review-approval.spec.ts`'s browser journey -- not
+anywhere in this whole benchmark round's backend changes.
+
+**The reassuring part.** `e2e-golden-path` -- the pure API-level test,
+exercising the exact same real propose/approve/dispatch pipeline this
+whole round's changes touched, via `pipeline-api.spec.ts` -- passed
+cleanly in the same CI run. That test's own `calls.length === 1`
+assertion was a real, specific concern raised earlier (deterministic
+resolution meaning `mapping-memory.spec.ts`'s currency-field assumption
+never gets exercised by a live model call anymore) -- concern traced by
+hand at the time, reasoned to likely still hold since
+`SumTypeMappingResolver` applies the same "uniform value ->
+selectedVariant" logic against real data either way. This CI run is
+direct, live confirmation that trace was right, not just plausible.
+
+**The actual failure.** `review-approval.spec.ts`'s browser journey
+timed out waiting for a "Proposal {id}" heading to appear after
+navigating to the review screen -- a plain Playwright default timeout
+(5s), not a functional assertion failure. Traced into
+`ProposalDetailPage.tsx`: the heading only renders once `detail` is
+populated from `getProposalDetail()`; until then the page shows
+"Loading...". A concrete, telling asymmetry in the same test file: the
+"Approved." success check further down already uses an explicit,
+generous 20s timeout, for -- per that code's own precedent -- exactly
+this kind of reason. The heading check right after navigation never
+got the same treatment.
+
+**Fixed by matching that existing precedent, not inventing a new
+number.** `review-approval.spec.ts`'s heading assertion now also uses a
+20s timeout. Verified with `npx tsc --noEmit` against the e2e project's
+own `tsconfig.json` -- clean, no type errors. Framed honestly: this is
+the most concrete, plausible explanation available from the evidence at
+hand (a real asymmetry in an otherwise-consistent file, plus a passing
+API-level test proving the underlying pipeline itself is sound), not a
+certain fix for a confirmed root cause -- no live repro was possible in
+this environment, and if the failure recurs even with the longer
+timeout, that would be real evidence pointing at something else
+entirely, worth taking seriously rather than assuming this was the fix.
+
+**Files changed:**
+- `e2e/tests/review-approval.spec.ts` (modified -- the "Proposal {id}" heading check now uses a 20s timeout, matching the existing "Approved." check's own precedent)
+
+**No new tests** -- this is a timeout adjustment to an existing E2E
+assertion, not new coverage; the existing test's own pass/fail is the
+verification, and only a real CI run can confirm whether the flake is
+actually gone.
+
+**Not run in this environment.** `mvn test` unaffected (no backend
+code touched); the e2e TypeScript change verified via `tsc --noEmit`
+only, not a live Playwright run -- this environment has no Docker, so
+the actual browser journey couldn't be reproduced or re-verified here.

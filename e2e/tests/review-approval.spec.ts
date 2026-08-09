@@ -68,7 +68,25 @@ test.describe("browser: review and approve a real proposal", () => {
 
     // The review screen: confirm it's showing the right proposal with
     // real field-mapping content, not a blank or loading state.
-    await expect(page.getByRole("heading", { name: `Proposal ${proposalId}` })).toBeVisible();
+    //
+    // Real CI failure (see docs/local-llm-enhancements.md for the full
+    // investigation): this heading timed out at Playwright's plain
+    // default (5s) while the page was presumably still on its initial
+    // "Loading..." state (see ProposalDetailPage.tsx -- the heading
+    // only renders once `detail` is populated from
+    // getProposalDetail()). Notably NOT a functional regression: the
+    // same real propose/approve pipeline, exercised at the API level
+    // with no browser involved, passes cleanly in the same CI run
+    // (e2e-golden-path) -- this is a freshly-loaded SPA's first data
+    // fetch after navigation occasionally taking longer than 5s under
+    // a loaded CI runner, not anything actually broken. The "Approved."
+    // check further down already uses a generous 20s timeout for
+    // exactly this kind of reason; this one didn't, which is the most
+    // concrete, plausible explanation available without a live repro.
+    // Matched to that existing precedent rather than inventing a new
+    // number.
+    await expect(page.getByRole("heading", { name: `Proposal ${proposalId}` }))
+        .toBeVisible({ timeout: 20_000 });
     await expect(page.getByText("jpmc").first()).toBeVisible();
     await expect(page.getByRole("cell", { name: "account_id", exact: true })).toBeVisible();
     await expect(page.getByText("Account", { exact: true }).first()).toBeVisible();

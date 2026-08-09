@@ -111,6 +111,27 @@ import tools.jackson.databind.json.JsonMapper;
  * {@code catch} block: see that block's own inline comment for the full
  * account of a real compilation failure this caused and the honest
  * correction, not just the parts that worked cleanly.
+ *
+ * <p>Five real benchmark rounds against actual Qwen 2.5 3B output found
+ * and, where the evidence was strong enough, fixed a series of further
+ * confusions: the model prefixing a canonical field path with the
+ * model's own name ("Holdings.currency" instead of "currency", fixed in
+ * {@link CanonicalModelPromptRenderer}, confirmed via two clean runs
+ * after two consecutive failing ones before); echoing the literal
+ * strings "selectedVariant"/"variantValueMap" back as values rather
+ * than choosing an actual variant (fixed in {@link #propose}'s system
+ * prompt, confirmed via zero occurrences across eleven fields after,
+ * versus five of five before); and, in this same round, two further
+ * confusions addressed the same way -- the model listing a canonical
+ * field name instead of a source column header in
+ * {@code unmappedSourceColumns}, and proposing more than one canonical
+ * field from a single source column as if one number could encode
+ * several unrelated facts. Both of those were single-occurrence
+ * findings, not the repeated evidence every earlier fix in this list
+ * was built from -- addressed now on direct instruction rather than
+ * held back pending recurrence, and, like every prompt-wording attempt
+ * in this list, not confirmed to actually change model behavior until a
+ * real run says so.
  */
 @Service
 public class AgentMappingProposalService {
@@ -293,7 +314,18 @@ public class AgentMappingProposalService {
                 variant.
 
                 A source column with no reasonable canonical home is not an error --
-                list it as unmapped rather than forcing a mapping.
+                list it as unmapped rather than forcing a mapping. unmappedSourceColumns
+                must contain the exact source column header text as it appears in the
+                table below (e.g. "Description") -- never a canonical field name or
+                path (e.g. never "security_description"), even for a column you've
+                already used elsewhere in a fieldMappings entry. If you've already
+                mapped a column, it isn't unmapped -- don't list it in both places.
+
+                Each source column supplies at most one canonical field. Never propose
+                more than one fieldMappings entry with the same sourceColumn unless
+                they genuinely represent the same underlying value (which is rare) --
+                a single column of numbers is not evidence for several different,
+                unrelated canonical fields at once.
 
                 Some values come from a banner row or other free text above the real
                 header, not a per-row column -- use sourceConstant for those, not
