@@ -44,6 +44,19 @@
 # script should do silently. See this file's own CACHE_HIT_THRESHOLD_SECONDS
 # below, and docs/local-llm-enhancements.md's "Clearing state between
 # benchmark runs" section for the actual clear-and-rerun commands.
+#
+# A second real run (see docs/local-llm-enhancements.md's "twelfth real
+# run" section) exposed a real gap in that same heuristic: the round
+# that landed client-config-driven deterministic resolution made a
+# GENUINELY fast, valid baseline result possible for the first time --
+# "every column resolves deterministically, skip the model call
+# entirely" completes in ~1 second, exactly as fast as a stale cache
+# hit, for a completely different and entirely legitimate reason. Pure
+# timing can no longer tell the two apart. Fixed below by checking the
+# response body itself for this project's own, stable marker text
+# (SKIP_THE_LLM_MARKER) that AgentMappingProposalService writes only
+# when it genuinely never called the model -- a semantic check, not
+# another timing threshold guess.
 
 set -euo pipefail
 
@@ -60,6 +73,11 @@ RESULTS_DIR="${RESULTS_DIR:-build/local-llm-results}"
 # any real inference time and generously far above any cache hit --
 # override via env var if your hardware is meaningfully different.
 CACHE_HIT_THRESHOLD_SECONDS="${CACHE_HIT_THRESHOLD_SECONDS:-10}"
+# The exact phrase AgentMappingProposalService.propose() writes into a
+# proposal's summary, and only there, when every observed column
+# resolved deterministically and the model was never called at all --
+# confirmed directly against the real, pushed source, not assumed.
+SKIP_THE_LLM_MARKER="no model call was made"
 
 mkdir -p "$RESULTS_DIR"
 TIMESTAMP="$(date -u '+%Y%m%dT%H%M%SZ')"
@@ -107,24 +125,43 @@ run_one() {
         local elapsed_seconds
         elapsed_seconds="$(parse_elapsed_seconds "$elapsed")"
         if (( elapsed_seconds < CACHE_HIT_THRESHOLD_SECONDS )); then
-            echo
-            echo "!! WARNING: ${label} completed in ${elapsed} (~${elapsed_seconds}s) -- suspiciously"
-            echo "!! fast for real CPU inference. This almost certainly means MappingController's"
-            echo "!! own fast path reused an already-persisted batch/proposal for this exact file"
-            echo "!! content, NOT a fresh model call. This result is NOT a valid benchmark data"
-            echo "!! point -- see docs/local-llm-enhancements.md's 'Clearing state between"
-            echo "!! benchmark runs' section. This script does not clear anything automatically;"
-            echo "!! if you need a genuinely fresh model call, clear it yourself:"
-            echo "!!   docker compose -f compose.yaml -f compose.local-llm.yaml down -v"
-            echo "!!   docker compose -f compose.yaml -f compose.local-llm.yaml up -d --build --wait"
-            # Following an external review: a warning is clear to a
-            # human reading the console, but leaves the script's own
-            # exit status unchanged, meaning benchmark automation could
-            # still record a cache-hit run as an ordinary pass/fail.
-            # This global flag, checked after both runs, forces the
-            # script's own exit code to a distinct, impossible-to-miss
-            # value in that case -- see the bottom of this script.
-            CACHE_HIT_DETECTED=1
+            # Fast alone is no longer sufficient -- check whether the
+            # response itself says why. A genuine skip-the-LLM result
+            # (every column resolved deterministically from client
+            # config) is legitimately just as fast as a stale cache hit,
+            # for a completely different reason -- see this file's own
+            # top-of-file comment for the real run that exposed this.
+            local response_file
+            response_file="$(grep -m1 '^Response:' "${out_prefix}-console.txt" 2>/dev/null \
+                | sed 's/^Response:[[:space:]]*//')"
+            if [[ -n "$response_file" && -f "$response_file" ]] \
+                    && grep -q "$SKIP_THE_LLM_MARKER" "$response_file"; then
+                echo
+                echo ">> ${label} completed in ${elapsed} (~${elapsed_seconds}s) -- fast, but"
+                echo ">> confirmed genuine: the response itself says every column resolved"
+                echo ">> deterministically from client configuration, so the model was never"
+                echo ">> called at all. Not a cache hit -- a real, valid result."
+            else
+                echo
+                echo "!! WARNING: ${label} completed in ${elapsed} (~${elapsed_seconds}s) -- suspiciously"
+                echo "!! fast for real CPU inference, and the response does NOT say every column"
+                echo "!! resolved deterministically. This almost certainly means MappingController's"
+                echo "!! own fast path reused an already-persisted batch/proposal for this exact file"
+                echo "!! content, NOT a fresh model call. This result is NOT a valid benchmark data"
+                echo "!! point -- see docs/local-llm-enhancements.md's 'Clearing state between"
+                echo "!! benchmark runs' section. This script does not clear anything automatically;"
+                echo "!! if you need a genuinely fresh model call, clear it yourself:"
+                echo "!!   docker compose -f compose.yaml -f compose.local-llm.yaml down -v"
+                echo "!!   docker compose -f compose.yaml -f compose.local-llm.yaml up -d --build --wait"
+                # Following an external review: a warning is clear to a
+                # human reading the console, but leaves the script's own
+                # exit status unchanged, meaning benchmark automation could
+                # still record a cache-hit run as an ordinary pass/fail.
+                # This global flag, checked after both runs, forces the
+                # script's own exit code to a distinct, impossible-to-miss
+                # value in that case -- see the bottom of this script.
+                CACHE_HIT_DETECTED=1
+            fi
         fi
     fi
     echo

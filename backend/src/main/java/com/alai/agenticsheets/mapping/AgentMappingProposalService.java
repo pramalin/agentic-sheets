@@ -179,6 +179,27 @@ import tools.jackson.databind.json.JsonMapper;
  * (a fabricated sourceColumn was always correctly rejected; this
  * addresses frequency, not correctness), and, like every prompt
  * attempt in this list, unconfirmed until a real run says otherwise.
+ *
+ * <p>A twelfth round moved the same class of confusion out of the
+ * prompt entirely for the specific case it kept recurring on -- see
+ * {@code docs/local-llm-enhancements.md}'s "twelfth real run" section
+ * -- via client-configuration-driven deterministic resolution
+ * ({@code notProvidedFields}, promoted {@code fieldAliases}), confirmed
+ * live: the baseline fixture now makes zero model calls, and the
+ * unfamiliar-column fixture narrows to one real open question. A
+ * thirteenth run confirmed exactly that -- and then showed the same
+ * underlying fabrication pattern once more, this time on
+ * {@code market_price} itself rather than a {@code FixedIncome}
+ * sub-field: the model wrote {@code "Market Price"} as if that were
+ * the real column, when the only column actually left to consider was
+ * {@code "Valuation Px"}. The eleventh round's fix was real but scoped
+ * too narrowly -- positioned entirely within the sub-field paragraph,
+ * with only a sub-field example, likely read as a sub-field-specific
+ * rule rather than the general one its own wording already claimed to
+ * be. Promoted to a prominent, general statement early in the prompt,
+ * with a second worked example using the exact field that just failed,
+ * rather than only living inside the paragraph that happened to
+ * discover the underlying pattern first.
  */
 @Service
 public class AgentMappingProposalService {
@@ -329,6 +350,26 @@ public class AgentMappingProposalService {
                 already resolved outside this mapping; do not propose a mapping
                 for it at all, don't include it in fieldMappings.
 
+                CRITICAL, and true for every field you propose, not just some of
+                them: every sourceColumn value you write must be copied
+                character-for-character from the actual column headers shown in
+                the SOURCE TABLE below -- never invented, guessed, or constructed
+                by title-casing a canonical field's own name. A field being named
+                market_price in the schema is NOT evidence that a column called
+                "Market Price" exists in this file -- the real column might be
+                called "Price", "Valuation Px", "Mkt Val", or anything else a
+                client happens to use; check the actual table below for whichever
+                text is really there. The same applies to every other field, not
+                just this one example -- maturity_date being in the schema is
+                similarly not evidence a column called "Maturity Date" exists.
+                Before writing any sourceColumn value, confirm it appears verbatim
+                in the table's actual header row -- do not satisfy "this field
+                needs a source" by imagining a plausible-sounding column into
+                existence. If nothing in the real table is a good match, leave
+                the field unmapped instead -- a real, repeated, reproducible
+                failure across multiple benchmark rounds was this exact
+                fabrication, for more than one field, not a hypothetical risk.
+
                 Some canonical fields and source columns may already be resolved
                 deterministically before you ever see this file -- known from a
                 configured client convention or the field's own name. Any such
@@ -397,18 +438,13 @@ public class AgentMappingProposalService {
                 a sub-field with no matching column was never a source column in the
                 first place, so it has no place in either list.
 
-                CRITICAL, and a real, repeated, reproducible failure this exact
-                instruction is built from: every sourceColumn value you write must be
-                copied character-for-character from the actual column headers shown in
-                the SOURCE TABLE below -- never invented, guessed, or constructed by
-                title-casing a canonical field's own name. A field being named
-                maturity_date in the schema is NOT evidence that a column called
-                "Maturity Date" exists in this file -- check the actual table below for
-                that exact text; if it isn't there, the column does not exist, no
-                matter how plausible the name would be. Before writing any
-                sourceColumn value, confirm it appears verbatim in the table's actual
-                header row -- do not satisfy "a column specifically about this data"
-                by imagining one into existence.
+                CRITICAL, and specifically why the general rule above about never
+                inventing a sourceColumn matters most here: a sub-field's own name
+                (e.g. maturity_date) is especially tempting to title-case into a
+                plausible-sounding column ("Maturity Date") precisely because the
+                schema lists it right there as something to fill in. Resist that
+                temptation the same way as for any other field -- verify against
+                the real table, don't invent.
 
                 Some values come from a banner row or other free text above the real
                 header, not a per-row column -- use sourceConstant for those, not

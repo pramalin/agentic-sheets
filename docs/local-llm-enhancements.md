@@ -2665,3 +2665,122 @@ all-excluded-variant rendering fix -- all confirmed compiling and
 passing together on the first real run of this scale, with only a test
 assertion of my own needing correction, not any of the production
 logic itself.
+
+## Thirteenth real run: the architecture confirmed working exactly as designed, and a benchmark-script gap the fix itself exposed
+
+**The baseline fixture made zero model calls, confirmed by the backend's
+own log line, not inferred from timing.** `"Every observed column
+resolved deterministically for jpmc/Holdings -- skipping the model
+call entirely."` Every one of the eleven real baseline columns resolved
+deterministically -- the seven that already matched by own name, and
+the four newly-promoted aliases (`Account`, `CUSIP`, `Description`,
+`Price`). This is the reviewer's own prediction, confirmed live, not
+just traced by hand.
+
+**The unfamiliar-column fixture narrowed to exactly the one open
+question it was always meant to be, and the model handled it cleanly.**
+Ten of eleven columns resolved deterministically; `Valuation Px` --
+the fixture's genuinely unfamiliar column -- was correctly, honestly
+declined (`"unmappedSourceColumns": ["Valuation Px"]`), not fabricated,
+not repurposed, not silently dropped. `curl exit 0` on both runs.
+
+**A real gap in the benchmark script's own cache-hit detection,
+exposed directly by this same fix succeeding.** The script's only
+signal for "was this a stale, reused batch rather than a genuine
+result" was elapsed time (`< 10s` was assumed to mean cache hit,
+since real inference had never once been that fast before this
+round). The client-config work made a second, entirely legitimate way
+to be fast possible for the first time: a genuine skip-the-LLM result
+completes in ~1 second too, for a completely different reason. Pure
+timing can no longer tell the two apart, and the script fired its
+cache-hit warning (and its distinct exit code) on a run that was
+actually correct.
+
+**Fixed with a semantic check, not a longer timing guess.** The script
+now inspects the response body itself for the exact, stable marker
+text `AgentMappingProposalService.propose()` writes only when it
+genuinely never called the model (`"no model call was made"` --
+confirmed directly against the real, pushed source before using it,
+not assumed). A fast run whose response contains that marker is
+reported as a confirmed, genuine result; a fast run without it is still
+flagged exactly as before. Verified with a standalone functional test
+against both shapes of input before packaging, not just a syntax
+check -- caught one real mistake in the process (the first test attempt
+ran under `sh` instead of `bash`, silently breaking `[[` -- fixed and
+re-verified under the correct shell).
+
+**Files changed:**
+- `scripts/local-llm/run-llm6-benchmark.sh` (modified -- cache-hit detection now checks response content, not timing alone)
+
+**No test suite changes** -- this is a bash script, outside `mvn test`'s
+reach; verified via a standalone functional test instead, covering both
+the genuine-skip and genuine-cache-hit cases explicitly.
+
+**Where this leaves the whole client-config round.** Confirmed, live,
+both halves of the reviewer's own stated success criterion: zero model
+calls on baseline, and a clean, correct outcome (resolved or honestly
+declined, no hallucination) on the unfamiliar-column fixture's one real
+question. By the review's own conclusion, this is real evidence the
+architecture has done its job for this fixture -- worth one more clean
+run to confirm reproducibility now that the benchmark script itself can
+correctly tell a genuine result from a stale one, before treating this
+as fully settled.
+
+## Fourteenth real run: the script fix confirmed, and the same fabrication pattern once more, on a different field
+
+**The cache-hit script fix worked, confirmed live.** The baseline
+run's ~1s completion correctly produced the new informational message
+("confirmed genuine... Not a cache hit -- a real, valid result"), not
+the warning -- exactly the distinction the fix was built to make, on
+the very next run after landing.
+
+**The unfamiliar-column fixture's one real question wasn't answered
+cleanly this time.** The model wrote `sourceColumn: "Market Price"`
+for `market_price` -- a column that doesn't exist in this fixture at
+all. The only column genuinely left unaccounted for was
+`"Valuation Px"`, shown to the model as the sole remaining entry in an
+otherwise-filtered table. This is the exact same fabrication mechanism
+the eleventh round's fix addressed -- title-casing a canonical field's
+own name into a plausible column that was never real -- just applied to
+`market_price` itself instead of a `FixedIncome` sub-field, the first
+time this exact pattern has shown up outside that specific context.
+
+**Why the eleventh round's fix likely didn't generalize: scope, not
+wording.** Read again with this new evidence in mind, that fix's text
+already said "every sourceColumn value," a genuinely general claim --
+but it lived entirely inside the `FixedIncome` sub-field paragraph,
+with `maturity_date`/`"Maturity Date"` as its only worked example.
+Positioned and exemplified that narrowly, a model reading it may
+reasonably have treated it as a sub-field-specific rule despite its
+own wording, rather than the general principle it claimed to state.
+
+**Fixed by promoting the rule, not rewriting it.** The same claim now
+appears early in the prompt as its own prominent, standalone statement
+-- before any sub-field-specific guidance -- with a second worked
+example using `market_price`/`"Market Price"`, the exact field that
+just failed, alongside the original `maturity_date` example. The later
+sub-field paragraph now cross-references this general rule rather than
+restating it, explaining specifically why a sub-field's own name is
+especially tempting to title-case, instead of implying the rule was
+sub-field-specific in the first place.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- the fabrication-prevention rule promoted to a general, prominent statement early in the prompt, with a second worked example; the sub-field paragraph now cross-references it rather than duplicating it; class javadoc updated)
+
+**No new tests** -- confirmed no existing test asserts on the exact
+prompt text that moved; matching every prompt-wording change in this
+step, only a real model run can confirm whether it actually changes
+output, not a unit test.
+
+**Confirmed live.** `mvn test`: **260/260**, unchanged as expected --
+prompt text only, moved and given a second example, no new logic.
+
+**Where this leaves things.** Confirmed, live, twice now: the
+client-config architecture itself (zero baseline model calls, a
+correctly narrowed unfamiliar-column question) and the benchmark
+script's own cache-hit fix. Still open: whether promoting this rule to
+general, prominent scope actually stops the fabrication pattern from
+recurring on whichever field it targets next -- only a real re-run can
+say, and worth watching specifically for whether it recurs on a third
+field, which would suggest the issue is more fundamental than
+placement and scope.
