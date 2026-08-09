@@ -48,6 +48,18 @@ public class MappingProposalStructuralValidator {
         }
 
         for (MappingProposal.FieldMapping fm : proposal.fieldMappings()) {
+            if (fm == null) {
+                // A null list element, not just a null or empty list --
+                // the real Step LLM-6 schema-echo finding (see
+                // docs/local-llm-enhancements.md) proved malformed
+                // structured output isn't theoretical. MappingProposal's
+                // compact constructor normalizes the list reference
+                // itself, but can't sanitize individual elements without
+                // silently discarding a signal that something is
+                // genuinely wrong -- reported here, explicitly, instead.
+                problems.add("a fieldMapping entry is null -- likely malformed or truncated model output");
+                continue;
+            }
             String path = fm.canonicalFieldPath();
 
             if (path == null || path.isBlank()) {

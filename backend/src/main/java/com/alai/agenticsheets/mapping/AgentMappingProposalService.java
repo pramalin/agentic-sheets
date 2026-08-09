@@ -186,11 +186,34 @@ public class AgentMappingProposalService {
         // actually used diverging. responseEntity() returns both the raw
         // ChatResponse and the converted MappingProposal from the exact
         // same single call.
-        ResponseEntity<ChatResponse, MappingProposal> responseEntity = chatClient.prompt()
-                .system(systemPrompt)
-                .user(userPrompt)
-                .call()
-                .responseEntity(MappingProposal.class);
+        ResponseEntity<ChatResponse, MappingProposal> responseEntity;
+        try {
+            responseEntity = chatClient.prompt()
+                    .system(systemPrompt)
+                    .user(userPrompt)
+                    .call()
+                    .responseEntity(MappingProposal.class);
+        } catch (RuntimeException e) {
+            // A second, distinct failure shape from entity()==null,
+            // caught after external review pointed out this project had
+            // only ever handled the documented "empty response" case.
+            // Spring AI's own javadoc for entity() only promises null on
+            // an empty response; it says nothing about what happens if
+            // structured-output conversion itself throws (e.g. genuinely
+            // invalid JSON, not just an empty body) -- and the real
+            // Step LLM-6 schema-echo finding already proved this
+            // project's assumptions about what a confused model can
+            // produce were incomplete once, so a second undocumented
+            // failure mode isn't a hypothetical worth ignoring. Treated
+            // identically to a null entity: fall through to the same
+            // clean, reported validation failure, not an unhandled
+            // exception propagating to a raw 500.
+            log.warn("Model call/conversion for propose() threw {} rather than returning a parseable "
+                    + "(or empty) entity -- treating as an empty proposal so it fails clean structural "
+                    + "validation rather than propagating an unhandled exception. Message: {}",
+                    e.getClass().getSimpleName(), e.getMessage());
+            responseEntity = new ResponseEntity<>(null, null);
+        }
 
         logRawModelResponse(responseEntity.response());
 

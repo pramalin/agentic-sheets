@@ -1078,3 +1078,118 @@ see whether it's a 3B-specific breakdown under CPU-only inference or
 something more structural in how the prompt/schema is presented. Neither
 run yet; both are natural continuations of this step, not separate new
 work.
+
+## External review, round 1: two correctness bugs
+
+After Step LLM-6's real findings, an external review of the cumulative
+phase (not commit-by-commit) found seven issues. Two -- both genuine
+correctness bugs, not style preferences -- are fixed this round; the
+other five (a hash-collision risk in `ClientConfigFingerprint`, raw
+model logging that should default to opt-in rather than always-on,
+convention-suggestion conflicts that silently collapse, a framing
+caveat about what Step LLM-6 does and doesn't yet isolate, and the
+benchmark script's inability to detect a cache-hit result) are agreed
+with and deliberately deferred to a second pass rather than attempted
+alongside these two -- reasoning below.
+
+**Bug 1: `variantValueMap` was only checked for coverage, never for
+semantic agreement.** `validateSelectedVariant` already ran every
+observed value through `resolveValue` (configured vocabulary, then
+canonical-name matching) and flagged a mismatch. `validateVariantValueMap`
+never did the equivalent check on its own *targets* -- only whether
+every observed value had a key at all. The review's example is exact
+and was verified by hand-tracing the old code before touching it: an
+authoritative client convention `USD -> USD` would not have caught a
+model proposing `variantValueMap={"USD":"EUR"}`, since `EUR` is itself a
+legal variant and nothing ever compared the model's chosen target
+against what `resolveValue` would have independently produced. Fixed:
+each observed value's proposed target is now compared against
+`resolveValue`'s result, but *only* when `resolveValue` actually
+produces a deterministic answer to disagree with -- an ambiguous or
+unresolvable value has no known-correct answer, so the model's own
+mapping is left as proposed for human review rather than flagged wrong
+against nothing, exactly matching the review's own recommended fix.
+
+**Bug 2: a `null` element within a non-null `fieldMappings` list wasn't
+handled, even after this round's earlier null-safety fix.** `MappingProposal`'s
+compact constructor (from the `NullPointerException` fix earlier this
+step) normalizes a `null` *list reference* to empty -- it was never
+about individual *elements* within an otherwise real list. Given the
+schema-echo finding already proved a confused 3B model can produce
+genuinely unexpected structured output, `fieldMappings: [null, {...}]`
+is a real, not hypothetical, risk the first fix didn't cover. Fixed in
+two places: `SumTypeMappingResolver` now skips a `null` element without
+crashing (passing it through unchanged, matching how it already treats
+an empty list -- no crash, no report at that layer), and
+`MappingProposalStructuralValidator` -- the one place both `propose()`
+and `validateEdited()` funnel through -- now explicitly reports a `null`
+element as its own problem, the same "verify at the earliest shared
+point" pattern the empty-list check already established.
+
+**A third piece of the same review, addressed as a code fix without a
+matching test, explained plainly rather than silently skipped.** The
+review separately asked what happens if Spring AI's structured-output
+conversion *throws* rather than returning a `null` entity -- a case
+this project had genuinely never handled, since only the documented
+"empty response" case (`entity()`'s own javadoc) had been defended
+against. `AgentMappingProposalService.propose()` now wraps the model
+call in a `try/catch (RuntimeException)`, treating a thrown exception
+identically to a `null` entity -- the same clean, reported validation
+failure, not a raw 500. No test accompanies this specific change: this
+project has zero existing test infrastructure for `AgentMappingProposalService`'s
+actual model-interaction code (confirmed by grep, not assumed --
+`MappingResolutionServiceTest` only ever mocks the whole service by its
+public method signature), and a real integration test would need a
+custom test `ChatModel` bean, full Spring context wiring, and fixture
+setup for `CanonicalModel`/`ClientConfig`/`JsonNode` table data largely
+from scratch. That's legitimate, separate work worth doing properly,
+not squeezed into an already-large round -- deferred explicitly, not
+quietly dropped.
+
+**Why the other five findings weren't attempted in this same pass.**
+All five are agreed with on their merits (see the response given at the
+time this review arrived, preserved in this project's own conversation
+history rather than restated here) -- none were dismissed. They're
+deferred specifically to keep this pass small enough to verify
+confidently: a database schema change and re-hash of an existing safety
+mechanism (the fingerprint collision), a new configuration property
+touching a cross-cutting concern (opt-in raw logging), a new failure
+path and HTTP status through an already-shipped API
+(convention-suggestion conflicts), and a benchmark script change (cache-hit
+detection) are each independently scoped, independently testable
+changes -- bundling all seven findings into one round risks exactly the
+kind of sprawling, harder-to-verify change this whole phase has tried
+to avoid throughout.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/SumTypeMappingResolver.java` (modified -- `validateVariantValueMap` now semantically checks targets, not just coverage; null-element handling in the main resolution loop and the `hasSumTypeMapping` check)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/MappingProposalStructuralValidator.java` (modified -- explicit null-element check, reported not crashed)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- `try/catch` around the model call, treating a thrown exception the same as a null entity)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/SumTypeMappingResolverTest.java` (modified -- 6 new tests: the review's exact `USD -> EUR` example, agreement/no-conflict regression coverage, "no deterministic answer, left alone" behavior, stale-config-not-double-reported, and two null-element tests)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/MappingProposalStructuralValidatorTest.java` (modified -- 2 new tests: a null element is reported not crashed, and doesn't prevent other real entries in the same list from being checked)
+
+**Tests added** (8 new total):
+- `variantValueMapDisagreesWithAuthoritativeConfiguredVocabulary_semanticConflict`
+  -- the review's own `USD -> EUR` example, verified to produce exactly
+  one blocking `SEMANTIC_CONFLICT`, proposal left unrepaired
+- `variantValueMapAgreesWithCanonicalMatching_noConflict` -- regression
+  coverage confirming the existing correct-mapping case still passes clean
+- `variantValueMapValueWithNoDeterministicAnswer_leftForHumanReview` --
+  an unresolvable value's model-proposed target is not flagged, matching
+  the review's own recommended semantics exactly
+- `variantValueMapMismatchAgainstStaleConfiguredEntry_reportsConfigProblemNotMismatch`
+  -- confirms a stale configured entry reports as `CLIENT_CONFIGURATION`
+  only, not doubled up with a misleading mismatch problem
+- `nullFieldMappingElement_doesNotCrashTheResolver` /
+  `nullFieldMappingElement_doesNotBreakHasSumTypeMappingDetection` --
+  resolver-side null-element handling
+- `nullFieldMappingElement_reportedNotCrashed` /
+  `nullFieldMappingElement_doesNotPreventValidEntriesFromBeingChecked` --
+  validator-side null-element handling, including alongside a genuinely
+  invalid real entry in the same list
+
+**Not run in this environment.** Same limitation as every step in this
+phase. 8 new tests on top of the last confirmed count (195 from the
+`NullPointerException` fix), expected **203/203** -- an expectation from
+tracing each test by hand against the actual fixed code, not a
+confirmed result. Run `mvn test` locally for the real result.

@@ -55,6 +55,18 @@ import java.util.function.Predicate;
  * matching concern, not a variant-value one, and remains explicitly
  * deferred (see {@code docs/local-llm-enhancements.md}'s Step LLM-4
  * build notes for why).
+ *
+ * <p>Following an external review after Step LLM-6: an existing
+ * {@code variantValueMap} is now checked for semantic agreement with
+ * {@link #resolveValue}, not just key coverage -- an authoritative
+ * configured convention could previously be bypassed by a model
+ * proposing a different (but individually legal) target in its own map,
+ * since only presence was ever checked. And a {@code null} element
+ * within an otherwise non-null {@code fieldMappings} list -- distinct
+ * from the null/empty *list* cases {@link MappingProposal}'s own compact
+ * constructor already handled -- no longer crashes this resolver; it's
+ * passed through for {@link MappingProposalStructuralValidator} to
+ * report explicitly.
  */
 @Component
 public class SumTypeMappingResolver {
@@ -82,7 +94,7 @@ public class SumTypeMappingResolver {
         List<MappingResolutionProblem> problems = new ArrayList<>();
 
         boolean hasSumTypeMapping = proposal.fieldMappings().stream()
-                .anyMatch(fm -> paths.isSumTypePath(fm.canonicalFieldPath()));
+                .anyMatch(fm -> fm != null && paths.isSumTypePath(fm.canonicalFieldPath()));
         List<Map<String, String>> rows = hasSumTypeMapping
                 ? rowReader.readAll(sourcePath, worksheet)
                 : List.of();
@@ -93,6 +105,21 @@ public class SumTypeMappingResolver {
 
         List<MappingProposal.FieldMapping> resolvedMappings = new ArrayList<>();
         for (MappingProposal.FieldMapping fm : proposal.fieldMappings()) {
+            if (fm == null) {
+                // Malformed model output can include a null list element,
+                // not just an empty or null fieldMappings list -- the real
+                // Step LLM-6 schema-echo finding proved malformed
+                // structured output isn't theoretical (see
+                // docs/local-llm-enhancements.md). Passed through
+                // unchanged rather than crashing here:
+                // MappingProposalStructuralValidator is the one place
+                // that reports this as an actual problem, matching how
+                // this resolver already treats an entirely-empty
+                // fieldMappings list -- no crash, no report at this
+                // layer, just don't touch what it can't safely process.
+                resolvedMappings.add(null);
+                continue;
+            }
             String path = fm.canonicalFieldPath();
             if (path == null || !paths.isSumTypePath(path)) {
                 resolvedMappings.add(fm);
@@ -125,7 +152,7 @@ public class SumTypeMappingResolver {
             return validateSelectedVariant(path, fm, validVariants, configuredVocabulary, rows, problems);
         }
         if (hasMap) {
-            return validateVariantValueMap(path, fm, rows, problems);
+            return validateVariantValueMap(path, fm, validVariants, configuredVocabulary, rows, problems);
         }
         return fillUnresolved(path, fm, validVariants, configuredVocabulary, rows, problems);
     }
@@ -247,16 +274,30 @@ public class SumTypeMappingResolver {
     }
 
     /**
-     * Validates an agent-supplied {@code variantValueMap} covers every
-     * distinct observed value in its (required) {@code sourceColumn}.
-     * {@code variantValueMap} without a {@code sourceColumn} is already
-     * structurally invalid (caught by {@link MappingProposalStructuralValidator});
-     * nothing for this resolver to add in that case. Deliberately doesn't
-     * consult configured vocabulary or canonical-name matching -- this
-     * checks whether the agent's *own* map covers what was observed, not
-     * whether those values are independently resolvable some other way.
+     * Validates an agent-supplied {@code variantValueMap} two ways:
+     * coverage (every distinct observed value has a key) and, as of the
+     * external review that found this gap, semantic agreement with
+     * deterministic resolution. Coverage alone was a real hole:
+     * {@code selectedVariant} was already checked against
+     * {@link #resolveValue} (configured vocabulary, then canonical-name
+     * matching), but a {@code variantValueMap} entry was only ever
+     * checked for *presence*, never whether its *target* was actually
+     * correct -- an authoritative client convention like
+     * {@code USD -> USD} would not have caught a model proposing
+     * {@code variantValueMap={"USD":"EUR"}} as long as {@code EUR} was
+     * itself a legal variant, since nothing compared the two. Each
+     * observed value is now checked against {@link #resolveValue} too;
+     * a mismatch is only flagged when {@code resolveValue} actually
+     * produces a deterministic answer to disagree with -- if a value is
+     * itself ambiguous or unresolvable, the model's own mapping is left
+     * as-is for human review rather than flagged as wrong when there's
+     * no known-correct answer to compare it against. {@code variantValueMap}
+     * without a {@code sourceColumn} is already structurally invalid
+     * (caught by {@link MappingProposalStructuralValidator}); nothing
+     * for this resolver to add in that case.
      */
     private MappingProposal.FieldMapping validateVariantValueMap(String path, MappingProposal.FieldMapping fm,
+            Set<String> validVariants, Map<String, String> configuredVocabulary,
             List<Map<String, String>> rows, List<MappingResolutionProblem> problems) {
 
         if (!isSet(fm.sourceColumn())) {
@@ -265,9 +306,18 @@ public class SumTypeMappingResolver {
 
         Set<String> distinctValues = distinctNonBlankValues(fm.sourceColumn(), rows);
         List<String> uncovered = new ArrayList<>();
+        List<String> mismatched = new ArrayList<>();
         for (String value : distinctValues) {
-            if (!fm.variantValueMap().containsKey(value)) {
+            String proposedTarget = fm.variantValueMap().get(value);
+            if (proposedTarget == null) {
                 uncovered.add(value);
+                continue;
+            }
+            Optional<String> deterministic =
+                    resolveValue(path, fm.sourceColumn(), value, configuredVocabulary, validVariants, problems);
+            if (deterministic.isPresent() && !deterministic.get().equals(proposedTarget)) {
+                mismatched.add("'" + value + "' -> '" + proposedTarget + "' (should be '"
+                        + deterministic.get() + "')");
             }
         }
 
@@ -276,6 +326,12 @@ public class SumTypeMappingResolver {
                     fm.sourceColumn(),
                     "'" + path + "' variantValueMap does not cover observed value(s) " + uncovered
                             + " in column '" + fm.sourceColumn() + "'", true));
+        }
+        if (!mismatched.isEmpty()) {
+            problems.add(new MappingResolutionProblem(MappingResolutionProblem.Kind.SEMANTIC_CONFLICT, path,
+                    fm.sourceColumn(),
+                    "'" + path + "' variantValueMap disagrees with deterministic resolution for "
+                            + mismatched, true));
         }
         return fm;
     }

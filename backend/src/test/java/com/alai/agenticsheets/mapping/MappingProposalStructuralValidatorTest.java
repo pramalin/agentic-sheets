@@ -250,6 +250,40 @@ class MappingProposalStructuralValidatorTest {
         assertThat(problems.get(0)).contains("no field mappings");
     }
 
+    // External review finding (post Step LLM-6): a null element WITHIN a
+    // non-null fieldMappings list, distinct from the null/empty LIST
+    // cases already covered above. See docs/local-llm-enhancements.md.
+
+    @Test
+    void nullFieldMappingElement_reportedNotCrashed() throws Exception {
+        List<MappingProposal.FieldMapping> withNull = new java.util.ArrayList<>();
+        withNull.add(null);
+        withNull.add(fm("account_id", "Account", null, null, null, 0.9));
+        MappingProposal proposal = new MappingProposal(withNull, List.of(), "test");
+
+        List<String> problems = validator.validate(proposal, holdings(), JPMC_COLUMNS);
+
+        assertThat(problems).hasSize(1);
+        assertThat(problems.get(0)).contains("null").contains("malformed");
+    }
+
+    @Test
+    void nullFieldMappingElement_doesNotPreventValidEntriesFromBeingChecked() throws Exception {
+        // A null entry shouldn't short-circuit validation of the OTHER,
+        // real entries in the same list -- a genuinely invalid real
+        // entry alongside a null one should still be caught.
+        List<MappingProposal.FieldMapping> mixed = new java.util.ArrayList<>();
+        mixed.add(null);
+        mixed.add(fm("nonexistent_field", "Account", null, null, null, 0.9));
+        MappingProposal proposal = new MappingProposal(mixed, List.of(), "test");
+
+        List<String> problems = validator.validate(proposal, holdings(), JPMC_COLUMNS);
+
+        assertThat(problems).hasSize(2);
+        assertThat(problems).anyMatch(p -> p.contains("null") && p.contains("malformed"));
+        assertThat(problems).anyMatch(p -> p.contains("nonexistent_field"));
+    }
+
     private MappingProposal withOneMapping(MappingProposal.FieldMapping fm) {
         return new MappingProposal(List.of(fm), List.of(), "test");
     }

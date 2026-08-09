@@ -514,4 +514,147 @@ class SumTypeMappingResolverTest {
         assertThat(result.problems()).isEmpty();
         assertThat(result.proposal().fieldMappings().get(0).selectedVariant()).isEqualTo("USD");
     }
+
+    // =====================================================================
+    // External review finding (post Step LLM-6): validateVariantValueMap
+    // only checked coverage, never whether the proposed TARGET agreed with
+    // deterministic resolution. An authoritative configured convention
+    // like USD -> USD would not have caught a model proposing
+    // variantValueMap={"USD":"EUR"} as long as EUR was itself a legal
+    // variant. See docs/local-llm-enhancements.md.
+    // =====================================================================
+
+    @Test
+    void variantValueMapDisagreesWithAuthoritativeConfiguredVocabulary_semanticConflict() throws Exception {
+        SpreadsheetRowReader reader = mock(SpreadsheetRowReader.class);
+        when(reader.readAll("f.xlsx", "Holdings")).thenReturn(rowsWithColumn("Currency", "USD"));
+
+        // The exact scenario the review flagged: an authoritative
+        // convention says USD -> USD, but the model's own map proposes
+        // USD -> EUR. EUR is a real variant, so coverage alone would
+        // have passed this clean.
+        Map<String, String> wrongMap = Map.of("USD", "EUR");
+        MappingProposal proposal = new MappingProposal(
+                List.of(mapping("currency", "Currency", null, wrongMap)), List.of(), "test");
+        ClientConfig client = withVariantValues("Holdings", "currency", Map.of("USD", "USD"));
+
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), client, "f.xlsx", "Holdings");
+
+        assertThat(result.problems()).hasSize(1);
+        MappingResolutionProblem problem = result.problems().get(0);
+        assertThat(problem.kind()).isEqualTo(MappingResolutionProblem.Kind.SEMANTIC_CONFLICT);
+        assertThat(problem.blocking()).isTrue();
+        assertThat(problem.message()).contains("USD").contains("EUR").contains("disagrees");
+        // Not repaired -- left exactly as proposed, same non-repair
+        // policy as every other semantic-conflict case.
+        assertThat(result.proposal().fieldMappings().get(0).variantValueMap()).isEqualTo(wrongMap);
+    }
+
+    @Test
+    void variantValueMapAgreesWithCanonicalMatching_noConflict() throws Exception {
+        SpreadsheetRowReader reader = mock(SpreadsheetRowReader.class);
+        when(reader.readAll("f.xlsx", "Holdings"))
+                .thenReturn(rowsWithColumn("Asset Class", "Equity", "Fixed Income"));
+
+        Map<String, String> correctMap = Map.of("Equity", "Equity", "Fixed Income", "FixedIncome");
+        MappingProposal proposal = new MappingProposal(
+                List.of(mapping("asset_class", "Asset Class", null, correctMap)), List.of(), "test");
+
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
+
+        assertThat(result.problems()).isEmpty();
+        assertThat(result.proposal().fieldMappings().get(0).variantValueMap()).isEqualTo(correctMap);
+    }
+
+    @Test
+    void variantValueMapValueWithNoDeterministicAnswer_leftForHumanReview() throws Exception {
+        // "Bitcoin" doesn't canonical-match anything and has no
+        // configured entry -- resolveValue returns empty with no
+        // problem of its own. Per the review's own recommended fix: if
+        // there's no deterministic answer to disagree with, the model's
+        // own mapping stays as proposed rather than being flagged wrong.
+        SpreadsheetRowReader reader = mock(SpreadsheetRowReader.class);
+        when(reader.readAll("f.xlsx", "Holdings")).thenReturn(rowsWithColumn("Currency", "Bitcoin"));
+
+        Map<String, String> modelsGuess = Map.of("Bitcoin", "USD");
+        MappingProposal proposal = new MappingProposal(
+                List.of(mapping("currency", "Currency", null, modelsGuess)), List.of(), "test");
+
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
+
+        assertThat(result.problems()).isEmpty();
+        assertThat(result.proposal().fieldMappings().get(0).variantValueMap()).isEqualTo(modelsGuess);
+    }
+
+    @Test
+    void variantValueMapMismatchAgainstStaleConfiguredEntry_reportsConfigProblemNotMismatch() throws Exception {
+        // A stale configured target still fails closed via
+        // CLIENT_CONFIGURATION (resolveValue's own job); since that means
+        // no deterministic answer was actually produced, the mismatch
+        // check must not ALSO fire a redundant/misleading second problem
+        // claiming the model's target was "wrong" when there was no
+        // known-correct target to compare against.
+        SpreadsheetRowReader reader = mock(SpreadsheetRowReader.class);
+        when(reader.readAll("f.xlsx", "Holdings")).thenReturn(rowsWithColumn("Currency", "USD"));
+
+        Map<String, String> modelsMap = Map.of("USD", "EUR");
+        MappingProposal proposal = new MappingProposal(
+                List.of(mapping("currency", "Currency", null, modelsMap)), List.of(), "test");
+        ClientConfig client = withVariantValues("Holdings", "currency", Map.of("USD", "NoSuchVariant"));
+
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), client, "f.xlsx", "Holdings");
+
+        assertThat(result.problems()).hasSize(1);
+        assertThat(result.problems().get(0).kind()).isEqualTo(MappingResolutionProblem.Kind.CLIENT_CONFIGURATION);
+    }
+
+    // =====================================================================
+    // External review finding (post Step LLM-6): a null element WITHIN a
+    // non-null fieldMappings list -- distinct from the null/empty LIST
+    // cases MappingProposal's compact constructor already handles. The
+    // real schema-echo finding proved malformed structured output isn't
+    // theoretical. See docs/local-llm-enhancements.md.
+    // =====================================================================
+
+    @Test
+    void nullFieldMappingElement_doesNotCrashTheResolver() throws Exception {
+        SpreadsheetRowReader reader = mock(SpreadsheetRowReader.class);
+        when(reader.readAll("f.xlsx", "Holdings")).thenReturn(rowsWithColumn("Currency", "USD"));
+
+        List<MappingProposal.FieldMapping> withNull = new java.util.ArrayList<>();
+        withNull.add(null);
+        withNull.add(mapping("currency", "Currency", null, null));
+        MappingProposal proposal = new MappingProposal(withNull, List.of(), "test");
+
+        SumTypeMappingResolver.Result result = new SumTypeMappingResolver(reader)
+                .resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
+
+        // No crash -- the null element passes through unchanged; the
+        // real (non-null) sum-type entry still resolves normally.
+        assertThat(result.proposal().fieldMappings()).hasSize(2);
+        assertThat(result.proposal().fieldMappings().get(0)).isNull();
+        assertThat(result.proposal().fieldMappings().get(1).selectedVariant()).isEqualTo("USD");
+    }
+
+    @Test
+    void nullFieldMappingElement_doesNotBreakHasSumTypeMappingDetection() throws Exception {
+        // A null element must not throw while checking whether ANY entry
+        // is a sum-type field, nor prevent a later real entry from being
+        // detected and read (i.e. the row read must still happen).
+        SpreadsheetRowReader reader = mock(SpreadsheetRowReader.class);
+        when(reader.readAll("f.xlsx", "Holdings")).thenReturn(rowsWithColumn("Currency", "USD"));
+
+        List<MappingProposal.FieldMapping> withNullFirst = new java.util.ArrayList<>();
+        withNullFirst.add(null);
+        withNullFirst.add(mapping("currency", "Currency", null, null));
+        MappingProposal proposal = new MappingProposal(withNullFirst, List.of(), "test");
+
+        new SumTypeMappingResolver(reader).resolve(proposal, holdings(), noConventions(), "f.xlsx", "Holdings");
+
+        verify(reader, times(1)).readAll("f.xlsx", "Holdings");
+    }
 }
