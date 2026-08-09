@@ -37,6 +37,17 @@ import java.util.Map;
  * a real re-run to know, ideally with raw response logging enabled to
  * see the model's output directly rather than only its downstream
  * validation failures.
+ *
+ * <p>A later real run (see the same doc's "Seventh real run" section)
+ * found the opposite failure mode: the model shortening a path rather
+ * than adding to it -- {@code security_description} rendered back as
+ * {@code description}, and {@code asset_class.FixedIncome.maturity_date}
+ * rendered back as a bare {@code maturity_date}. The original "use the
+ * path EXACTLY as shown" instruction was worded entirely around not
+ * adding an incorrect prefix; {@link #render} now explicitly calls out
+ * shortening as an equally wrong failure mode, with the same two
+ * real examples named directly. Same caveat as above: an attempt, not
+ * a confirmed fix, until a real run says otherwise.
  */
 @Component
 public class CanonicalModelPromptRenderer {
@@ -49,7 +60,13 @@ public class CanonicalModelPromptRenderer {
                 .append("type's variant fields). Use the path EXACTLY as shown, e.g. \"")
                 .append("currency\" or \"asset_class.FixedIncome.maturity_date\" -- do NOT prefix a ")
                 .append("path with the canonical model's own name (\"").append(model.modelId())
-                .append("\" above is the name of this schema, not part of any field's path).\n\n");
+                .append("\" above is the name of this schema, not part of any field's path). ")
+                .append("Equally, do NOT shorten or abbreviate a path -- \"security_description\" ")
+                .append("must never become \"description\", and \"asset_class.FixedIncome.maturity_date\" ")
+                .append("must never become just \"maturity_date\". A field's whole path, including any ")
+                .append("prefix or dotted variant-qualifier, is one indivisible identifier -- copy it ")
+                .append("character for character from the listing below, don't reconstruct or ")
+                .append("paraphrase it from memory.\n\n");
         renderField(sb, "", model.root(), true, "", model.synonyms());
         return sb.toString();
     }

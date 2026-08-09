@@ -2210,3 +2210,54 @@ the other was right.
 still needs a real benchmark re-run to know whether the more targeted
 instruction actually lands where the general one didn't -- that's a
 model-behavior question no test suite can answer, only a live run.
+
+## Eighth round: closing out the two remaining watch items proactively
+
+Both single-occurrence findings from the seventh round -- `"description"`
+instead of `"security_description"`, and a bare `maturity_date` missing
+its `asset_class.FixedIncome.` prefix -- addressed now on direct
+instruction, rather than held back pending a second occurrence each,
+same reasoning as the sixth round's proactive fixes.
+
+**A single, unifying instruction rather than two narrow patches.** Both
+findings share the same underlying shape: the model reconstructing or
+paraphrasing a field path from memory instead of copying the exact
+string the schema already gives it -- one direction (Step LLM-6's
+`Holdings.currency`) added something extra, this direction removes
+something real. `CanonicalModelPromptRenderer`'s existing "use the path
+EXACTLY as shown" instruction was worded entirely around the
+add-something-extra case; it now explicitly names shortening as an
+equally wrong failure mode, using the two real, observed examples
+directly (`security_description` -> `description`,
+`asset_class.FixedIncome.maturity_date` -> `maturity_date`) rather than
+a generic warning -- concrete enough to actually pattern-match against,
+following the same lesson the sixth round's `llmsim`-adjacent findings
+already suggested: specific, named examples land better than abstract
+rules.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/CanonicalModelPromptRenderer.java` (modified -- explicit instruction against shortening a path, with the two real examples named directly; class javadoc updated)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/CanonicalModelPromptRendererTest.java` (modified -- 1 new test)
+
+**Tests added** (1 new):
+- `explicitlyInstructsAgainstShorteningAPath` -- confirms the new
+  instruction text, including the two named examples, actually
+  renders. Cannot and does not claim to test whether it changes real
+  model behavior, matching every other prompt-wording test in this
+  step.
+
+**Confirmed live.** `mvn test`: **241/241**.
+
+**Where this leaves the 3B findings, going into the next benchmark
+run.** Every currently-known issue now has an attempted fix in place:
+the `Holdings.` prefix (confirmed working), the `selectedVariant`/
+`variantValueMap` echo (confirmed working), stale deterministic-column
+mentions in `unmappedSourceColumns` (confirmed working, both at the
+merge-logic level and via a real successful run), canonical names
+leaking into `unmappedSourceColumns` (confirmed working), the
+`FixedIncome` sub-field hallucination (fix attempted, unconfirmed),
+and now path-shortening (fix attempted, unconfirmed). The next real
+benchmark run is genuinely the right next step -- both to confirm the
+two still-open attempts, and because a model this actively confused
+about path fidelity will likely keep surfacing new patterns even once
+these are resolved, the same way nearly every prior round has.

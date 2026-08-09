@@ -59,6 +59,26 @@ class CanonicalModelPromptRendererTest {
         assertThat(rendered).contains("do NOT prefix a path with the canonical model's own name");
     }
 
+    // A second real finding, this time the opposite direction --
+    // reproduced against real Qwen 2.5 3B output: security_description
+    // rendered back as description, and
+    // asset_class.FixedIncome.maturity_date rendered back as a bare
+    // maturity_date. See docs/local-llm-enhancements.md's "Seventh real
+    // run" section for the full account.
+
+    @Test
+    void explicitlyInstructsAgainstShorteningAPath() throws Exception {
+        CanonicalModel model = parser.parse(resource("canonical-models/holdings.yaml"));
+
+        String rendered = renderer.render(model);
+
+        assertThat(rendered).contains("do NOT shorten or abbreviate a path");
+        // The two real, named examples this instruction was built from,
+        // not a generic warning -- concrete enough for the model to
+        // pattern-match against.
+        assertThat(rendered).contains("\"security_description\" must never become \"description\"");
+    }
+
     @Test
     void marketRateBookValueHasNoSumTypeAtTheTopLevelSinceItsAProductType() throws Exception {
         CanonicalModel model = parser.parse(resource("canonical-models/market_rate_book_value.yaml"));
