@@ -258,6 +258,70 @@ class AgentMappingProposalServiceTest {
     }
 
     @Test
+    void modelStaleMentionOfADeterministicallyResolvedColumn_filteredNotContradictory() {
+        // A real bug found against actual Qwen 2.5 3B output: the
+        // "already resolved" note names a deterministically-resolved
+        // column explicitly (by design -- see renderAlreadyResolvedNote),
+        // and the model sometimes echoes that name back into its OWN
+        // unmappedSourceColumns anyway, even though that column was
+        // never actually in the table it was shown. Before this fix,
+        // that stale mention collided with the deterministic
+        // FieldMapping for the same column, and
+        // validateColumnCoverage correctly-but-misleadingly flagged it
+        // as "mapped AND unmapped -- contradictory." The fix: filter
+        // the model's own unmappedSourceColumns against what was
+        // already deterministically resolved, symmetric with how a
+        // duplicate FieldMapping is already dropped. This test proves
+        // the merged proposal excludes the stale mention entirely,
+        // rather than surfacing it as a contradiction.
+        Harness h = harness();
+        JsonNode table = tableWithColumns("Currency", "Valuation Px");
+        Set<String> observed = Set.of("Currency", "Valuation Px");
+
+        List<MappingProposal.FieldMapping> deterministic = List.of(
+                new MappingProposal.FieldMapping("currency", "Currency", null, null, null, null, 1.0, "det"));
+        when(h.fieldAliasResolver().resolve(any(), any(), org.mockito.ArgumentMatchers.eq(observed)))
+                .thenReturn(new FieldAliasResolver.Result(deterministic, Set.of("Currency")));
+
+        // The model's response: correctly maps the genuinely unresolved
+        // column, but ALSO stale-mentions "Currency" (already
+        // deterministically resolved, never shown to it) in its own
+        // unmappedSourceColumns.
+        MappingProposal modelResponse = new MappingProposal(
+                List.of(new MappingProposal.FieldMapping(
+                        "market_price", "Valuation Px", null, null, null, null, 0.9, "model")),
+                List.of("Currency"),
+                "model summary");
+
+        org.springframework.ai.chat.client.ChatClient.ChatClientRequestSpec requestSpec =
+                mock(org.springframework.ai.chat.client.ChatClient.ChatClientRequestSpec.class);
+        when(h.chatClient().prompt()).thenReturn(requestSpec);
+        when(requestSpec.system(org.mockito.ArgumentMatchers.anyString())).thenReturn(requestSpec);
+        when(requestSpec.user(org.mockito.ArgumentMatchers.anyString())).thenReturn(requestSpec);
+        org.springframework.ai.chat.client.ChatClient.CallResponseSpec callSpec =
+                mock(org.springframework.ai.chat.client.ChatClient.CallResponseSpec.class);
+        when(requestSpec.call()).thenReturn(callSpec);
+        when(callSpec.responseEntity(MappingProposal.class))
+                .thenReturn(new org.springframework.ai.chat.client.ResponseEntity<>(null, modelResponse));
+
+        when(h.sumTypeResolver().resolve(any(), any(), any(), any(), any()))
+                .thenAnswer(inv -> new SumTypeMappingResolver.Result(inv.getArgument(0), List.of()));
+        when(h.structuralValidator().validate(any(), any(), any())).thenReturn(List.of());
+        when(h.structuralValidator().validateColumnCoverage(any(), any())).thenReturn(List.of());
+
+        MappingProposal result = h.service().propose(dummyModel(), dummyClient(), "f.xlsx", "Holdings", table);
+
+        assertThat(result.fieldMappings()).hasSize(2);
+        assertThat(result.fieldMappings())
+                .extracting(MappingProposal.FieldMapping::canonicalFieldPath)
+                .containsExactlyInAnyOrder("currency", "market_price");
+        // The actual proof: "Currency" does NOT appear in the final
+        // unmappedSourceColumns -- the stale mention was filtered, not
+        // just tolerated by a lenient validator stub.
+        assertThat(result.unmappedSourceColumns()).isEmpty();
+    }
+
+    @Test
     void modelCallThrows_failsCleanRatherThanCrashingUnhandled() {
         // The review's underlying concern (infrastructure failures
         // shouldn't masquerade as mapping-validation failures) is real

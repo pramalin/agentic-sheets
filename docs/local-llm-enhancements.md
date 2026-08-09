@@ -1539,3 +1539,386 @@ package that doesn't exist in this project's real Spring AI 2.0.0
 dependency, reverted to a plain `catch (RuntimeException e)`): the real
 build compiled clean and every test passed on the first run after that
 fix, confirming the correction was actually right, not just plausible.
+
+## First real run of the field-alias work: a real merge bug found, plus an unconfirmed model-behavior finding
+
+Two runs against real Qwen 2.5 3B output, both against the corrected
+pipeline (compilation fix included). Both failed structural
+validation -- but for a genuinely interesting and, in one case, real
+and fixable reason.
+
+### The bug: the model's own stale mention of an already-resolved column
+
+Both runs independently produced the same shape of failure:
+`column(s) [X] are both mapped by a fieldMapping and listed in
+unmappedSourceColumns -- contradictory` -- `Custodian` in the baseline
+run, `Description` in the unfamiliar-column run. Both are columns the
+"already resolved" note (see `renderAlreadyResolvedNote`) names
+explicitly in the prompt, by design, so the model understands why the
+table it's shown has fewer columns than the canonical model describes.
+In practice, the model appears to echo that column name back into its
+own `unmappedSourceColumns` anyway, even though the column was never
+actually present in the table it worked from.
+
+The merge logic already applied a "deterministic knowledge wins, the
+model's confused duplicate is dropped" policy to redundant
+`FieldMapping` entries -- but never applied the same policy to the
+model's own `unmappedSourceColumns` list. Fixed: `mergedUnmapped` now
+filters out any column already deterministically resolved, exactly
+symmetric with the existing `FieldMapping` deduplication. Confirmed by
+hand-tracing a new test
+(`modelStaleMentionOfADeterministicallyResolvedColumn_filteredNotContradictory`)
+built directly from this real failure shape: a model response that
+correctly maps the genuinely unresolved column but also stale-mentions
+an already-resolved one now merges cleanly, with the stale mention
+filtered rather than surfaced as a contradiction.
+
+### An unconfirmed, plausible finding: "Holdings." path prefixing
+
+The baseline run's other 11 problems were all the same shape:
+`canonicalFieldPath 'Holdings.as_of_date' is not a field in Holdings`
+-- every single field path the model proposed was prefixed with the
+model's own name. A plausible, but **not confirmed**, explanation:
+`CanonicalModelPromptRenderer.render()` -- pre-existing code, untouched
+by any change in this whole phase -- opens every prompt with
+`"Canonical model: Holdings (version 1)"` immediately above the field
+listing. It's entirely plausible the model inferred `Holdings.` as an
+implicit namespace prefix, a common enough convention elsewhere. But
+this is genuinely a hypothesis, not a diagnosis: this exact renderer
+code has been unchanged and in use since Step 6, and this specific
+confusion pattern has never shown up in any prior run this whole
+phase -- which raises a real, unresolved question about whether
+something about the *shorter* table (fewer columns than the canonical
+model describes, a direct consequence of Step LLM-4's work) makes this
+particular confusion more likely, or whether this is simply
+run-to-run model variance under CPU inference that could recur or
+vanish independent of anything in this codebase.
+
+**Deliberately not "fixed" blind.** Guessing at a prompt-wording change
+to prevent this, without seeing what the model's raw response actually
+looked like, would repeat exactly the mistake this phase has tried
+hard to avoid elsewhere. Raw response logging exists for precisely this
+situation and defaults off (Step LLM-6's external review correction) --
+this run didn't have it enabled. Recommended next step: re-run with
+`AGENTIC_SHEETS_LOG_RAW_MODEL_RESPONSE=true` to actually see the raw
+text and confirm or rule out this hypothesis, rather than changing
+prompt wording speculatively.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- `mergedUnmapped` now filters deterministically-resolved columns out of the model's own `unmappedSourceColumns`)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/AgentMappingProposalServiceTest.java` (modified -- 1 new test, built directly from the real failure)
+
+**Tests added** (1 new):
+- `modelStaleMentionOfADeterministicallyResolvedColumn_filteredNotContradictory`
+  -- a model response correctly mapping the genuinely unresolved column
+  while also stale-mentioning an already-resolved one; confirms the
+  merged proposal excludes the stale mention entirely, both in
+  `fieldMappings` (already worked) and now `unmappedSourceColumns`
+  (the actual fix).
+
+**Confirmed live.** `mvn test` run against the real repo, after
+overlaying every round through the compose fix and both prompt
+clarifications: **238/238**, up from 236 by exactly the 2 new tests
+this section and the next each added, no regressions across five real
+benchmark rounds' worth of changes landing together.
+
+## Second real run: the merge fix confirmed working, and a low-risk attempt at the prefix confusion
+
+Two more real runs against Qwen 2.5 3B, this time with the merge fix
+from the previous round actually in place.
+
+**The merge fix confirmed working in practice, not just by unit test.**
+The baseline run's `Custodian` "both mapped and unmapped -- contradictory"
+problem is gone entirely -- the exact column the fix targeted, in the
+exact scenario the fix was built from. Real-world confirmation, not
+just the traced unit test passing.
+
+**A different contradiction in the unfamiliar-column run, correctly
+still flagged.** `Description` shows the same "both mapped and unmapped"
+shape -- but `Description` was never deterministically resolved in the
+first place (it was a canonical-synonym-only match, and synonyms are no
+longer deterministic as of this round's own earlier correction). This
+is the model contradicting *itself* within one response -- proposing a
+`fieldMapping` using `Description` as `sourceColumn` while *also*
+listing `Description` in its own `unmappedSourceColumns`, with no
+deterministic resolution involved at all. `validateColumnCoverage`
+catching this is correct, desired behavior, not a false positive the
+merge fix should have also suppressed -- a genuine internal
+contradiction is a real problem worth surfacing, unlike the stale-note
+echo the merge fix targets.
+
+**The `Holdings.` prefix reproduced identically a second time.** Same
+11 fields, same `Holdings.<field>` prefix, in a completely independent
+run (fresh volume, fresh model call). Two independent, identical
+reproductions moves this from "possibly one-off noise" to "a real,
+reproducible pattern under this model and this prompt" -- worth an
+actual, if still unconfirmed, mitigation attempt rather than only
+waiting for a raw-logged diagnostic run.
+
+**A low-risk, explicitly-labeled mitigation, not a confirmed fix.**
+`CanonicalModelPromptRenderer.render()` now explicitly instructs against
+prefixing a path with the canonical model's own name, right where the
+"Canonical model: X" header sits -- the exact text suspected, not
+confirmed, of causing the confusion. Unlike the earlier `org.springframework.ai.retry`
+mistake (a wrong Java class name that silently breaks compilation), a
+wrong guess about prompt wording is low-risk and easily reverted -- it
+either helps, does nothing, or (worth watching for) makes things worse,
+and only a real run can tell which. Explicitly documented, in both the
+class javadoc and this doc, as an attempt, not a diagnosis -- if the
+next real run still shows `Holdings.` prefixing, that's real evidence
+the hypothesis was wrong, not a reason to quietly drop the instruction
+and pretend it wasn't tried.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/CanonicalModelPromptRenderer.java` (modified -- explicit instruction against model-name path prefixing)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/CanonicalModelPromptRendererTest.java` (modified -- 1 new test confirming the instruction text is present)
+
+**Tests added** (1 new):
+- `explicitlyInstructsAgainstPrefixingAPathWithTheModelName` -- confirms
+  the new instruction text renders; cannot and does not claim to test
+  whether it actually changes model behavior, which only a real run can
+  show.
+
+**Still recommended, now more valuable than before given two
+identical reproductions:** re-run with
+`AGENTIC_SHEETS_LOG_RAW_MODEL_RESPONSE=true` to see whether this
+mitigation actually changed the model's raw output, not just to
+diagnose the original cause -- a before/after raw-text comparison would
+be considerably more informative than either run alone.
+
+**Confirmed live, along with everything above.** `mvn test`: **238/238**
+-- this section's 1 new test, confirmed passing alongside the previous
+section's, in the same real run.
+
+## Third real run: a real infrastructure gap found, plus encouraging (not confirmed) evidence
+
+A real gap in this phase's own earlier work, found by the raw-logging
+recommendation itself failing to work: `.env` had
+`AGENTIC_SHEETS_LOG_RAW_MODEL_RESPONSE=true` set, but the real docker
+compose logs showed zero raw-response lines. A `.env` file only affects
+`docker compose`'s own variable substitution -- it does not
+automatically become part of a container's environment unless a
+compose file explicitly forwards it. `compose.yaml`'s `backend` service
+lists every environment variable it passes through one by one; this one
+was simply never added when the opt-in logging feature itself was
+built. The Spring side (`@Value` binding, `application.yml`'s default)
+was correct the whole time -- it just never had anything to read,
+because the OS environment variable it was waiting for never reached
+the container at all. Fixed with one line in `compose.yaml`, matching
+the exact pattern the existing `AGENTIC_SHEETS_INBOX_ENABLED` entry
+already uses.
+
+**Encouraging, but explicitly not confirmed: the `Holdings.` prefix did
+not recur.** Both runs' validation errors are visible even without raw
+logging (the structural validator reports exactly the
+`canonicalFieldPath` the model proposed), and neither run shows a
+single `Holdings.`-prefixed path this time -- a real change from two
+consecutive prior runs that both showed it for every field. Genuinely
+suggestive that the explicit counter-instruction helped. Not proof:
+absence of one specific error doesn't confirm the mechanism, only that
+the symptom didn't recur this time, and the raw-logging gap above means
+this is inferred from validation output, not seen directly. Worth
+re-running now that raw logging will actually work.
+
+**A new, different, correctly-caught confusion pattern.** Both runs
+show the model attaching `selectedVariant`/`variantValueMap` to fields
+that were never sum types at all -- `asset_class.FixedIncome.maturity_date`
+(a leaf field *within* a variant, not the sum type's own root path),
+and, more strikingly, ordinary primitive fields with no sum-type
+relationship whatsoever (`client_id`, `account_id`, `security_id`,
+`security_description`, `market_price`). This is existing validation
+(`'X' sets a variant but is not a sum type field`), unchanged by any
+recent work, correctly catching a genuinely new failure shape -- not a
+gap this round needs to close. Worth noting as a distinct model
+confusion pattern from the ones already documented (schema-echo,
+`Holdings.` prefixing, stale unmapped mentions): apparently the more
+"sum type" mechanics get discussed in a prompt, the more the model may
+over-apply them to unrelated fields.
+
+**A real, open question, not silently resolved either way: case
+sensitivity.** Both runs also show `unmappedSourceColumns` listing a
+lowercased column name (`description`, `custodian`) where the real
+observed header is capitalized (`Description`, `Custodian`).
+`validateColumnCoverage`'s exact-string matching correctly flags this
+as "never actually observed" -- consistent with how `sourceColumn`
+matching already works everywhere else in this validator, not a new
+inconsistency. Deliberately not "fixed" to case-insensitive matching
+here: that would be a real, broader design decision (would need to
+apply consistently everywhere column matching happens, not just this
+one spot) trading away a genuine, if inconvenient, signal about model
+reliability for convenience -- worth your input, not something to
+decide unilaterally in the middle of a benchmark run.
+
+**Files changed:**
+- `compose.yaml` (modified -- forwards `AGENTIC_SHEETS_LOG_RAW_MODEL_RESPONSE` into the backend container, matching the existing `AGENTIC_SHEETS_INBOX_ENABLED` pattern)
+
+**No test coverage for this fix** -- it's a Docker Compose configuration
+gap, not Java code; nothing in this project's `mvn test` suite exercises
+compose file content. The only real verification is a live run showing
+raw response text actually appear in the logs this time.
+
+**Recommended next step, now that this should actually work:** re-run
+`./scripts/local-llm/run-llm6-benchmark.sh` with the compose fix
+applied and `AGENTIC_SHEETS_LOG_RAW_MODEL_RESPONSE=true` still set --
+this should finally show the model's actual raw output, confirming or
+correcting every inference made from validation output alone across
+this and the previous two rounds.
+
+## Fourth real run: raw logging finally working, and what it actually shows
+
+The compose fix worked -- both runs' raw model text appears in the
+logs. This is the first time in this whole step that an inference from
+validation output alone could actually be checked against ground truth.
+
+### Confirmed, not just inferred: the `Holdings.` prefix fix worked
+
+Zero occurrences of a `Holdings.`-prefixed path in either raw response
+-- every `canonicalFieldPath` the model produced is a clean, bare path.
+Two consecutive runs showed the prefix on every field before the fix;
+two consecutive runs show it on none after. This is now a confirmed
+result, not an inference from the absence of one specific validation
+error message.
+
+### A genuinely valuable discovery: deterministic resolution silently protecting fields it doesn't know it's protecting
+
+The raw text for `asset_class` and `currency` shows the model put the
+literal string `"variantValueMap"` into the `selectedVariant` JSON
+field for *both* -- a real, systematic confusion (see below) -- yet
+neither field appears anywhere in the validation errors. Why: `"Asset Class"`
+and `"Currency"` both match their canonical field's own name exactly,
+so `FieldAliasResolver` resolves them deterministically before the
+model is ever asked, and the merge fix from two rounds ago silently
+discards the model's own (garbage) response for those two fields,
+replacing it with the clean deterministic entry before validation ever
+sees it. This is the deterministic architecture actively working,
+caught in the act with real evidence for the first time -- not a
+coincidence, and not something any single piece of this phase's design
+was built to specifically anticipate, but a direct, provable consequence
+of layering deterministic resolution ahead of the model.
+
+### A new, systematic confusion, addressed with a targeted prompt clarification
+
+For every field the model *did* have to resolve itself in the
+unfamiliar-column run (`client_id`, `account_id`, `security_id`,
+`security_description`, `market_price` -- none of them sum types), it
+put the literal string `"selectedVariant"` into the `selectedVariant`
+JSON field. Not choosing a variant -- echoing the *field's own name*
+back as if it were a *value*. Five of five non-deterministic fields in
+one response; a systematic pattern, not noise.
+
+**Fix attempted, same methodology and same honesty about its
+confirmation status as the `Holdings.` prefix fix.** The system
+prompt's `selectedVariant`/`variantValueMap` explanation now explicitly
+states these describe JSON *field names*, not values to echo back, and
+explicitly states they apply only to a field that genuinely is a sum
+type -- never to an ordinary field, and never to a sum type's own
+nested sub-fields (the baseline run's separate
+`asset_class.FixedIncome.maturity_date`/`coupon_rate`/`credit_rating`
+errors are exactly that last case: the model tried to set a variant on
+leaf fields *within* FixedIncome, not on `asset_class` itself). Not
+confirmed to work -- only a real re-run can show that, the same
+caveat as every prompt-wording attempt this step has made.
+
+**Deliberately not attempted in this same round: the "one column, many
+fields" hallucination.** The baseline run separately mapped `"Price"`
+to `market_price` *and* to three different `FixedIncome` sub-fields
+simultaneously, as if one column could encode multiple, unrelated
+pieces of information. A real, distinct confusion, but not addressed
+with another prompt patch this round -- stacking an ever-growing set of
+narrowly-reactive instructions onto the same prompt risks papering over
+symptoms rather than keeping the prompt fundamentally clear, and this
+one hasn't been observed with the same repeated, systematic strength
+the other two fixes were built from. Recorded as an open observation,
+not silently dropped.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- system prompt clarifies that `selectedVariant`/`variantValueMap` are field names, apply only to genuine sum types, and never to a sum type's own sub-fields)
+
+**No new tests** -- confirmed no existing test asserts on the exact
+system prompt text that changed; this is a prompt-wording attempt, not
+a code-behavior change, and (matching the `Holdings.` prefix fix's own
+precedent) only a real model run can confirm whether it actually
+changes output, not a unit test.
+
+**Confirmed live.** `mvn test`: **238/238** -- this round changed no
+code path a test would exercise differently (prompt text only), and
+the real run confirms nothing else moved either.
+
+**Recommended next step:** re-run with raw logging still enabled. Two
+outcomes worth distinguishing precisely, not just "did it pass": does
+the model now correctly leave `selectedVariant`/`variantValueMap` null
+for non-sum-type fields (confirming this fix), and does `asset_class`/`currency`
+still show the model's own garbage safely discarded by deterministic
+resolution regardless (confirming that protection is robust, not a
+one-run fluke)?
+
+## Fifth real run: the first fully successful run of this whole benchmark, and confirmation of two prior fixes
+
+### Confirmed, not inferred: the `selectedVariant`/`variantValueMap` fix worked
+
+Both raw responses this run are completely clean -- every non-sum-type
+field has `selectedVariant: null`, every sum-type field
+(`asset_class`, `currency`) correctly uses `variantValueMap` with a
+properly-formed dict, and there is not one instance of the literal
+string `"selectedVariant"` or `"variantValueMap"` echoed back as a
+value anywhere in either response. Five for five non-deterministic
+fields showed the confusion before the fix; zero for eleven show it
+after, across two consecutive runs. Confirmed via raw text this time,
+not inferred from validation output.
+
+### The first fully successful run of Step LLM-6's actual benchmark question
+
+The unfamiliar-column run returned `curl exit 0`, HTTP 200 -- the first
+clean pass this whole benchmark has produced. Worth being precise about
+what that success actually contains, not just that it happened:
+
+- **The genuine ambiguity question, answered correctly.** `market_price`
+  resolved to `sourceColumn: "Valuation Px"` -- the actual unfamiliar
+  column this fixture exists to test, correctly identified by the 3B
+  model on its own, with no deterministic help (`"Valuation Px"`
+  matches nothing by field name, synonym, or configured alias).
+- **A second fix confirmed working, live, in the same run.** The raw
+  model text still stale-mentions `"Custodian"` (already
+  deterministically resolved, never shown to the model) in its own
+  `unmappedSourceColumns` -- but the actual HTTP response returned to
+  the caller shows `"unmappedSourceColumns": []`, empty. The merge fix
+  from two rounds ago correctly filtered that stale mention out in a
+  real successful run, not just the unit test built to prove it could.
+- **Every deterministically-resolved field arrived correctly**, including
+  `currency`'s `selectedVariant: "USD"` -- filled in by
+  `SumTypeMappingResolver` from the real observed row data, not the
+  model (which correctly never saw that column at all).
+
+Multiple fixes from across this whole review-response chain --
+deterministic field-alias resolution, the merge's stale-mention
+filtering, the `selectedVariant`/`variantValueMap` prompt clarification
+-- working together, live, in one successful real run. The strongest
+single result this benchmark has produced.
+
+### A new, single-occurrence finding, deliberately not patched yet
+
+The baseline run is down to exactly one problem:
+`unmappedSourceColumns lists [security_description], which was never
+actually observed in the source table`. The raw text shows the model
+correctly mapped `"Description"` to `security_description` in
+`fieldMappings` -- then separately, redundantly, also listed
+`security_description` (the *canonical field name*, not a source
+column at all) in `unmappedSourceColumns`. A new, distinct confusion
+from anything seen in this step so far -- not a stale deterministic
+mention (`Description` was never deterministically resolved), not the
+`selectedVariant` echo, not a case-mismatch of a real column name.
+
+**Deliberately not patched this round.** Every prompt fix attempted so
+far in this step was built from genuine, repeated evidence -- the
+`Holdings.` prefix on two consecutive full runs, the `selectedVariant`
+echo on five of five fields in one response. This is one occurrence.
+Patching the prompt reactively for every single new thing observed
+risks exactly what was already flagged as a real risk two rounds ago:
+stacking narrow, reactive instructions instead of keeping the prompt
+fundamentally clear. Recorded here as a watch item -- if it recurs on a
+future run, that's the point to actually fix it, not this one.
+
+**Not run in this environment; no code changed this round.** This
+round is analysis of real output only -- no files changed, so the
+last confirmed/expected test count (238, itself still not confirmed by
+a real `mvn test` run) is unaffected either way.

@@ -23,6 +23,20 @@ import java.util.Map;
  * {@code asset_class.FixedIncome.maturity_date}), matching exactly what
  * {@link MappingProposal.FieldMapping#canonicalFieldPath()} is expected
  * to reference back.
+ *
+ * <p>As of the Local LLM phase's Step LLM-4 aftermath (see
+ * {@code docs/local-llm-enhancements.md}): {@link #render} explicitly
+ * instructs against prefixing a path with the model's own name, added
+ * after real Qwen 2.5 3B output reproduced that exact confusion
+ * identically across two separate runs ({@code Holdings.currency}
+ * instead of {@code currency}, for every field, both times). A
+ * plausible cause -- the "Canonical model: X" header sitting immediately
+ * above the field listing reading as an implicit namespace -- not a
+ * confirmed one; this instruction is a low-risk, easily-reverted
+ * mitigation attempt, not a diagnosis. Whether it actually helps needs
+ * a real re-run to know, ideally with raw response logging enabled to
+ * see the model's output directly rather than only its downstream
+ * validation failures.
  */
 @Component
 public class CanonicalModelPromptRenderer {
@@ -32,7 +46,10 @@ public class CanonicalModelPromptRenderer {
         sb.append("Canonical model: ").append(model.modelId())
                 .append(" (version ").append(model.version()).append(")\n");
         sb.append("Fields below are identified by path (dot-separated for a sum ")
-                .append("type's variant fields).\n\n");
+                .append("type's variant fields). Use the path EXACTLY as shown, e.g. \"")
+                .append("currency\" or \"asset_class.FixedIncome.maturity_date\" -- do NOT prefix a ")
+                .append("path with the canonical model's own name (\"").append(model.modelId())
+                .append("\" above is the name of this schema, not part of any field's path).\n\n");
         renderField(sb, "", model.root(), true, "", model.synonyms());
         return sb.toString();
     }

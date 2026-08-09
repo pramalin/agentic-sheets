@@ -62,6 +62,17 @@ services:
       # shouldn't run unattended just because the stack is up. Set to
       # true in .env once ready to actually exercise it.
       - AGENTIC_SHEETS_INBOX_ENABLED=${AGENTIC_SHEETS_INBOX_ENABLED:-false}
+      # Local LLM phase, Step LLM-6 (see docs/local-llm-enhancements.md),
+      # opt-in raw model response logging -- an external review correction
+      # made this default off, but a real gap in that same round meant
+      # setting it in .env had no effect at all: this variable was never
+      # actually forwarded into the container's environment, only added
+      # to application.yml's Spring placeholder. Confirmed missing by
+      # reading this file's own environment list, not assumed -- a real
+      # benchmark run with AGENTIC_SHEETS_LOG_RAW_MODEL_RESPONSE=true set
+      # in .env produced zero raw-response log lines, which is what
+      # surfaced this gap.
+      - AGENTIC_SHEETS_LOG_RAW_MODEL_RESPONSE=${AGENTIC_SHEETS_LOG_RAW_MODEL_RESPONSE:-false}
     volumes:
       # Mounted, not baked into the image -- configuration here is
       # expected to change often (see mapping-notes.md), and the

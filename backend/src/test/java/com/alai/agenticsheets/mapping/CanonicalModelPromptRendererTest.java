@@ -41,6 +41,24 @@ class CanonicalModelPromptRendererTest {
         assertThat(rendered).contains("synonyms: market value, mkt val, mv, current value, value");
     }
 
+    // External review finding (post Step LLM-6): reproduced twice,
+    // identically, against real Qwen 2.5 3B output -- the model prefixed
+    // every canonicalFieldPath with the model's own name ("Holdings.currency"
+    // instead of "currency"). A plausible, not confirmed, cause: this
+    // header text puts "Holdings" immediately above a field listing,
+    // which could read as an implicit namespace. See
+    // docs/local-llm-enhancements.md for the full account, including
+    // that this remains unconfirmed pending a raw-logged re-run.
+
+    @Test
+    void explicitlyInstructsAgainstPrefixingAPathWithTheModelName() throws Exception {
+        CanonicalModel model = parser.parse(resource("canonical-models/holdings.yaml"));
+
+        String rendered = renderer.render(model);
+
+        assertThat(rendered).contains("do NOT prefix a path with the canonical model's own name");
+    }
+
     @Test
     void marketRateBookValueHasNoSumTypeAtTheTopLevelSinceItsAProductType() throws Exception {
         CanonicalModel model = parser.parse(resource("canonical-models/market_rate_book_value.yaml"));

@@ -270,6 +270,10 @@ public class AgentMappingProposalService {
                 pick whichever actually applies, don't default to one:
                   - selectedVariant: every row in this file is the same fixed
                     variant (e.g. a whole file of only fixed-income positions).
+                    Set this to the ACTUAL VARIANT NAME (e.g. "FixedIncome"),
+                    never to the literal text "selectedVariant" -- that word is
+                    the name of this JSON field itself, not a value to put
+                    inside it.
                   - variantValueMap: the variant varies per row based on that row's
                     own data -- map each distinct source value you observe to the
                     canonical variant name it corresponds to (e.g. "Equity" ->
@@ -277,6 +281,16 @@ public class AgentMappingProposalService {
                     case for a column whose values differ row to row.
                 Set exactly one of the two, never both, and never leave a sum type
                 field's variant unresolved just because it's data-dependent.
+
+                selectedVariant and variantValueMap apply ONLY to a canonical
+                field that IS a sum type (the model description below says so
+                explicitly, right where that field is listed). For every other
+                field -- the large majority -- leave BOTH selectedVariant and
+                variantValueMap null. Never set either one on a field that isn't
+                a sum type, and never set either one on a sum type's own nested
+                sub-fields (e.g. asset_class.FixedIncome.maturity_date) -- only
+                the sum type field's own path (e.g. asset_class) ever takes a
+                variant.
 
                 A source column with no reasonable canonical home is not an error --
                 list it as unmapped rather than forcing a mapping.
@@ -450,7 +464,35 @@ public class AgentMappingProposalService {
             }
             mergedMappings.add(fm);
         }
-        return new MappingProposal(mergedMappings, proposal.unmappedSourceColumns(), proposal.summary());
+
+        // The same filtering, applied symmetrically to the model's OWN
+        // unmappedSourceColumns -- a real gap this fix closes, found
+        // against actual Qwen 2.5 3B output, not hypothesized. The
+        // system prompt's "already resolved" note (see
+        // renderAlreadyResolvedNote) names each deterministically-resolved
+        // column explicitly, by design, so the model understands why
+        // fewer columns appear in the table than the canonical model
+        // describes. In practice the model sometimes echoes one of
+        // those named-but-not-shown columns back into its own
+        // unmappedSourceColumns anyway -- confirmed live: two separate
+        // real runs each produced exactly one such column ("Custodian"
+        // in one, "Description" in the other), both correctly caught by
+        // validateColumnCoverage's new "mapped AND unmapped --
+        // contradictory" check as a 422, but for the wrong underlying
+        // reason -- the column isn't genuinely contradictory, the
+        // model's own mention of it is simply stale/confused, since
+        // that column was never actually in the table it was asked to
+        // work from. Filtered out here, the same "deterministic
+        // knowledge is authoritative, the model's confused mention is
+        // dropped" policy already applied to duplicate FieldMappings
+        // above -- not flagged as a hard failure, since a model
+        // repeating text from its own instructions back isn't a
+        // meaningful signal about the actual mapping.
+        List<String> mergedUnmapped = proposal.unmappedSourceColumns().stream()
+                .filter(col -> !aliasResolution.resolvedSourceColumns().contains(col))
+                .toList();
+
+        return new MappingProposal(mergedMappings, mergedUnmapped, proposal.summary());
     }
 
     /**
