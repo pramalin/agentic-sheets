@@ -2334,3 +2334,72 @@ real theory of what would help. Worth treating the next run as a real
 test of whether this step's fixes have actually converged, or whether
 omissions turn out to be the next recurring pattern the way each prior
 category was.
+
+## Tenth real run: the first fully clean pass, the interaction fix confirmed, and a new twist on the sub-field guidance
+
+**The first fully clean baseline run this whole benchmark has
+produced.** `curl exit 0`, `unmappedSourceColumns: []`, every field
+correctly mapped including `market_price` <- `Price` -- the exact
+mapping that silently vanished the round before. Worth being precise
+about what this run actually confirms, not just that it passed:
+
+- **The merge fix, still working live.** The raw model text lists
+  `As Of Date` and `Custodian` -- both deterministically resolved,
+  never shown to the model -- in its own `unmappedSourceColumns`
+  anyway. The final response shows an empty list. Filtered correctly,
+  same as every confirmed run since the fix landed.
+- **Deterministic protection against garbage, still working live.** The
+  model's raw `asset_class` entry has a genuinely strange
+  `"selectedVariant": "asset_class.FixedIncome"` -- discarded silently,
+  since `Asset Class` resolves deterministically and the model's own
+  confused response for that field never reaches validation at all.
+- **Last round's `Price` omission did not recur.** One data point, not
+  proof it's gone for good, but a real, positive sign after a single
+  bad occurrence.
+
+**The interaction fix from the ninth round: confirmed clean.**
+`unmappedSourceColumns` in the unfamiliar-column run's raw response is
+`["Account", "CUSIP", "Description", "Valuation Px"]` -- every entry a
+real column header, no canonical sub-field name leaked in. The
+connecting instruction added last round held.
+
+**A meaningfully better outcome for the omission finding, worth
+distinguishing precisely from what happened before.** `Valuation Px`
+appears explicitly in `unmappedSourceColumns` this run -- an honest
+"I don't know," not the silent, undeclared omission from the ninth
+round that `validateColumnCoverage` had to catch as "silently
+unaccounted for." Both are the model failing to resolve the fixture's
+one genuinely unfamiliar column, but one is the safe, legitimate
+outcome this benchmark's own summary text explicitly calls out as
+acceptable, and the other is a real gap. Conflating them would
+misrepresent what actually improved.
+
+**A new twist on the sub-field guidance, single occurrence, not yet
+patched.** The same run's `fieldMappings` includes `maturity_date`,
+`coupon_rate`, and `credit_rating`, each confidently mapped to a
+source column that does not exist in this fixture at all --
+`"Maturity Date"`, `"Coupon Rate"`, `"Credit Rating"`. The eighth
+round's instruction told the model to only propose a sub-field mapping
+when a column is *specifically* about that exact data; this run
+suggests that specificity requirement may have pushed the model toward
+inventing a plausible-sounding column name instead of leaving the
+field out, rather than the intended effect. Correctly caught by
+existing validation (`sourceColumn ... was not in the observed table`)
+either way, so nothing is silently wrong -- but a real, if amusing,
+example of a fix's wording having a side effect its author didn't
+anticipate, the same shape as the ninth round's own interaction
+finding. Recorded as a watch item, not patched: one occurrence,
+consistent with this step's discipline throughout.
+
+**No code changed this round** -- purely confirmation and a new
+observation from real output. Last confirmed test count (241) still
+holds.
+
+**Where this leaves things.** Confirmed, cleanly, across this run: the
+merge fix, deterministic protection against model garbage, and the
+sub-field/unmapped-columns interaction fix. Genuinely positive, one
+data point each: the `Price` omission and the safe (not silent)
+handling of `Valuation Px`. New and unaddressed: the model inventing
+a plausible but nonexistent source column when declining to leave a
+sub-field unmapped. Worth another run to see whether that new pattern
+repeats before deciding whether it needs its own fix.
