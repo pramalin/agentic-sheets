@@ -48,8 +48,23 @@ public class ProposalValidationService {
         // something the agent should guess at. Without this, every row
         // would fail validation on a required field the proposal was
         // explicitly told to omit.
+        //
+        // transformations: List.of(), not null -- the exact same bug,
+        // same round, as FieldAliasResolver's own deterministic entries
+        // (see that file's own comment for the full account). This one
+        // is easy to miss precisely because it rarely reaches a real
+        // browser: this synthesized entry gets folded into
+        // `mappingsByPath` for *validation* purposes here, but the
+        // actual value shown to a reviewer comes from whatever
+        // AgentMappingProposalService merged into the proposal earlier
+        // -- so this specific null wouldn't itself have caused the
+        // crash that was actually observed. Fixed anyway, for the same
+        // reason: consistency with the same non-nullable frontend
+        // contract, and because a future caller of this method that
+        // *does* surface this exact object to the UI shouldn't inherit
+        // a null that's already been named as a known defect once.
         mappingsByPath.put("client_id",
-                new MappingProposal.FieldMapping("client_id", null, client.clientId(), null, null, null, 1.0,
+                new MappingProposal.FieldMapping("client_id", null, client.clientId(), null, null, List.of(), 1.0,
                         "resolved externally, not from the agent's proposal"));
 
         List<CanonicalValue> validRows = new ArrayList<>();

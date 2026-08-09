@@ -204,4 +204,31 @@ class FieldAliasResolverTest {
         assertThat(result.resolvedMappings()).isEmpty();
         assertThat(result.resolvedSourceColumns()).isEmpty();
     }
+
+    @Test
+    void deterministicallyResolvedFieldsNeverHaveNullTransformations() throws Exception {
+        // A real bug, found via a real browser crash, not a unit test
+        // in the first place: this resolver's own constructor call for
+        // a deterministic FieldMapping passed null for transformations
+        // instead of an empty list. FieldMapping.transformations() is
+        // typed non-nullable on the frontend
+        // (frontend/src/api/types.ts: transformations: TransformationStep[],
+        // never `| null`), and FieldMappingTable.tsx's SourceCell
+        // renders it unconditionally with no null-check -- a null here
+        // crashed the entire review screen the instant a human reviewer
+        // opened one, with no error boundary to catch it. Never caught
+        // by any API-level test in this whole project (none of them
+        // render anything), only by review-approval.spec.ts, the one
+        // E2E test that actually renders this component. This unit
+        // test is the fast, direct regression guard now that the real
+        // cause is known -- it shouldn't take a browser crash to catch
+        // this again.
+        FieldAliasResolver.Result result =
+                resolver.resolve(holdings(), noConventions(), Set.of("Currency"));
+
+        assertThat(result.resolvedMappings()).hasSize(1);
+        assertThat(result.resolvedMappings().get(0).transformations())
+                .isNotNull()
+                .isEmpty();
+    }
 }

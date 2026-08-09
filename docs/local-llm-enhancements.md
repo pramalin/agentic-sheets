@@ -2041,3 +2041,83 @@ actually gone.
 code touched); the e2e TypeScript change verified via `tsc --noEmit`
 only, not a live Playwright run -- this environment has no Docker, so
 the actual browser journey couldn't be reproduced or re-verified here.
+
+## Correction: the timeout fix was wrong, and the real root cause
+
+The timeout fix above did not work. Confirmed locally, not just in CI:
+`run-browser-tests.sh` re-run with the 20s timeout in place still timed
+out -- waiting the *entire* 20 seconds and still finding nothing. That
+result alone should have been the tell: a genuine slow-load flake
+resolves well within 20s against a local stack; waiting the full
+duration and still failing means something is deterministically broken,
+not slow. The timeout theory is retracted, plainly, rather than left
+standing as if it were the fix.
+
+**The real cause, found by reproducing directly in a browser rather
+than continuing to chase Playwright's own artifacts** (which turned out
+to be a dead end in this environment -- Playwright's `outputDir`
+defaults to `e2e/test-results/`, shared across all three E2E scripts,
+and gets cleared at the start of every new run; running
+`run-inbox-tests.sh` after `run-browser-tests.sh` silently wiped the
+failure's own artifacts before they could be inspected). Opening
+`http://localhost:5173/proposals/1` directly showed a blank page with:
+
+```
+Uncaught TypeError: Cannot read properties of null (reading 'map')
+    at SourceCell (FieldMappingTable.tsx:53:32)
+```
+
+`FieldMappingTable.tsx`'s `SourceCell` renders `mapping.transformations.map(...)`
+with no null-check -- and `frontend/src/api/types.ts`'s `FieldMapping`
+interface types `transformations` as `TransformationStep[]`, never
+`| null`. A real, explicit, pre-existing API contract this round's own
+backend code silently violated: both `FieldAliasResolver`'s
+deterministic `FieldMapping` construction and
+`ProposalValidationService`'s synthesized `client_id` entry passed
+`null` for `transformations` instead of `List.of()`. `FieldAliasResolver`'s
+instance is the one that actually reaches a reviewer's screen (every
+deterministically-resolved field -- `Custodian`, `Currency`,
+`Asset Class`, `Quantity`, `Unit Cost`, `Market Value`, `As Of Date` --
+carries this same null); `ProposalValidationService`'s is used only
+for internal row-validation lookups and never gets serialized back to
+the UI, so it wasn't the actual cause of the crash, but was fixed
+anyway for the same non-nullable contract, on the chance a future
+caller does surface it.
+
+**Why nothing else in this whole round of work caught this.**
+`pipeline-api.spec.ts` and `mapping-memory.spec.ts` -- the only tests
+that ran cleanly across five real benchmark rounds and every prior
+`mvn test` confirmation -- inspect JSON response *content* only; they
+never render anything. `review-approval.spec.ts` is the one test in
+this entire project that actually renders `FieldMappingTable`, and it
+found this on the very first real run after `FieldAliasResolver`
+shipped. Consistent with (and a direct, concrete justification for) the
+project's own E2E testing rationale documented in `e2e/README.md`:
+proof a pipeline *works* is not the same claim as proof the *screen a
+human actually looks at* tells the truth about it.
+
+**Fixed at both sources**, not patched at the rendering layer -- the
+frontend's non-nullable contract is correct and shouldn't be loosened
+to tolerate a backend that doesn't honor it. `FieldAliasResolver` and
+`ProposalValidationService` both now construct `transformations` as
+`List.of()`.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/FieldAliasResolver.java` (modified -- deterministic `FieldMapping` entries now use `List.of()` for `transformations`, not `null`; this is the fix that actually mattered for the observed crash)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/ProposalValidationService.java` (modified -- same fix for consistency, though this instance never reached the UI)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/FieldAliasResolverTest.java` (modified -- 1 new regression test)
+
+**Tests added** (1 new):
+- `deterministicallyResolvedFieldsNeverHaveNullTransformations` -- a
+  direct, fast regression guard for the actual bug, confirming
+  `transformations()` is non-null and empty for a deterministically-resolved
+  field. It shouldn't take a live browser crash to catch this again.
+
+**Confirmed live, both ways.** `mvn test`: **239/239**. And the real
+confirmation this specific bug actually needed: `run-browser-tests.sh`
+re-run end to end, both browser journeys passing, the previously-failing
+one now completing in 4.5s -- not just "didn't time out," genuinely
+fast, since there's no longer a crashed React tree stuck rendering
+nothing. Real, direct proof the fix addressed the actual cause, not a
+symptom: the same test that caught this bug in the first place is the
+one that now confirms it's gone.

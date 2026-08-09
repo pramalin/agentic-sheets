@@ -97,7 +97,25 @@ public class FieldAliasResolver {
             if (matchedPath == null) {
                 continue;
             }
-            resolved.add(new MappingProposal.FieldMapping(matchedPath, column, null, null, null, null, 1.0,
+            // transformations: List.of(), not null -- confirmed via a real
+            // browser crash this exact bug caused (see
+            // docs/local-llm-enhancements.md's CI investigation section
+            // for the full trace). FieldMapping.transformations() is
+            // typed non-nullable on the frontend
+            // (frontend/src/api/types.ts's FieldMapping interface:
+            // `transformations: TransformationStep[]`, never `| null`),
+            // and FieldMappingTable.tsx's SourceCell renders it
+            // unconditionally with `mapping.transformations.map(...)`,
+            // no null-check. A null here doesn't fail any API-level
+            // test (pipeline-api.spec.ts and mapping-memory.spec.ts only
+            // inspect JSON content, never render anything) -- it
+            // crashes the whole review screen the instant a human
+            // reviewer actually opens it, with no error boundary to
+            // catch it. Found via review-approval.spec.ts, the one test
+            // in this whole project that actually renders this
+            // component, after two rounds of chasing a wrong "just a
+            // slow load" theory first.
+            resolved.add(new MappingProposal.FieldMapping(matchedPath, column, null, null, null, List.of(), 1.0,
                     "deterministically resolved from the canonical field's own name or a configured "
                             + "client alias, not proposed by the model"));
             consumedColumns.add(column);
