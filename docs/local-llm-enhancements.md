@@ -2121,3 +2121,92 @@ fast, since there's no longer a crashed React tree stuck rendering
 nothing. Real, direct proof the fix addressed the actual cause, not a
 symptom: the same test that caught this bug in the first place is the
 one that now confirms it's gone.
+
+## Seventh real run: one confirmed fix, one confirmed-still-broken, and a real infrastructure failure
+
+Two more real runs, checking specifically on the two prompt fixes from
+two rounds back.
+
+**Confirmed working: `unmappedSourceColumns` naming.** Both runs'
+`unmappedSourceColumns` contained only real column headers this time --
+no canonical field name leaked in, across both runs. This fix held.
+
+**Confirmed NOT fixed, and worse: the sub-field hallucination.** The
+baseline run's raw response mapped `CUSIP` to `maturity_date`, then
+separately mapped `Price` to *both* `maturity_date` and `unit_cost` --
+three separate violations of "one column, one field" in a single
+response, all centered on `FixedIncome`'s own sub-fields. This is now
+the third round this exact family of confusion has shown up (Step
+LLM-6's original schema-echo finding, an earlier round's `Price` ->
+`market_price` + three `FixedIncome` fields, and now this) -- crossing
+this step's own bar for "repeated evidence, not reactive" that every
+earlier fix was built from. The wording tried two rounds ago
+("each source column supplies at most one canonical field") was
+evidently too generic to actually land.
+
+**A much more targeted fix, built from what's actually recurring.**
+Rather than repeat the same general wording, the system prompt now
+calls out variant-specific sub-fields specifically -- any dotted path
+below a sum type field itself (`asset_class.FixedIncome.maturity_date`
+and siblings) -- and states plainly that an incomplete `FixedIncome`
+record (missing `maturity_date`/`coupon_rate`/`credit_rating` because
+the source file simply doesn't carry that detail) is the normal,
+expected outcome, not a gap to fill by repurposing a nearby column.
+Whether this specific, narrower wording succeeds where the general
+version didn't is -- like every prompt attempt in this step -- only
+confirmable by a real re-run, not assumed here.
+
+**Also newly observed, not yet patched.** The same baseline response
+used `canonicalFieldPath: "description"` (invalid -- the real field is
+`security_description`) for one entry, and a bare `maturity_date`
+(missing the required `asset_class.FixedIncome.` prefix) for another.
+Both single-occurrence, both left as watch items rather than patched
+reactively, matching this step's own established discipline.
+
+**A real infrastructure failure, not a model-confusion one.** The
+unfamiliar-column run threw an actual `OpenAIIoException` after a full
+5-minute timeout -- `Raw model response text for propose(): null`, no
+model output at all, a genuine request failure rather than confused
+output. This is the second real, live occurrence of exactly the
+exception shape an earlier round's research (and reverted fix attempt)
+predicted -- the `getSimpleName()` logged here matches that prediction
+exactly. Worth flagging as likely resource pressure in the local
+serving stack itself (Docker Model Runner under CPU inference), not
+something addressable in application code.
+
+**A safe, diagnostic-only improvement built from this new evidence --
+deliberately not the full behavior-changing fix.** The earlier attempt
+to distinguish infrastructure failures from conversion failures broke
+a real build on an unverified package guess and had to be reverted.
+This round adds a version with zero compilation risk: checking
+`e.getClass().getSimpleName()` by substring (`"IoException"`,
+`"IOException"`, `"TimeoutException"`, `"ConnectException"`) needs no
+import at all, so a wrong guess about the exact class can only ever
+produce a less-useful log message, never break the build. Control flow
+is deliberately unchanged -- still a clean, reported validation
+failure either way, not a re-thrown exception -- so a human reading the
+logs during a real incident can now tell "the model was probably
+unavailable" from "the model responded but said something unusable" at
+a glance, without that diagnostic improvement risking anything else.
+The actual behavior-changing fix (propagating an infrastructure
+failure as something other than a 422) remains real, open follow-up
+work, now with a confirmed real exception shape to build against
+rather than a guess -- deliberately kept separate from this round's
+diagnostic-only change, so a mistake in one wouldn't obscure whether
+the other was right.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- targeted sub-field-hallucination instruction; diagnostic-only infrastructure-failure log distinction)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/AgentMappingProposalServiceTest.java` (modified -- 1 new test)
+
+**Tests added** (1 new):
+- `infrastructureShapedExceptionStillFailsCleanNotDifferently` -- a
+  small test-only exception class named to match the real one's simple
+  name, proving the new diagnostic branch didn't accidentally change
+  control flow: still a clean `MappingProposalValidationException`,
+  not a re-thrown exception or a different outcome.
+
+**Confirmed live.** `mvn test`: **240/240**. The prompt-wording change
+still needs a real benchmark re-run to know whether the more targeted
+instruction actually lands where the general one didn't -- that's a
+model-behavior question no test suite can answer, only a live run.

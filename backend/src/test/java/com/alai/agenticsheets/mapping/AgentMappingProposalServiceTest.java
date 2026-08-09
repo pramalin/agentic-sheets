@@ -359,4 +359,51 @@ class AgentMappingProposalServiceTest {
         org.junit.jupiter.api.Assertions.assertThrows(MappingProposalValidationException.class,
                 () -> h.service().propose(dummyModel(), dummyClient(), "f.xlsx", "Holdings", table));
     }
+
+    /** Simulates the shape (specifically, the simple class name) of the
+      * real exception a live run against the actual model stack threw
+      * -- see docs/local-llm-enhancements.md for the full account --
+      * without depending on openai-java actually being on this
+      * project's test classpath under that exact name. Named to match
+      * exactly, since the code under test distinguishes purely by
+      * {@code getClass().getSimpleName()}, not by catching a specific
+      * type. */
+    private static class OpenAIIoException extends RuntimeException {
+        OpenAIIoException(String message) {
+            super(message);
+        }
+    }
+
+    @Test
+    void infrastructureShapedExceptionStillFailsCleanNotDifferently() {
+        // The diagnostic-only improvement this round added: the log
+        // message changes when getSimpleName() looks infrastructure-shaped,
+        // but the actual control flow deliberately does not -- still a
+        // clean MappingProposalValidationException, not a re-thrown
+        // exception or a different HTTP outcome. That behavior-changing
+        // fix remains real, open follow-up work (see the surrounding
+        // code's own comment), not attempted in the same round as this
+        // diagnostic change. This test is the proof the diagnostic
+        // change didn't accidentally alter behavior along the way.
+        Harness h = harness();
+        JsonNode table = tableWithColumns("Valuation Px");
+        when(h.fieldAliasResolver().resolve(any(), any(), any()))
+                .thenReturn(new FieldAliasResolver.Result(List.of(), Set.of()));
+
+        org.springframework.ai.chat.client.ChatClient.ChatClientRequestSpec requestSpec =
+                mock(org.springframework.ai.chat.client.ChatClient.ChatClientRequestSpec.class);
+        when(h.chatClient().prompt()).thenReturn(requestSpec);
+        when(requestSpec.system(org.mockito.ArgumentMatchers.anyString())).thenReturn(requestSpec);
+        when(requestSpec.user(org.mockito.ArgumentMatchers.anyString())).thenReturn(requestSpec);
+        when(requestSpec.call()).thenThrow(new OpenAIIoException("simulated: Request failed"));
+
+        when(h.sumTypeResolver().resolve(any(), any(), any(), any(), any()))
+                .thenAnswer(inv -> new SumTypeMappingResolver.Result(inv.getArgument(0), List.of()));
+        when(h.structuralValidator().validate(any(), any(), any()))
+                .thenReturn(List.of("the proposal contains no field mappings at all"));
+        when(h.structuralValidator().validateColumnCoverage(any(), any())).thenReturn(List.of());
+
+        org.junit.jupiter.api.Assertions.assertThrows(MappingProposalValidationException.class,
+                () -> h.service().propose(dummyModel(), dummyClient(), "f.xlsx", "Holdings", table));
+    }
 }

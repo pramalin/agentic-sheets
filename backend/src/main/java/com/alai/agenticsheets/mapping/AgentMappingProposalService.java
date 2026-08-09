@@ -327,6 +327,19 @@ public class AgentMappingProposalService {
                 a single column of numbers is not evidence for several different,
                 unrelated canonical fields at once.
 
+                Be especially conservative about a sum type's own variant-specific
+                sub-fields -- any path with a dot in it below the sum type field itself
+                (e.g. asset_class.FixedIncome.maturity_date, .coupon_rate,
+                .credit_rating). Only propose one of these if a source column exists
+                whose header or sampled values are SPECIFICALLY about that exact piece
+                of information -- a column literally about a maturity date, not a
+                generic price, identifier, or quantity column repurposed because a
+                variant sub-field happened to be listed in the schema below. If no
+                column is specifically and obviously about a given sub-field, leave it
+                out of fieldMappings entirely; an incomplete FixedIncome record is
+                normal and expected when the source file's own columns don't carry that
+                level of detail, not a gap you need to fill by reusing a nearby column.
+
                 Some values come from a banner row or other free text above the real
                 header, not a per-row column -- use sourceConstant for those, not
                 sourceColumn, and give them a lower confidence than a direct
@@ -434,18 +447,57 @@ public class AgentMappingProposalService {
             // produce were incomplete once, so a second undocumented
             // failure mode isn't a hypothetical worth ignoring. Every
             // RuntimeException here -- infrastructure failure or
-            // conversion failure alike, since the two are not currently
-            // distinguished (see above) -- is treated identically to a
-            // null entity: fall through to the same clean, reported
-            // validation failure, not an unhandled exception propagating
-            // to a raw 500. Imprecise for a genuine infrastructure
-            // failure specifically (the open follow-up above), but
-            // strictly better than the alternative of letting any
-            // RuntimeException here crash unhandled.
-            log.warn("Model call/conversion for propose() threw {} rather than returning a parseable "
-                    + "(or empty) entity -- treating as an empty proposal so it fails clean structural "
-                    + "validation rather than propagating an unhandled exception. Message: {}",
-                    e.getClass().getSimpleName(), e.getMessage());
+            // conversion failure alike -- still falls through to the
+            // same clean, reported validation failure (a 422), not an
+            // unhandled exception propagating to a raw 500. That part
+            // is deliberately unchanged from the earlier, reverted
+            // attempt to distinguish these -- imprecise for a genuine
+            // infrastructure failure, but a control-flow change here
+            // would need real compilation feedback this environment
+            // still can't give, and this file has already broken a
+            // real build once this round on an unverified guess.
+            //
+            // What DID change, on real evidence rather than another
+            // guess: a live run against the actual Docker Model Runner
+            // stack threw exactly this shape for a real 5-minute
+            // timeout -- getSimpleName() logged as "OpenAIIoException",
+            // matching (a second time now, after the GitHub issue found
+            // earlier) the openai-java exception this project's Spring
+            // AI 2.0 dependency actually delegates to. Checking
+            // getSimpleName() by substring needs no import at all, so
+            // it carries none of the compilation risk an actual
+            // com.openai.errors.OpenAIException catch clause would --
+            // it can only ever affect which log message a human reads,
+            // never whether this compiles. Purely a diagnostic
+            // improvement: a human staring at this log during a real
+            // incident can now tell "the model was probably unavailable
+            // or timed out" from "the model responded but said
+            // something unusable" at a glance, without opening a
+            // debugger. The actual behavior-changing fix (propagating
+            // an infrastructure failure as something other than a 422)
+            // remains real, open follow-up work, now with a confirmed
+            // real exception shape to build it against rather than a
+            // guess -- deliberately not attempted in the same round as
+            // the diagnostic-only change, so a mistake in one doesn't
+            // obscure whether the other was right.
+            boolean looksLikeInfrastructureFailure = e.getClass().getSimpleName().contains("IoException")
+                    || e.getClass().getSimpleName().contains("IOException")
+                    || e.getClass().getSimpleName().contains("TimeoutException")
+                    || e.getClass().getSimpleName().contains("ConnectException");
+            if (looksLikeInfrastructureFailure) {
+                log.warn("Model call for propose() threw {} -- by its class name, this looks like a "
+                        + "provider/infrastructure failure (network, timeout, connection) rather than the "
+                        + "model responding with unusable output. Still treated as an empty proposal below "
+                        + "(a real behavior-changing fix for this distinction is open follow-up work, not "
+                        + "attempted here), but worth ruling out the model/network being unavailable before "
+                        + "assuming the proposal's own content was actually at fault. Message: {}",
+                        e.getClass().getSimpleName(), e.getMessage());
+            } else {
+                log.warn("Model call/conversion for propose() threw {} rather than returning a parseable "
+                        + "(or empty) entity -- treating as an empty proposal so it fails clean structural "
+                        + "validation rather than propagating an unhandled exception. Message: {}",
+                        e.getClass().getSimpleName(), e.getMessage());
+            }
             responseEntity = new ResponseEntity<>(null, null);
         }
 
