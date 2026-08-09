@@ -64,8 +64,11 @@ sees them, independent of whether memory has seen this layout before.
   mapping-memory provenance to include client-config version, and considers
   whether known field aliases can let deterministic code resolve some column
   mappings before the LLM is invoked at all. Confirmed live: 173/173 (up
-  from 167 by exactly the 6 new tests), no other test count moved. See
-  build notes below -- mapping-memory provenance turned out to already be
+  from 167 by exactly the 6 new tests), no other test count moved. The
+  field-alias piece was deferred at the time this step was originally
+  closed out -- see "Field-alias resolution: the deferred architectural
+  step, finally built" below for where it actually landed, following an
+  external review. See build notes below -- mapping-memory provenance turned out to already be
   covered by Step LLM-3's `ClientConfigFingerprint` extension, and
   field-alias-driven column resolution is deliberately deferred, not
   built this round.
@@ -1296,3 +1299,129 @@ fix, and stands as accurately stated in this doc's own Step LLM-6
 section already. Deterministic field-alias/header resolution before the
 LLM call remains the next real architectural step, not something either
 review round attempted to squeeze in alongside these seven fixes.
+
+## Field-alias resolution: the deferred architectural step, finally built
+
+The one item both review rounds explicitly left open. Two independent
+sources of deterministic column-naming knowledge already existed in
+this codebase, both previously used only as *hints* rendered into the
+LLM's own prompt, never consulted deterministically: a canonical
+field's own name, `CanonicalModel.synonyms` (client-agnostic, curated
+per model -- Holdings' real `synonyms:` block, read directly before
+building anything, already covers every primitive field: `cusip`/`isin`/`sedol`
+for `security_id`, `price`/`mkt price` for `market_price`, and so on),
+and `ClientModelConventions.fieldAliases` (client-specific, Step LLM-3).
+
+**What changed.** A new `FieldAliasResolver` merges all three sources
+(a field's own name, its canonical synonyms, its client's configured
+aliases) into one flat, normalized lookup, with ambiguity detection
+that fails closed exactly like every other deterministic resolver in
+this phase. `AgentMappingProposalService.propose()` now runs this
+*before* building the prompt: resolved columns are removed from the
+table the model actually sees, an explicit note lists what's already
+handled, and the deterministic results are merged back in after the
+model responds. This is what makes the "known headers -> deterministic,
+known vocabulary -> deterministic, one unresolved column -> LLM"
+architecture literally true, rather than a model that still
+reconstructs the entire column-to-field mapping with only sum-type
+mechanics backstopped -- the second review round's own Finding 6.
+
+**A real, load-bearing gap found and closed while building this, not
+after.** `CanonicalModel.synonyms` keys were never validated against
+real field paths at parse time -- harmless while synonyms were purely a
+prompt hint (a typo just meant a slightly worse hint), a genuine
+correctness risk now that they're load-bearing for deterministic
+resolution a resolver actually trusts. Fixed at `CanonicalModelRegistry`
+load time, the same place client conventions are already validated
+against the real parsed model. Verified both real production canonical
+model files (`holdings.yaml`, `market_rate_book_value.yaml`) pass this
+new check cleanly by reading their actual `synonyms:` blocks against
+their actual field definitions before writing the validation, not
+assuming.
+
+**A small, deliberate refactor along the way.** The "what are this
+model's valid field paths" question now has a third consumer (synonym
+validation, alongside `ClientConventionsValidator` and, in the
+`mapping` package, `CanonicalPaths`). Rather than write a third copy of
+the same ADT-walking logic, `ClientConventionsValidator`'s original
+private `PathIndex` was extracted into a new, package-visible
+`CanonicalFieldPaths` class in the `canonical` package, and
+`ClientConventionsValidator` refactored to use it -- no behavior
+change, confirmed by keeping every existing test for that class
+unmodified. Still a deliberate second implementation of
+`mapping.CanonicalPaths`' walk, not a shared dependency on it -- see
+`CanonicalFieldPaths`'s own javadoc for why that boundary (`canonical`
+never depends on `mapping`) is worth preserving.
+
+**A real risk, named plainly rather than glossed over.** This
+resolution is now genuinely high-stakes in a way the earlier,
+backstop-style resolvers weren't: a column removed from the prompt is a
+column the model never gets a chance to reconsider. If a client's
+configured alias or a canonical model's synonym is simply wrong, this
+resolver will confidently produce an incorrect mapping with no
+opportunity for the LLM to catch it -- whereas the model, seeing the
+raw column, might have gotten it right. Client-configured aliases are
+already validated for structural correctness (Step LLM-3) but not for
+whether the human who configured them was actually correct, which
+isn't something software can verify. Ambiguity detection (two different
+fields' candidates colliding) fails closed, deferring to the LLM rather
+than guessing -- but a *confident, wrong* alias or synonym is a
+different risk category ambiguity detection can't catch, and is worth
+someone reviewing the two real `synonyms:` blocks with fresh eyes
+before trusting this in anything beyond a benchmark.
+
+**What could not be verified without a live model call, stated plainly.**
+Whether Qwen 3B actually respects the "these columns are already
+resolved, don't expect to see them" instruction -- rather than getting
+confused by a canonical model description that mentions more fields
+than the (now-shorter) source table shows -- is exactly the kind of
+thing this whole phase has insisted on checking against real model
+output rather than assuming, and genuinely cannot be checked without
+one. `filterResolvedColumns` and `renderAlreadyResolvedNote` (the two
+pieces of pure logic feeding into the prompt) are directly unit-tested,
+made package-private specifically so they could be; the actual
+model-interaction path itself -- does the LLM behave sensibly when
+shown a truncated table -- has no test coverage in this codebase and
+needs your next real benchmark run to know for certain, the same
+honest limitation already stated for the try/catch fix earlier in this
+phase.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/canonical/CanonicalFieldPaths.java` (new -- extracted shared field-path index)
+- `backend/src/main/java/com/alai/agenticsheets/canonical/ClientConventionsValidator.java` (modified -- uses the extracted class, no behavior change)
+- `backend/src/main/java/com/alai/agenticsheets/canonical/CanonicalModelRegistry.java` (modified -- validates `synonyms` keys at load time)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/FieldAliasResolver.java` (new -- the deterministic column-matching resolver)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- pre-resolution, table filtering, prompt note, merge; two helpers made package-private for direct testability)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/FieldAliasResolverTest.java` (new -- 9 tests)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/AgentMappingProposalServiceTest.java` (new -- the first test file for this class, 8 tests covering the two testable helpers)
+- `backend/src/test/java/com/alai/agenticsheets/canonical/CanonicalModelRegistryTest.java` (modified -- 2 new synonym-validation tests)
+
+**Tests added** (19 new):
+- `FieldAliasResolverTest`: resolves via a field's own name, a canonical
+  synonym, and a configured client alias, independently; resolves a
+  sum-type field's column without touching variant mechanics
+  (`selectedVariant`/`variantValueMap` stay null); `client_id` is never
+  a candidate even with a configured alias; an unmatched column is left
+  alone; multiple resolvable columns all resolve independently; two
+  different fields' candidates colliding after normalization resolves
+  neither; variant-qualified (dotted) sub-field paths are never
+  candidates at all.
+- `AgentMappingProposalServiceTest`: `filterResolvedColumns` removes
+  only the specified columns, handles multiple columns, preserves every
+  other top-level key and every other field within retained columns
+  unchanged, is a no-op when nothing is resolved, and correctly
+  produces an empty array when every column is resolved;
+  `renderAlreadyResolvedNote` is empty when nothing was resolved and
+  correctly lists each resolved field with its source column otherwise.
+- `CanonicalModelRegistryTest`: a synonym referencing an unknown field
+  fails that model alone, not the whole registry (mirroring the
+  existing feed/convention validation tests exactly); valid synonyms
+  load successfully and are retrievable.
+
+**Confirmed live.** `mvn test` run against the real repo after
+overlaying these files: **226/226**, up from round 2's 207 by exactly
+the 19 new tests, no other test count moved, no regressions -- and the
+brace-count false alarm caught mid-round (confirmed a pre-existing
+artifact, not a real syntax error, by diffing against the actual
+already-pushed file) held up: nothing broke in
+`CanonicalModelRegistryTest` either.

@@ -135,6 +135,75 @@ class CanonicalModelRegistryTest {
                 .isInstanceOf(java.util.NoSuchElementException.class);
     }
 
+    // --- Local LLM phase, Step LLM-4: synonym validation ---
+    // See docs/local-llm-enhancements.md. synonyms keys were never
+    // validated against real field paths at parse time -- harmless
+    // while purely an LLM prompt hint, a real correctness risk now that
+    // FieldAliasResolver makes them load-bearing for deterministic
+    // resolution.
+
+    @Test
+    void synonymsReferencingAnUnknownFieldFailsThatModelAloneNotEverything(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        Files.writeString(modelsDir.resolve("good.yaml"), GOOD_MODEL);
+        Files.writeString(modelsDir.resolve("broken.yaml"), """
+                model: BrokenModel
+                version: 1
+                target:
+                  service: x
+                  transport: rest
+                  endpoint: https://example.com
+                  auth: { type: api-key, secretRef: X }
+                types:
+                  Thing:
+                    kind: record
+                    fields:
+                      name: String
+                root: Thing
+                synonyms:
+                  nonexistent_field: [some alias]
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThatThrownBy(() -> registry.get("BrokenModel"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+        assertThat(registry.get("GoodModel")).isNotNull();
+    }
+
+    @Test
+    void validSynonymsLoadSuccessfullyAndAreRetrievable(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        Files.writeString(modelsDir.resolve("model.yaml"), """
+                model: WithSynonyms
+                version: 1
+                target:
+                  service: x
+                  transport: rest
+                  endpoint: https://example.com
+                  auth: { type: api-key, secretRef: X }
+                types:
+                  Thing:
+                    kind: record
+                    fields:
+                      name: String
+                root: Thing
+                synonyms:
+                  name: [full name, legal name]
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThat(registry.get("WithSynonyms").synonyms().get("name"))
+                .containsExactly("full name", "legal name");
+    }
+
     // --- Local LLM phase, Step LLM-3: conventions validation ---
     // See docs/local-llm-enhancements.md. GOOD_MODEL has no sum type
     // field, so these tests use a small model that does, to exercise

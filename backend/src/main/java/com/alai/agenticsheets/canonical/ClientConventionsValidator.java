@@ -1,7 +1,6 @@
 package com.alai.agenticsheets.canonical;
 
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -29,17 +28,13 @@ import java.util.Set;
  *       actually meant for.</li>
  * </ul>
  *
- * <p>Deliberately reimplements a small, self-contained ADT walk (just
- * enough to know a model's valid field paths and, for sum-type paths,
- * their valid variant names) rather than depending on
- * {@code mapping.CanonicalPaths}, which already does this same job.
- * Nothing in the {@code canonical} package depends on {@code mapping}
- * anywhere else in this codebase -- {@code mapping} depends on
- * {@code canonical}, never the reverse -- and this validator runs from
- * {@link CanonicalModelRegistry}, itself in {@code canonical}.
- * Introducing the reverse dependency just for one call site would invert
- * an established architectural boundary; the small amount of duplicated
- * traversal logic here is the more contained cost.
+ * <p>Uses {@link CanonicalFieldPaths} for the underlying "what are this
+ * model's valid field paths" question -- originally implemented as a
+ * private nested class here, extracted once a second consumer
+ * ({@link CanonicalModelRegistry}'s synonym validation) needed the exact
+ * same thing. See that class's own javadoc for why it's a second
+ * implementation of {@code mapping.CanonicalPaths}' walk rather than a
+ * shared dependency on it.
  */
 final class ClientConventionsValidator {
 
@@ -57,14 +52,14 @@ final class ClientConventionsValidator {
                         + "' has conventions for unknown canonical model '" + modelId + "'");
             }
 
-            PathIndex index = PathIndex.of(model.root());
-            validateFieldAliases(client.clientId(), modelId, conventions.fieldAliases(), index);
-            validateVariantValues(client.clientId(), modelId, conventions.variantValues(), index);
+            CanonicalFieldPaths paths = CanonicalFieldPaths.of(model.root());
+            validateFieldAliases(client.clientId(), modelId, conventions.fieldAliases(), paths);
+            validateVariantValues(client.clientId(), modelId, conventions.variantValues(), paths);
         }
     }
 
     private static void validateFieldAliases(String clientId, String modelId,
-            Map<String, List<String>> fieldAliases, PathIndex index) {
+            Map<String, List<String>> fieldAliases, CanonicalFieldPaths paths) {
         // normalized alias -> the field path that first claimed it, so a
         // second, different field claiming the same normalized alias is
         // caught as ambiguous rather than silently overwriting/coexisting.
@@ -72,7 +67,7 @@ final class ClientConventionsValidator {
 
         for (Map.Entry<String, List<String>> entry : fieldAliases.entrySet()) {
             String path = entry.getKey();
-            if (!index.paths().contains(path)) {
+            if (!paths.isValidPath(path)) {
                 throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
                         + "' fieldAliases references '" + path + "', which is not a field in " + modelId);
             }
@@ -89,10 +84,10 @@ final class ClientConventionsValidator {
     }
 
     private static void validateVariantValues(String clientId, String modelId,
-            Map<String, Map<String, String>> variantValues, PathIndex index) {
+            Map<String, Map<String, String>> variantValues, CanonicalFieldPaths paths) {
         for (Map.Entry<String, Map<String, String>> entry : variantValues.entrySet()) {
             String path = entry.getKey();
-            Set<String> validVariants = index.variantsAt(path);
+            Set<String> validVariants = paths.variantsAt(path);
             if (validVariants == null) {
                 throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
                         + "' variantValues references '" + path + "', which is not a sum type field in " + modelId);
@@ -110,46 +105,5 @@ final class ClientConventionsValidator {
 
     private static String normalize(String s) {
         return s.toLowerCase(Locale.ROOT).replaceAll("[\\s_-]", "");
-    }
-
-    /** Minimal ADT index: every valid field path, and for a sum-type
-      * path, its valid variant names. See this class's own javadoc for
-      * why this doesn't reuse {@code mapping.CanonicalPaths}. */
-    private record PathIndex(Set<String> paths, Map<String, Set<String>> variantsByPath) {
-
-        static PathIndex of(CanonicalType root) {
-            Set<String> paths = new LinkedHashSet<>();
-            Map<String, Set<String>> variantsByPath = new LinkedHashMap<>();
-            walk("", root, paths, variantsByPath);
-            return new PathIndex(paths, variantsByPath);
-        }
-
-        Set<String> variantsAt(String path) {
-            return variantsByPath.get(path);
-        }
-
-        private static void walk(String path, CanonicalType type, Set<String> paths,
-                Map<String, Set<String>> variantsByPath) {
-            switch (type) {
-                case OptionType o -> walk(path, o.inner(), paths, variantsByPath);
-                case PrimitiveType p -> paths.add(path);
-                case SumType s -> {
-                    paths.add(path);
-                    variantsByPath.put(path, new LinkedHashSet<>(s.variants().keySet()));
-                    for (Map.Entry<String, RecordType> variant : s.variants().entrySet()) {
-                        String variantPath = path + "." + variant.getKey();
-                        for (Map.Entry<String, CanonicalType> field : variant.getValue().fields().entrySet()) {
-                            walk(variantPath + "." + field.getKey(), field.getValue(), paths, variantsByPath);
-                        }
-                    }
-                }
-                case RecordType r -> {
-                    for (Map.Entry<String, CanonicalType> field : r.fields().entrySet()) {
-                        String fieldPath = path.isEmpty() ? field.getKey() : path + "." + field.getKey();
-                        walk(fieldPath, field.getValue(), paths, variantsByPath);
-                    }
-                }
-            }
-        }
     }
 }

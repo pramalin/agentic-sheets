@@ -95,6 +95,7 @@ public class CanonicalModelRegistry {
         for (Path file : listYamlFiles(canonicalModelsDir)) {
             try {
                 CanonicalModel parsed = modelParser.parse(file);
+                validateSynonyms(parsed);
                 CanonicalModel replaced = next.put(parsed.modelId(), parsed);
                 if (replaced == null) {
                     log.info("Loaded canonical model '{}' version {} from {}",
@@ -108,6 +109,25 @@ public class CanonicalModelRegistry {
             }
         }
         return Map.copyOf(next);
+    }
+
+    /** {@code synonyms} keys were never validated against real field
+      * paths at parse time -- harmless while synonyms were purely a
+      * hint rendered into the LLM's prompt (a typo just meant a
+      * slightly worse hint), but a real correctness risk now that Step
+      * LLM-4's field-alias work (see docs/local-llm-enhancements.md)
+      * makes them load-bearing for deterministic resolution. Checked
+      * here, the same place client conventions are already validated
+      * against the actual parsed model, not deferred until a resolver
+      * silently ignores a synonym entry that was never valid. */
+    private void validateSynonyms(CanonicalModel model) {
+        CanonicalFieldPaths paths = CanonicalFieldPaths.of(model.root());
+        for (String path : model.synonyms().keySet()) {
+            if (!paths.isValidPath(path)) {
+                throw new CanonicalConfigException("model '" + model.modelId() + "' synonyms references '"
+                        + path + "', which is not a field in this model: " + model.sourceFile());
+            }
+        }
     }
 
     /** {@code models} is the just-computed, about-to-be-current model
