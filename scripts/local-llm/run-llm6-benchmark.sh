@@ -117,12 +117,22 @@ run_one() {
             echo "!! if you need a genuinely fresh model call, clear it yourself:"
             echo "!!   docker compose -f compose.yaml -f compose.local-llm.yaml down -v"
             echo "!!   docker compose -f compose.yaml -f compose.local-llm.yaml up -d --build --wait"
+            # Following an external review: a warning is clear to a
+            # human reading the console, but leaves the script's own
+            # exit status unchanged, meaning benchmark automation could
+            # still record a cache-hit run as an ordinary pass/fail.
+            # This global flag, checked after both runs, forces the
+            # script's own exit code to a distinct, impossible-to-miss
+            # value in that case -- see the bottom of this script.
+            CACHE_HIT_DETECTED=1
         fi
     fi
     echo
 
     return "$status"
 }
+
+CACHE_HIT_DETECTED=0
 
 baseline_status=0
 run_one "baseline" "holdings_jpmc_20260115.xlsx" || baseline_status=$?
@@ -146,3 +156,11 @@ echo "declining to guess is a legitimate, useful outcome here, not a"
 echo "failure to record as one. If either run above printed a cache-hit"
 echo "WARNING, treat that result as invalid regardless of its curl exit"
 echo "status -- it didn't test the model at all."
+
+if [[ "$CACHE_HIT_DETECTED" -eq 1 ]]; then
+    echo
+    echo "!! At least one run above was a cache hit, not a real model call --"
+    echo "!! exiting with status 3 (distinct from any curl exit code) so"
+    echo "!! automation can't mistake this run for a valid result."
+    exit 3
+fi

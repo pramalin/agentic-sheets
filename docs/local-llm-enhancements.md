@@ -1425,3 +1425,117 @@ brace-count false alarm caught mid-round (confirmed a pre-existing
 artifact, not a real syntax error, by diffing against the actual
 already-pushed file) held up: nothing broke in
 `CanonicalModelRegistryTest` either.
+
+## External review, round 3: a severe bug the field-alias merge introduced, plus a policy correction
+
+A third external review, against the live pushed `main` (HEAD
+`369d85a`), found the field-alias work itself was sound but its
+interaction with this phase's own earlier safety mechanisms was not --
+plus one genuine, unilateral design decision worth correcting rather
+than defending.
+
+### The severe bug: malformed model output could be silently hidden by deterministic mappings
+
+Traced by hand before agreeing, since "built a safety mechanism, then
+broke it in the very next change" deserves real scrutiny. Confirmed
+exactly as the review described: at the merge point in `propose()`,
+`proposal.unmappedSourceColumns()` refers to whatever the *model's own
+response* said -- on a failed or malformed model call, that's the
+empty, synthesized fallback proposal's empty list, never reconciled
+against what's actually still missing. A column the model was supposed
+to handle but never got the chance to -- the review's own worked
+example, `Valuation Px` -- vanished from **both** `fieldMappings` and
+`unmappedSourceColumns` simultaneously, with no signal anything was
+ever wrong.
+
+**Fix: a new, deliberately separate invariant.**
+`MappingProposalStructuralValidator.validateColumnCoverage(MappingProposal, Set<String>)`
+checks that every *observed* column is accounted for -- mapped by some
+entry's `sourceColumn`, or explicitly listed in
+`unmappedSourceColumns`, never both, and `unmappedSourceColumns` never
+lists something that wasn't actually observed. Deliberately a separate
+method, not folded into the existing `validate()`'s per-entry loop:
+this project's test suite almost universally tests one field mapping
+at a time against the real JPMC column set, without expecting every
+*other* column to be independently accounted for in the same
+assertion -- folding this check in would have broken essentially every
+existing test for a reason unrelated to what each one actually tests.
+Wired into both `propose()` and `validateEdited()`.
+
+### Related: an attempted fix for infrastructure failures, and a real compilation failure it caused
+
+The original `catch (RuntimeException e)` around the model call caught
+genuine provider/infrastructure failures the same way as "the model
+responded but its output was unusable" -- a real, valid concern.
+Attempted a fix based on search results describing Spring AI's
+`org.springframework.ai.retry.TransientAiException`/`NonTransientAiException`
+hierarchy -- **never confirmed against this project's actual `pom.xml`
+dependency** (`spring-ai.version` `2.0.0`) before shipping, and the real
+`mvn test` run caught it: that package doesn't exist in 2.0.0 at all.
+
+**What actually happened, traced properly this time.** Spring AI 2.0
+deleted its own hand-rolled provider-exception hierarchy and now
+delegates directly to vendor SDKs (confirmed via Spring AI's own
+upgrade notes, not guessed) -- for the OpenAI-compatible path this
+project uses, that's `openai-java`. Found strong, scenario-matching
+evidence for the real exception type: a GitHub issue
+(`spring-projects/spring-ai#6036`) titled exactly "Error in Spring AI
+2.0.0-M6 while using Docker Model runner" -- the same combination this
+project actually uses -- showing a real stack trace with
+`com.openai.errors.NotFoundException` (extending
+`com.openai.errors.OpenAIServiceException`, itself under the base
+`com.openai.errors.OpenAIException`).
+
+**Why that still wasn't attempted in code.** Strong evidence is not the
+same as a confirmed compile, and this file had already broken a real
+build once this round on an unverified guess -- risking a *second*
+wrong class name and a third broken build was worse than leaving this
+specific narrowing as open, named follow-up work. Reverted to catching
+plain `RuntimeException` (guaranteed to compile, since it introduces no
+new class reference at all) for both infrastructure and conversion
+failures alike -- imprecise, but not silently broken, and not another
+guess sent back without a way to verify it first. The actual fix
+(catching `com.openai.errors.OpenAIException` specifically, once
+confirmed against a real compile) remains real, open work, documented
+plainly in the code's own comment at the point it matters rather than
+just here.
+
+### The architecturally important optimization: skip the LLM entirely when nothing is left for it
+
+`propose()` now checks whether every observed column was already
+resolved deterministically; if so, the model is never called at all --
+extending `MappingResolutionService`'s existing "decide whether a model
+call is needed" philosophy one level further. Tested end-to-end via a
+new `Harness` exposing the individual mocks, with `verifyNoInteractions()`
+on the `ChatClient` mock as the actual proof, plus the inverse case
+(partial coverage still calls the model) and a third test proving the
+model-call `catch` block's actual current behavior -- any
+`RuntimeException` fails clean via `MappingProposalValidationException`,
+not an unhandled crash -- rather than the originally-planned but
+reverted infrastructure-vs-conversion distinction.
+
+### A policy correction: canonical synonyms are not deterministic after all
+
+`canonical-models/SCHEMA.md` already documented synonyms as LLM-hint
+metadata, predating this resolver -- treating them as deterministic was
+a real, unilateral policy shift. Corrected: `FieldAliasResolver` no
+longer consults `CanonicalModel.synonyms()` at all, only a field's own
+name and configured client aliases. Traced by hand against the real
+JPMC fixture: without synonyms, only 7 of 11 columns still resolve
+deterministically, so the real baseline will not trigger the
+skip-the-LLM optimization -- a more conservative result than an earlier
+read suggested.
+
+**A real mistake caught mid-round.** While verifying this round's own
+brace balance, `AgentMappingProposalServiceTest.java` showed a genuine
+imbalance -- a `str_replace` edit had dropped the test class's own
+final closing brace. Found and fixed before packaging, not after.
+
+**Confirmed live.** `mvn test` run against the real repo after
+overlaying these files: **236/236**, up from 226 by exactly the 10 new
+tests, no other test count moved -- including after the mid-round
+compilation failure and correction (the `org.springframework.ai.retry`
+package that doesn't exist in this project's real Spring AI 2.0.0
+dependency, reverted to a plain `catch (RuntimeException e)`): the real
+build compiled clean and every test passed on the first run after that
+fix, confirming the correction was actually right, not just plausible.

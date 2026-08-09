@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -141,5 +142,157 @@ class AgentMappingProposalServiceTest {
         String note = service().renderAlreadyResolvedNote(result);
 
         assertThat(note).contains("currency").contains("Currency").contains("Already resolved");
+    }
+
+    // =====================================================================
+    // propose() -- the skip-the-model-call optimization, and the exact
+    // severe bug an external review found in the merge that made it
+    // possible. See docs/local-llm-enhancements.md.
+    // =====================================================================
+
+    /** Holds the individual mocks a propose()-level test needs to stub
+      * and verify, since {@link #service()} builds them internally and
+      * doesn't expose them. */
+    private record Harness(
+            AgentMappingProposalService service,
+            ChatClient chatClient,
+            FieldAliasResolver fieldAliasResolver,
+            SumTypeMappingResolver sumTypeResolver,
+            MappingProposalStructuralValidator structuralValidator) {
+    }
+
+    private Harness harness() {
+        ChatClient.Builder builder = mock(ChatClient.Builder.class);
+        ChatClient chatClient = mock(ChatClient.class);
+        when(builder.build()).thenReturn(chatClient);
+        FieldAliasResolver fieldAliasResolver = mock(FieldAliasResolver.class);
+        SumTypeMappingResolver sumTypeResolver = mock(SumTypeMappingResolver.class);
+        MappingProposalStructuralValidator structuralValidator = mock(MappingProposalStructuralValidator.class);
+        AgentMappingProposalService service = new AgentMappingProposalService(
+                builder,
+                mock(CanonicalModelPromptRenderer.class),
+                mock(com.alai.agenticsheets.spreadsheet.SpreadsheetExplorerService.class),
+                sumTypeResolver,
+                fieldAliasResolver,
+                structuralValidator,
+                jsonMapper,
+                false);
+        return new Harness(service, chatClient, fieldAliasResolver, sumTypeResolver, structuralValidator);
+    }
+
+    private com.alai.agenticsheets.canonical.CanonicalModel dummyModel() {
+        return mock(com.alai.agenticsheets.canonical.CanonicalModel.class);
+    }
+
+    private com.alai.agenticsheets.canonical.ClientConfig dummyClient() {
+        com.alai.agenticsheets.canonical.ClientConfig client =
+                mock(com.alai.agenticsheets.canonical.ClientConfig.class);
+        when(client.clientId()).thenReturn("test-client");
+        return client;
+    }
+
+    @Test
+    void everyColumnDeterministicallyResolved_skipsTheModelCallEntirely() {
+        Harness h = harness();
+        JsonNode table = tableWithColumns("Currency", "Custodian");
+        Set<String> observed = Set.of("Currency", "Custodian");
+
+        List<MappingProposal.FieldMapping> deterministic = List.of(
+                new MappingProposal.FieldMapping("currency", "Currency", null, null, null, null, 1.0, "det"),
+                new MappingProposal.FieldMapping("custodian", "Custodian", null, null, null, null, 1.0, "det"));
+        when(h.fieldAliasResolver().resolve(any(), any(), org.mockito.ArgumentMatchers.eq(observed)))
+                .thenReturn(new FieldAliasResolver.Result(deterministic, observed));
+
+        // Pass the merged proposal straight through unchanged -- this
+        // test is about whether the model gets called, not about
+        // SumTypeMappingResolver's own behavior.
+        when(h.sumTypeResolver().resolve(any(), any(), any(), any(), any()))
+                .thenAnswer(inv -> new SumTypeMappingResolver.Result(inv.getArgument(0), List.of()));
+        when(h.structuralValidator().validate(any(), any(), any())).thenReturn(List.of());
+        when(h.structuralValidator().validateColumnCoverage(any(), any())).thenReturn(List.of());
+
+        MappingProposal result = h.service().propose(dummyModel(), dummyClient(), "f.xlsx", "Holdings", table);
+
+        assertThat(result.fieldMappings()).hasSize(2);
+        assertThat(result.fieldMappings())
+                .extracting(MappingProposal.FieldMapping::canonicalFieldPath)
+                .containsExactlyInAnyOrder("currency", "custodian");
+        // The actual proof: the model was never touched.
+        org.mockito.Mockito.verifyNoInteractions(h.chatClient());
+    }
+
+    @Test
+    void notEveryColumnResolved_doesNotSkipTheModelCall() {
+        Harness h = harness();
+        JsonNode table = tableWithColumns("Currency", "Valuation Px");
+        Set<String> observed = Set.of("Currency", "Valuation Px");
+
+        // Only "Currency" resolves -- "Valuation Px" is genuinely left
+        // for the model, so the skip condition must not fire.
+        List<MappingProposal.FieldMapping> deterministic = List.of(
+                new MappingProposal.FieldMapping("currency", "Currency", null, null, null, null, 1.0, "det"));
+        when(h.fieldAliasResolver().resolve(any(), any(), org.mockito.ArgumentMatchers.eq(observed)))
+                .thenReturn(new FieldAliasResolver.Result(deterministic, Set.of("Currency")));
+
+        org.springframework.ai.chat.client.ChatClient.ChatClientRequestSpec requestSpec =
+                mock(org.springframework.ai.chat.client.ChatClient.ChatClientRequestSpec.class);
+        when(h.chatClient().prompt()).thenReturn(requestSpec);
+        when(requestSpec.system(org.mockito.ArgumentMatchers.anyString())).thenReturn(requestSpec);
+        when(requestSpec.user(org.mockito.ArgumentMatchers.anyString())).thenReturn(requestSpec);
+        org.springframework.ai.chat.client.ChatClient.CallResponseSpec callSpec =
+                mock(org.springframework.ai.chat.client.ChatClient.CallResponseSpec.class);
+        when(requestSpec.call()).thenReturn(callSpec);
+        when(callSpec.responseEntity(MappingProposal.class))
+                .thenReturn(new org.springframework.ai.chat.client.ResponseEntity<>(null, null));
+
+        when(h.sumTypeResolver().resolve(any(), any(), any(), any(), any()))
+                .thenAnswer(inv -> new SumTypeMappingResolver.Result(inv.getArgument(0), List.of()));
+        when(h.structuralValidator().validate(any(), any(), any())).thenReturn(List.of());
+        when(h.structuralValidator().validateColumnCoverage(any(), any())).thenReturn(List.of("unresolved"));
+
+        org.junit.jupiter.api.Assertions.assertThrows(MappingProposalValidationException.class,
+                () -> h.service().propose(dummyModel(), dummyClient(), "f.xlsx", "Holdings", table));
+
+        // The actual proof: the model WAS called this time.
+        org.mockito.Mockito.verify(h.chatClient()).prompt();
+    }
+
+    @Test
+    void modelCallThrows_failsCleanRatherThanCrashingUnhandled() {
+        // The review's underlying concern (infrastructure failures
+        // shouldn't masquerade as mapping-validation failures) is real
+        // and still open -- see docs/local-llm-enhancements.md's
+        // "External review, round 3" section for why the originally
+        // attempted fix (a distinguishing catch for
+        // org.springframework.ai.retry's exception types) had to be
+        // reverted: that package doesn't exist in this project's actual
+        // Spring AI 2.0.0 dependency at all, and broke the real build.
+        // Until the correct real exception type (com.openai.errors.OpenAIException,
+        // per real evidence, but not yet confirmed against an actual
+        // compile) is confirmed, EVERY RuntimeException from the model
+        // call -- infrastructure failure or conversion failure alike --
+        // is treated the same way: a clean, reported validation
+        // failure, not an unhandled crash. Imprecise, but not silently
+        // broken -- this test proves the "not silently broken" half.
+        Harness h = harness();
+        JsonNode table = tableWithColumns("Valuation Px");
+        when(h.fieldAliasResolver().resolve(any(), any(), any()))
+                .thenReturn(new FieldAliasResolver.Result(List.of(), Set.of()));
+
+        org.springframework.ai.chat.client.ChatClient.ChatClientRequestSpec requestSpec =
+                mock(org.springframework.ai.chat.client.ChatClient.ChatClientRequestSpec.class);
+        when(h.chatClient().prompt()).thenReturn(requestSpec);
+        when(requestSpec.system(org.mockito.ArgumentMatchers.anyString())).thenReturn(requestSpec);
+        when(requestSpec.user(org.mockito.ArgumentMatchers.anyString())).thenReturn(requestSpec);
+        when(requestSpec.call()).thenThrow(new RuntimeException("simulated: connection refused"));
+
+        when(h.sumTypeResolver().resolve(any(), any(), any(), any(), any()))
+                .thenAnswer(inv -> new SumTypeMappingResolver.Result(inv.getArgument(0), List.of()));
+        when(h.structuralValidator().validate(any(), any(), any()))
+                .thenReturn(List.of("the proposal contains no field mappings at all"));
+        when(h.structuralValidator().validateColumnCoverage(any(), any())).thenReturn(List.of());
+
+        org.junit.jupiter.api.Assertions.assertThrows(MappingProposalValidationException.class,
+                () -> h.service().propose(dummyModel(), dummyClient(), "f.xlsx", "Holdings", table));
     }
 }

@@ -19,14 +19,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Acceptance tests for {@link FieldAliasResolver} -- Local LLM phase,
  * Step LLM-4's originally-deferred piece, finally built following an
- * external review's Finding 6 (see {@code docs/local-llm-enhancements.md}).
- * Uses the real {@code canonical-models/holdings.yaml} test fixture --
- * the same one every resolver test in this phase has used -- whose real
- * {@code synonyms:} block covers every primitive field (confirmed by
- * reading the actual file, not assumed) but deliberately does not cover
- * {@code asset_class} (a sum type, matched via its own field name
- * instead) or {@code client_id} (never a candidate at all, resolved
- * externally).
+ * external review's Finding 6, then corrected in a second review round
+ * (see {@code docs/local-llm-enhancements.md}). Uses the real
+ * {@code canonical-models/holdings.yaml} test fixture -- the same one
+ * every resolver test in this phase has used.
+ *
+ * <p>As of the second review round, canonical model {@code synonyms}
+ * are deliberately NOT one of this resolver's deterministic sources
+ * (see {@link FieldAliasResolver}'s own javadoc for the full reasoning)
+ * -- only a field's own name and configured client aliases are. Several
+ * tests here exist specifically to prove that reversal, not just to
+ * test the current (narrower) positive behavior in isolation.
  */
 class FieldAliasResolverTest {
 
@@ -52,7 +55,7 @@ class FieldAliasResolverTest {
     void resolvesAColumnMatchingTheFieldsOwnName() throws Exception {
         // "Currency" (the real fixture's literal header) normalizes the
         // same as the canonical field's own name "currency" -- no
-        // synonym or alias needed at all.
+        // alias needed at all.
         FieldAliasResolver.Result result =
                 resolver.resolve(holdings(), noConventions(), Set.of("Currency"));
 
@@ -65,11 +68,30 @@ class FieldAliasResolverTest {
     }
 
     @Test
-    void resolvesAColumnMatchingACanonicalModelSynonym() throws Exception {
-        // "CUSIP" is a real synonym for security_id in holdings.yaml's
-        // own synonyms block -- not the field's own name at all.
+    void canonicalSynonymsAreDeliberatelyNotDeterministic() throws Exception {
+        // "CUSIP" is a real entry in holdings.yaml's own synonyms:
+        // block for security_id -- but as of the correction following a
+        // second external review round, canonical synonyms are treated
+        // as LLM hints only (matching canonical-models/SCHEMA.md's own
+        // pre-existing, documented intent), never deterministic. This
+        // is the reversal itself, proven directly: "CUSIP" must be left
+        // unresolved for the LLM, not silently matched.
         FieldAliasResolver.Result result =
                 resolver.resolve(holdings(), noConventions(), Set.of("CUSIP"));
+
+        assertThat(result.resolvedMappings()).isEmpty();
+        assertThat(result.resolvedSourceColumns()).isEmpty();
+    }
+
+    @Test
+    void aClientCanExplicitlyPromoteAFormerSynonymToADeterministicAlias() throws Exception {
+        // The correct way to make "CUSIP" deterministic again, if a
+        // model/client owner actually wants that: configure it as an
+        // explicit, human-approved client alias (Step LLM-3) -- not by
+        // relying on the canonical model's own synonyms list.
+        ClientConfig client = withFieldAliases("Holdings", "security_id", List.of("CUSIP"));
+
+        FieldAliasResolver.Result result = resolver.resolve(holdings(), client, Set.of("CUSIP"));
 
         assertThat(result.resolvedSourceColumns()).containsExactly("CUSIP");
         assertThat(result.resolvedMappings().get(0).canonicalFieldPath()).isEqualTo("security_id");
@@ -77,8 +99,9 @@ class FieldAliasResolverTest {
 
     @Test
     void resolvesAColumnMatchingAConfiguredClientAlias() throws Exception {
-        // "Val Px" is not the field's own name and not a canonical
-        // synonym -- purely a client-specific convention.
+        // "Val Px" is not the field's own name -- purely a
+        // client-specific convention, unrelated to any canonical
+        // synonym.
         ClientConfig client = withFieldAliases("Holdings", "market_price", List.of("Val Px"));
 
         FieldAliasResolver.Result result = resolver.resolve(holdings(), client, Set.of("Val Px"));
@@ -127,33 +150,42 @@ class FieldAliasResolverTest {
 
     @Test
     void multipleResolvableColumnsAllResolveIndependently() throws Exception {
+        // All three resolve via the field's own name -- "CUSIP" is
+        // deliberately NOT included here (see
+        // canonicalSynonymsAreDeliberatelyNotDeterministic).
         FieldAliasResolver.Result result = resolver.resolve(holdings(), noConventions(),
-                Set.of("Currency", "CUSIP", "Custodian", "Valuation Px"));
+                Set.of("Currency", "Custodian", "Market Value", "Valuation Px"));
 
-        assertThat(result.resolvedSourceColumns()).containsExactlyInAnyOrder("Currency", "CUSIP", "Custodian");
+        assertThat(result.resolvedSourceColumns())
+                .containsExactlyInAnyOrder("Currency", "Custodian", "Market Value");
         assertThat(result.resolvedMappings()).hasSize(3);
         assertThat(result.resolvedMappings())
                 .extracting(MappingProposal.FieldMapping::canonicalFieldPath)
-                .containsExactlyInAnyOrder("currency", "security_id", "custodian");
+                .containsExactlyInAnyOrder("currency", "custodian", "market_value");
     }
 
     @Test
     void ambiguousCandidateAcrossTwoDifferentFieldsIsNotResolvedForEither() throws Exception {
-        // A synthetic model where two different fields' synonym lists
+        // Two different fields' CONFIGURED CLIENT ALIASES (not
+        // synonyms, which this resolver no longer consults at all)
         // collide after normalization -- exercises the ambiguity rule
-        // directly, since no real fixture happens to have colliding
-        // synonyms.
+        // on the one remaining source capable of producing it, since a
+        // real field's own literal name can't collide with another
+        // field's own literal name (canonical field paths are already
+        // unique by construction).
         RecordType root = new RecordType("Root", Map.of(
                 "field_a", new PrimitiveType(PrimitiveType.Kind.STRING, null),
                 "field_b", new PrimitiveType(PrimitiveType.Kind.STRING, null)));
         CanonicalModel model = new CanonicalModel("Test", 1,
                 new TargetConfig("svc", "rest", "http://x", null, "api-key", "SECRET",
                         com.alai.agenticsheets.canonical.DeliveryConfig.defaults()),
-                root,
-                Map.of("field_a", List.of("shared name"), "field_b", List.of("shared-name")),
-                Path.of("test.yaml"));
+                root, Map.of(), Path.of("test.yaml"));
 
-        FieldAliasResolver.Result result = resolver.resolve(model, noConventions(), Set.of("Shared Name"));
+        ClientModelConventions conventions = new ClientModelConventions(
+                Map.of("field_a", List.of("shared name"), "field_b", List.of("shared-name")), Map.of());
+        ClientConfig client = new ClientConfig("test-client", "yyyy-MM-dd", Map.of(), Map.of("Test", conventions));
+
+        FieldAliasResolver.Result result = resolver.resolve(model, client, Set.of("Shared Name"));
 
         assertThat(result.resolvedMappings()).isEmpty();
         assertThat(result.resolvedSourceColumns()).isEmpty();

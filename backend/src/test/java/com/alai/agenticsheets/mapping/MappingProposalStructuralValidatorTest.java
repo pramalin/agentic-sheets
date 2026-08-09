@@ -293,4 +293,100 @@ class MappingProposalStructuralValidatorTest {
         return new MappingProposal.FieldMapping(
                 path, sourceColumn, sourceConstant, selectedVariant, variantValueMap, null, confidence, "test note");
     }
+
+    // =====================================================================
+    // validateColumnCoverage -- a second, deliberately separate external
+    // review finding: the real, severe bug Step LLM-4's field-alias merge
+    // introduced. See docs/local-llm-enhancements.md.
+    // =====================================================================
+
+    @Test
+    void everyObservedColumnMappedOrUnmapped_noCoverageProblems() {
+        MappingProposal proposal = new MappingProposal(
+                List.of(fm("currency", "Currency", null, "USD", null, 1.0)),
+                List.of("Custodian"),
+                "test");
+
+        List<String> problems = validator.validateColumnCoverage(proposal, Set.of("Currency", "Custodian"));
+
+        assertThat(problems).isEmpty();
+    }
+
+    @Test
+    void theExactReviewScenario_deterministicMappingsWithEmptyUnmappedAfterAFailedModelCall() {
+        // The real, severe bug: a failed/malformed model call synthesizes
+        // an empty MappingProposal (fieldMappings=[], unmappedSourceColumns=[]).
+        // Step LLM-4's merge combines that with deterministic mappings for
+        // SOME columns, but the merged proposal's unmappedSourceColumns
+        // still reflects the empty fallback, not reality -- so a column
+        // the model was supposed to handle (here, "Valuation Px") vanishes
+        // from BOTH lists with no signal anything was wrong. This is
+        // exactly that merged proposal, constructed directly.
+        MappingProposal mergedAfterFailedModelCall = new MappingProposal(
+                List.of(
+                        fm("currency", "Currency", null, "USD", null, 1.0),
+                        fm("custodian", "Custodian", null, null, null, 1.0)),
+                List.of(), // <-- the bug: empty, inherited from the failed call's synthesized empty proposal
+                "test");
+
+        List<String> problems = validator.validateColumnCoverage(
+                mergedAfterFailedModelCall, Set.of("Currency", "Custodian", "Valuation Px"));
+
+        assertThat(problems).hasSize(1);
+        assertThat(problems.get(0)).contains("Valuation Px").contains("silently unaccounted for");
+    }
+
+    @Test
+    void unmappedSourceColumnsListingSomethingNeverObserved_isReported() {
+        MappingProposal proposal = new MappingProposal(
+                List.of(), List.of("Not A Real Column"), "test");
+
+        List<String> problems = validator.validateColumnCoverage(proposal, Set.of("Currency"));
+
+        // Two problems: "Not A Real Column" was never observed, AND
+        // "Currency" (the one real observed column) is still
+        // unaccounted for -- both are independently true and both
+        // should be reported, not just whichever is checked first.
+        assertThat(problems).hasSize(2);
+        assertThat(problems).anyMatch(p -> p.contains("Not A Real Column") && p.contains("never actually observed"));
+        assertThat(problems).anyMatch(p -> p.contains("Currency") && p.contains("silently unaccounted for"));
+    }
+
+    @Test
+    void columnBothMappedAndListedAsUnmapped_isContradictory() {
+        MappingProposal proposal = new MappingProposal(
+                List.of(fm("currency", "Currency", null, "USD", null, 1.0)),
+                List.of("Currency"),
+                "test");
+
+        List<String> problems = validator.validateColumnCoverage(proposal, Set.of("Currency"));
+
+        assertThat(problems).hasSize(1);
+        assertThat(problems.get(0)).contains("Currency").contains("contradictory");
+    }
+
+    @Test
+    void sourceConstantBasedMappingDoesNotCountAsCoveringAColumn() {
+        // A field mapped via sourceConstant doesn't correspond to any
+        // observed column -- it must not accidentally satisfy coverage
+        // for some unrelated column.
+        MappingProposal proposal = new MappingProposal(
+                List.of(fm("as_of_date", null, "2026-01-15", null, null, 1.0)),
+                List.of(),
+                "test");
+
+        List<String> problems = validator.validateColumnCoverage(proposal, Set.of("Currency"));
+
+        assertThat(problems).hasSize(1);
+        assertThat(problems.get(0)).contains("Currency").contains("silently unaccounted for");
+    }
+
+    @Test
+    void emptyObservedColumns_noCoverageProblemsRegardlessOfProposalContent() {
+        MappingProposal proposal = new MappingProposal(List.of(), List.of(), "test");
+
+        List<String> problems = validator.validateColumnCoverage(proposal, Set.of());
+
+        assertThat(problems).isEmpty();
+    }
 }

@@ -114,12 +114,22 @@ public class CanonicalModelRegistry {
     /** {@code synonyms} keys were never validated against real field
       * paths at parse time -- harmless while synonyms were purely a
       * hint rendered into the LLM's prompt (a typo just meant a
-      * slightly worse hint), but a real correctness risk now that Step
-      * LLM-4's field-alias work (see docs/local-llm-enhancements.md)
-      * makes them load-bearing for deterministic resolution. Checked
-      * here, the same place client conventions are already validated
-      * against the actual parsed model, not deferred until a resolver
-      * silently ignores a synonym entry that was never valid. */
+      * slightly worse hint), which is exactly what they remain: an
+      * earlier version of this validation's own comment framed
+      * synonyms as "load-bearing for deterministic resolution" once
+      * {@link com.alai.agenticsheets.mapping.FieldAliasResolver}
+      * started consulting them -- a second external review round found
+      * that was never actually the documented design intent
+      * ({@code canonical-models/SCHEMA.md} already described synonyms
+      * as LLM-hint metadata before that resolver existed), and the
+      * resolver was corrected to stop treating them as deterministic.
+      * This validation is kept anyway -- a typo'd synonym key is still
+      * a real, if lower-stakes, defect worth catching at load time
+      * rather than silently producing a slightly worse LLM hint
+      * forever, the same "verify at the earliest useful point"
+      * discipline this project applies everywhere else. Checked here,
+      * the same place client conventions are already validated against
+      * the actual parsed model. */
     private void validateSynonyms(CanonicalModel model) {
         CanonicalFieldPaths paths = CanonicalFieldPaths.of(model.root());
         for (String path : model.synonyms().keySet()) {

@@ -94,6 +94,23 @@ import tools.jackson.databind.json.JsonMapper;
  * LLM-6 was originally meant to test literally true, rather than a model
  * that still reconstructs the entire column-to-field mapping with only
  * sum-type mechanics backstopped -- the same review's own Finding 6.
+ *
+ * <p>A third external review round found that merge had introduced a
+ * real, severe gap: on a failed or malformed model call, the merged
+ * proposal's {@code unmappedSourceColumns} still reflected the empty
+ * synthesized fallback, not reality -- a column the model was supposed
+ * to handle could silently vanish from both {@code fieldMappings} and
+ * {@code unmappedSourceColumns} at once. Closed by
+ * {@link MappingProposalStructuralValidator#validateColumnCoverage},
+ * now checked in both {@link #propose} and {@link #validateEdited}. The
+ * same round also added the inverse optimization -- {@link #propose}
+ * skips the model call entirely when {@link FieldAliasResolver} already
+ * accounts for every observed column -- and attempted, then had to
+ * partially revert, a fix distinguishing genuine infrastructure
+ * failures from output-validation failures in the model-call
+ * {@code catch} block: see that block's own inline comment for the full
+ * account of a real compilation failure this caused and the honest
+ * correction, not just the parts that worked cleanly.
  */
 @Service
 public class AgentMappingProposalService {
@@ -144,15 +161,84 @@ public class AgentMappingProposalService {
 
         // Local LLM phase, Step LLM-4's originally-deferred piece,
         // finally built (see docs/local-llm-enhancements.md): resolve
-        // whatever columns a canonical field's own name, this model's
-        // synonyms, or this client's configured aliases already answer
-        // deterministically, BEFORE the model ever sees the file. The
-        // model is shown a table with those columns removed, plus an
+        // whatever columns a canonical field's own name or this
+        // client's configured aliases already answer deterministically,
+        // BEFORE the model ever sees the file. Canonical model
+        // *synonyms* deliberately are NOT consulted here -- see
+        // FieldAliasResolver's own javadoc for why (a second external
+        // review round found that treating them as deterministic was
+        // never actually the documented design intent). The model is
+        // shown a table with resolved columns removed, plus an
         // explicit note about what's already handled -- not just left
         // in and trusted to be correctly reproduced, since the whole
         // point is fewer things for the model to get right, not the
         // same task with a backstop bolted on afterward.
         FieldAliasResolver.Result aliasResolution = fieldAliasResolver.resolve(model, client, observedColumns);
+
+        MappingProposal proposal;
+        if (!observedColumns.isEmpty() && aliasResolution.resolvedSourceColumns().containsAll(observedColumns)) {
+            // Following an external review's own suggested next step:
+            // if deterministic field-alias resolution already accounts
+            // for every observed column, there is nothing left for the
+            // model to resolve -- extending MappingResolutionService's
+            // existing "decide whether a model call is needed at all"
+            // philosophy (already applied for mapping-memory hits) one
+            // level further. Not calling the model at all, rather than
+            // calling it and discarding its response, avoids real
+            // latency/cost for a question that's already fully
+            // answered, and removes any chance the model second-guesses
+            // or contradicts a fact this system already knows with
+            // certainty.
+            log.info("Every observed column resolved deterministically for {}/{} -- skipping the model "
+                    + "call entirely.", client.clientId(), model.modelId());
+            proposal = new MappingProposal(new ArrayList<>(aliasResolution.resolvedMappings()), List.of(),
+                    "All fields resolved deterministically from configured client conventions and this "
+                            + "canonical model's own field names -- no model call was made.");
+        } else {
+            proposal = resolveViaModel(model, client, sourcePath, worksheet, table, aliasResolution);
+        }
+
+        SumTypeMappingResolver.Result resolution =
+                sumTypeResolver.resolve(proposal, model, client, sourcePath, worksheet);
+        MappingProposal resolvedProposal = resolution.proposal();
+
+        List<String> problems = new ArrayList<>();
+        for (MappingResolutionProblem problem : resolution.problems()) {
+            if (problem.blocking()) {
+                problems.add(problem.message());
+            } else {
+                // Non-blocking (currently only CONFIGURED_OVERRIDE_NOTABLE,
+                // Step LLM-4) -- doesn't reject the proposal, but shouldn't
+                // be completely invisible either while Step LLM-5's review-UI
+                // affordance for it doesn't exist yet. Logged, not silently
+                // dropped.
+                log.info("Non-blocking mapping resolution note: {}", problem.message());
+            }
+        }
+        problems.addAll(structuralValidator.validate(resolvedProposal, model, observedColumns));
+        problems.addAll(structuralValidator.validateColumnCoverage(resolvedProposal, observedColumns));
+
+        if (!problems.isEmpty()) {
+            log.warn("Model proposal failed validation: {}", problems);
+            log.debug("Rejected model proposal: {}", resolvedProposal);
+            throw new MappingProposalValidationException(problems);
+        }
+        return resolvedProposal;
+    }
+
+    /**
+     * The "call the model and merge its response with what's already
+     * deterministically resolved" path -- split out from {@link #propose}
+     * so that method can skip straight past all of this when
+     * {@link FieldAliasResolver} already accounted for every observed
+     * column, following an external review's suggested optimization
+     * (see {@code docs/local-llm-enhancements.md}). Every line below is
+     * unchanged from before that split -- this method exists purely to
+     * make the skip possible, not to change what happens when the model
+     * genuinely is needed.
+     */
+    private MappingProposal resolveViaModel(CanonicalModel model, ClientConfig client, String sourcePath,
+            String worksheet, JsonNode table, FieldAliasResolver.Result aliasResolution) {
         JsonNode filteredTable = aliasResolution.resolvedSourceColumns().isEmpty()
                 ? table
                 : filterResolvedColumns(table, aliasResolution.resolvedSourceColumns());
@@ -173,11 +259,11 @@ public class AgentMappingProposalService {
 
                 Some canonical fields and source columns may already be resolved
                 deterministically before you ever see this file -- known from a
-                configured client convention or this canonical model's own
-                synonyms. Any such fields and columns are listed explicitly below,
-                and the source table you're shown has those columns already
-                removed. Do not propose a mapping for an already-resolved field,
-                and do not expect to see its source column in the table -- it was
+                configured client convention or the field's own name. Any such
+                fields and columns are listed explicitly below, and the source
+                table you're shown has those columns already removed. Do not
+                propose a mapping for an already-resolved field, and do not
+                expect to see its source column in the table -- it was
                 deliberately not shown to you, not overlooked.
 
                 A sum type field's variant can be determined two different ways --
@@ -251,6 +337,45 @@ public class AgentMappingProposalService {
                     .call()
                     .responseEntity(MappingProposal.class);
         } catch (RuntimeException e) {
+            // A distinguished catch for provider/infrastructure failures
+            // (network timeouts, invalid API key, provider 500s) --
+            // separate from "the model responded but its output was
+            // unusable" -- was attempted here, following an external
+            // review's real finding (an empty proposal plus deterministic
+            // mappings from Step LLM-4's merge can look like a legitimate,
+            // if incomplete, success -- see validateColumnCoverage's own
+            // javadoc -- so a 422 is the wrong signal for an unavailable
+            // model). The first attempt used
+            // org.springframework.ai.retry.TransientAiException/NonTransientAiException,
+            // based on Spring AI documentation search results spanning
+            // multiple versions -- never confirmed against this project's
+            // actual pom.xml dependency (spring-ai.version 2.0.0) before
+            // shipping, and it broke the real build: that package doesn't
+            // exist in 2.0.0 at all. Spring AI 2.0 deleted its own
+            // hand-rolled provider-exception hierarchy and now delegates
+            // directly to vendor SDKs (confirmed via Spring AI's own
+            // upgrade notes) -- for the OpenAI-compatible path this
+            // project uses, that's openai-java, whose real exception type
+            // is com.openai.errors.OpenAIException (confirmed via a real
+            // stack trace in spring-projects/spring-ai#6036, a GitHub
+            // issue about this exact combination -- Spring AI 2.0 talking
+            // to a Docker Model Runner endpoint -- showing
+            // com.openai.errors.NotFoundException in a live trace). That's
+            // strong, scenario-matching evidence, but still not something
+            // this environment can compile-check before handing back to a
+            // real build -- and this file already broke a real build once
+            // this round on an unverified guess. Rather than risk a
+            // second wrong guess on a class name, this narrower
+            // distinction is deliberately NOT reattempted here; the
+            // fallback below (treating any RuntimeException as a
+            // conversion failure) is restored, guaranteed to compile,
+            // while the actual fix -- catching
+            // com.openai.errors.OpenAIException specifically once that's
+            // confirmed against a real compile or a real infrastructure
+            // failure -- remains real, open follow-up work. See
+            // docs/local-llm-enhancements.md's "External review, round 3"
+            // section for the full account, including this correction.
+            //
             // A second, distinct failure shape from entity()==null,
             // caught after external review pointed out this project had
             // only ever handled the documented "empty response" case.
@@ -261,10 +386,16 @@ public class AgentMappingProposalService {
             // Step LLM-6 schema-echo finding already proved this
             // project's assumptions about what a confused model can
             // produce were incomplete once, so a second undocumented
-            // failure mode isn't a hypothetical worth ignoring. Treated
-            // identically to a null entity: fall through to the same
-            // clean, reported validation failure, not an unhandled
-            // exception propagating to a raw 500.
+            // failure mode isn't a hypothetical worth ignoring. Every
+            // RuntimeException here -- infrastructure failure or
+            // conversion failure alike, since the two are not currently
+            // distinguished (see above) -- is treated identically to a
+            // null entity: fall through to the same clean, reported
+            // validation failure, not an unhandled exception propagating
+            // to a raw 500. Imprecise for a genuine infrastructure
+            // failure specifically (the open follow-up above), but
+            // strictly better than the alternative of letting any
+            // RuntimeException here crash unhandled.
             log.warn("Model call/conversion for propose() threw {} rather than returning a parseable "
                     + "(or empty) entity -- treating as an empty proposal so it fails clean structural "
                     + "validation rather than propagating an unhandled exception. Message: {}",
@@ -319,33 +450,7 @@ public class AgentMappingProposalService {
             }
             mergedMappings.add(fm);
         }
-        proposal = new MappingProposal(mergedMappings, proposal.unmappedSourceColumns(), proposal.summary());
-
-        SumTypeMappingResolver.Result resolution =
-                sumTypeResolver.resolve(proposal, model, client, sourcePath, worksheet);
-        MappingProposal resolvedProposal = resolution.proposal();
-
-        List<String> problems = new ArrayList<>();
-        for (MappingResolutionProblem problem : resolution.problems()) {
-            if (problem.blocking()) {
-                problems.add(problem.message());
-            } else {
-                // Non-blocking (currently only CONFIGURED_OVERRIDE_NOTABLE,
-                // Step LLM-4) -- doesn't reject the proposal, but shouldn't
-                // be completely invisible either while Step LLM-5's review-UI
-                // affordance for it doesn't exist yet. Logged, not silently
-                // dropped.
-                log.info("Non-blocking mapping resolution note: {}", problem.message());
-            }
-        }
-        problems.addAll(structuralValidator.validate(resolvedProposal, model, observedColumns));
-
-        if (!problems.isEmpty()) {
-            log.warn("Model proposal failed validation: {}", problems);
-            log.debug("Rejected model proposal: {}", resolvedProposal);
-            throw new MappingProposalValidationException(problems);
-        }
-        return resolvedProposal;
+        return new MappingProposal(mergedMappings, proposal.unmappedSourceColumns(), proposal.summary());
     }
 
     /**
@@ -367,6 +472,7 @@ public class AgentMappingProposalService {
         JsonNode table = explorer.describeTable(sourcePath, worksheet);
         Set<String> observedColumns = extractColumnHeaders(table);
         List<String> problems = structuralValidator.validate(edited, model, observedColumns);
+        problems.addAll(structuralValidator.validateColumnCoverage(edited, observedColumns));
         if (!problems.isEmpty()) {
             throw new MappingProposalValidationException(problems);
         }
@@ -439,7 +545,7 @@ public class AgentMappingProposalService {
      * explains the *concept*; this supplies the *specifics* for this one
      * file. Empty string when nothing was resolved this way, so the
      * prompt reads exactly as it did before this feature existed for a
-     * client/file with no configured aliases and no applicable synonyms.
+     * client/file with no configured aliases and no matching field names.
      */
     String renderAlreadyResolvedNote(FieldAliasResolver.Result aliasResolution) {
         if (aliasResolution.resolvedMappings().isEmpty()) {
