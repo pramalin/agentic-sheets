@@ -2261,3 +2261,76 @@ benchmark run is genuinely the right next step -- both to confirm the
 two still-open attempts, and because a model this actively confused
 about path fidelity will likely keep surfacing new patterns even once
 these are resolved, the same way nearly every prior round has.
+
+## Ninth real run: two fixes confirmed, one real interaction effect closed, two new omission-shaped findings
+
+The richest single run this step has produced -- a genuine mix of
+confirmed wins, one fix's real side effect, and two new findings that
+don't fit the pattern of anything fixed so far.
+
+**Confirmed working, cleanly, both runs: path-shortening.**
+`security_description` spelled correctly in full across every mention
+in both raw responses. The eighth round's fix landed.
+
+**Confirmed working, mostly: the `FixedIncome` sub-field
+hallucination.** Neither run's raw response contains a single
+fabricated `fieldMappings` entry for `maturity_date`, `coupon_rate`, or
+`credit_rating` -- the exact pattern that had recurred three times
+running. The targeted, example-driven instruction from the seventh
+round worked, in the specific sense it was built for: no more invalid,
+wrongly-typed mapping entries repurposing an unrelated column.
+
+**A real, unintended side effect of that same fix, closed by tying two
+instructions together.** The model didn't just drop the missing
+sub-fields cleanly -- it started listing their bare canonical names
+(`maturity_date`, `coupon_rate`, `credit_rating`) in
+`unmappedSourceColumns` instead, even though none of them were ever
+real source columns. This is exactly the failure shape the
+canonical-name-leak fix from two rounds earlier was built to prevent,
+just not written with this specific new interaction in mind -- the
+sub-field instruction told the model what NOT to put in
+`fieldMappings`, without also reminding it that a field it's declining
+still doesn't belong in `unmappedSourceColumns` either. Closed by
+adding that connection explicitly, right where the sub-field guidance
+lives, rather than assuming the two already-fixed instructions would
+compose correctly on their own.
+
+**Two genuinely new findings -- omissions, not wrong answers, a
+different shape from everything fixed so far.** The baseline run
+silently dropped `Price` -> `market_price` entirely, a completely
+standard mapping this model has gotten right in nearly every prior
+run across this whole step. The unfamiliar-column run silently ignored
+`Valuation Px` -- the fixture's own genuinely unfamiliar column, the
+actual question this whole benchmark exists to test -- appearing in
+neither `fieldMappings` nor `unmappedSourceColumns` at all, correctly
+caught by `validateColumnCoverage`'s "silently unaccounted for" check.
+Both single-occurrence. Deliberately not patched: every prompt fix in
+this step so far addressed the model saying something *wrong*; this is
+the model saying nothing about a column at all, and there isn't yet a
+clear, evidence-backed theory of what instruction would actually
+address an omission rather than an incorrect answer. Recorded as open
+watch items, same discipline as every other single-occurrence finding
+in this step.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- explicit instruction tying the sub-field guidance to the existing unmapped-columns rule; class javadoc updated with the full ninth-round account)
+
+**No new tests** -- confirmed no existing test asserts on the exact
+prompt text that changed; matching every prompt-wording change in this
+step, only a real model run can confirm whether it actually changes
+output, not a unit test.
+
+**Confirmed live.** `mvn test`: **241/241**, unchanged as expected --
+prompt text only, no code path a test exercises differently.
+
+**Where this leaves the 3B findings.** Confirmed working: the
+`Holdings.` prefix, the `selectedVariant`/`variantValueMap` echo, both
+`unmappedSourceColumns` naming fixes (stale-mention and canonical-name),
+path-shortening, and (with this round's follow-up) the `FixedIncome`
+sub-field hallucination. Open, unconfirmed: this round's connecting fix
+for the sub-field/unmapped-columns interaction. Open, unaddressed by
+design: the two new omission findings, pending either recurrence or a
+real theory of what would help. Worth treating the next run as a real
+test of whether this step's fixes have actually converged, or whether
+omissions turn out to be the next recurring pattern the way each prior
+category was.

@@ -132,6 +132,28 @@ import tools.jackson.databind.json.JsonMapper;
  * held back pending recurrence, and, like every prompt-wording attempt
  * in this list, not confirmed to actually change model behavior until a
  * real run says so.
+ *
+ * <p>A ninth real run confirmed two of those attempts directly: the
+ * path-shortening fix ({@code security_description} correctly spelled
+ * in full, both runs) and, mostly, the sub-field-hallucination fix (no
+ * more fabricated {@code FixedIncome} sub-field entries in
+ * {@code fieldMappings} at all). That second fix had a real, unintended
+ * side effect worth naming precisely rather than declaring a clean win:
+ * the model stopped fabricating full mapping entries for a missing
+ * sub-field, but started listing the sub-field's own canonical name in
+ * {@code unmappedSourceColumns} instead -- the exact thing the
+ * unmapped-columns fix from two rounds earlier was built to prevent,
+ * just not anticipated interacting with brand-new guidance about a
+ * different failure. Closed by explicitly tying the two instructions
+ * together rather than treating them as independent. Two further,
+ * genuinely new findings from the same run -- the model silently
+ * dropping a completely standard {@code Price} -> {@code market_price}
+ * mapping in one run, and silently ignoring the fixture's genuinely
+ * unfamiliar column entirely in the other, neither mapped nor declined
+ * -- are a different failure shape (omission, not a wrong answer) from
+ * anything a wording fix has addressed so far, and single-occurrence
+ * each; recorded as open watch items rather than patched without a
+ * real theory of what would help.
  */
 @Service
 public class AgentMappingProposalService {
@@ -339,6 +361,12 @@ public class AgentMappingProposalService {
                 out of fieldMappings entirely; an incomplete FixedIncome record is
                 normal and expected when the source file's own columns don't carry that
                 level of detail, not a gap you need to fill by reusing a nearby column.
+                And when you do leave one out, leave it out completely -- do NOT add its
+                canonical name (e.g. "maturity_date") to unmappedSourceColumns either.
+                unmappedSourceColumns is a list of source table columns you're declining
+                to map, never a list of canonical fields you're declining to fill --
+                a sub-field with no matching column was never a source column in the
+                first place, so it has no place in either list.
 
                 Some values come from a banner row or other free text above the real
                 header, not a per-row column -- use sourceConstant for those, not
