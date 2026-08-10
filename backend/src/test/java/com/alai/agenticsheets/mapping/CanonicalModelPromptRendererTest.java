@@ -65,7 +65,13 @@ class CanonicalModelPromptRendererTest {
     // rendered back as description, and
     // asset_class.FixedIncome.maturity_date rendered back as a bare
     // maturity_date. See docs/local-llm-enhancements.md's "Seventh real
-    // run" section for the full account.
+    // run" section for the full account. Post-review hardening (see
+    // that same doc's "review, client-config governance" section): the
+    // worked examples were later made generic rather than using the
+    // real field names the model had shown a specific fixation on --
+    // this test was updated to match, checking for the instruction's
+    // presence and the (now-generic) example pair actually used, not
+    // the original real-field-name pair.
 
     @Test
     void explicitlyInstructsAgainstShorteningAPath() throws Exception {
@@ -74,10 +80,11 @@ class CanonicalModelPromptRendererTest {
         String rendered = renderer.render(model);
 
         assertThat(rendered).contains("do NOT shorten or abbreviate a path");
-        // The two real, named examples this instruction was built from,
-        // not a generic warning -- concrete enough for the model to
-        // pattern-match against.
-        assertThat(rendered).contains("\"security_description\" must never become \"description\"");
+        // A generic, made-up example pair, not tied to any real
+        // Holdings field -- deliberate, so the prompt doesn't keep
+        // repeating the exact field names the model has shown a
+        // specific fixation on, even in a "don't do this" framing.
+        assertThat(rendered).contains("\"account_holder_name\" must never become \"holder_name\"");
     }
 
     @Test
@@ -110,15 +117,17 @@ class CanonicalModelPromptRendererTest {
 
         String rendered = renderer.render(model, Set.of("asset_class.FixedIncome.maturity_date"));
 
-        // "- path:" specifically, not a bare substring search -- the
-        // instructional preamble above the field listing already uses
-        // this exact path as a worked example ("do NOT shorten or
-        // abbreviate a path", added in an earlier round), so a plain
-        // doesNotContain(bare path) would fail even when exclusion is
-        // working correctly, since that unrelated prose text isn't
-        // filtered by excludedFieldPaths at all -- confirmed by a real
-        // run: the field listing itself was already correct, only this
-        // assertion was checking the wrong thing.
+        // "- path:" specifically, not a bare substring search -- a
+        // defensive habit from an earlier round when the instructional
+        // preamble above the field listing still used this exact path
+        // as a worked example, which made a bare substring search
+        // fail even when exclusion was working correctly (see this
+        // file's own git history, or docs/local-llm-enhancements.md's
+        // "review, client-config governance" section, for why those
+        // specific field-name examples were later made generic). Kept
+        // precise even now that the preamble no longer mentions this
+        // path at all -- checking the field-listing-specific format is
+        // simply the more correct thing to assert regardless.
         assertThat(rendered).doesNotContain("- asset_class.FixedIncome.maturity_date:");
         // Siblings under the same variant, and the sum type field
         // itself, still render normally.
@@ -157,9 +166,10 @@ class CanonicalModelPromptRendererTest {
                 "asset_class.FixedIncome.coupon_rate",
                 "asset_class.FixedIncome.credit_rating"));
 
-        // Same "- path:" precision as the previous test -- maturity_date
-        // specifically also appears in the instructional preamble's own
-        // worked example, unrelated to exclusion.
+        // Same "- path:" precision as the previous test, now kept for
+        // defensive consistency rather than to dodge a live preamble
+        // collision -- see that test's own comment for the full
+        // history of why this pattern was originally needed.
         assertThat(rendered).doesNotContain("- asset_class.FixedIncome.maturity_date:");
         assertThat(rendered).doesNotContain("- asset_class.FixedIncome.coupon_rate:");
         assertThat(rendered).doesNotContain("- asset_class.FixedIncome.credit_rating:");

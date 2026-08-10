@@ -15,7 +15,7 @@ import java.util.Set;
  * validated), not deferred until a resolver actually tries to use a
  * bad entry at runtime.
  *
- * <p>Four things get checked:
+ * <p>Five things get checked:
  * <ul>
  *   <li>{@code fieldAliases} references a real field path in the
  *       referenced model;</li>
@@ -27,6 +27,17 @@ import java.util.Set;
  *       AND that field is genuinely optional in the schema -- excluding
  *       a required field from what the model is shown would make this
  *       client's feed permanently unsatisfiable, not just imprecise;</li>
+ *   <li>a {@code notProvidedFields} path never also carries a
+ *       {@code fieldAliases} or {@code variantValues} entry (an
+ *       external review's own catch -- otherwise a config can legally
+ *       declare a field both "this client's feed never provides it" and
+ *       "here's how to recognize it when it's provided," a durable
+ *       contradiction that would otherwise only surface as a confusing
+ *       runtime rejection from {@link com.alai.agenticsheets.mapping.ClientConventionMappingValidator}
+ *       the first time {@link com.alai.agenticsheets.mapping.FieldAliasResolver}
+ *       actually resolved the field the alias was configured to
+ *       recognize, rather than failing clearly at the point the
+ *       contradiction was actually introduced);</li>
  *   <li>no two distinct alias strings (within one model's conventions,
  *       across different canonical fields) normalize to the same thing
  *       -- an ambiguous alias would make column-header matching
@@ -62,6 +73,7 @@ final class ClientConventionsValidator {
             validateFieldAliases(client.clientId(), modelId, conventions.fieldAliases(), paths);
             validateVariantValues(client.clientId(), modelId, conventions.variantValues(), paths);
             validateNotProvidedFields(client.clientId(), modelId, conventions.notProvidedFields(), paths);
+            validateNoContradictoryNotProvided(client.clientId(), modelId, conventions);
         }
     }
 
@@ -122,6 +134,39 @@ final class ClientConventionsValidator {
                         + "' notProvidedFields references '" + path + "', which is a REQUIRED field in "
                         + modelId + " -- excluding it would make this client's feed permanently "
                         + "unsatisfiable; only genuinely optional fields may be declared not-provided");
+            }
+        }
+    }
+
+    /** An external review's own catch: {@code notProvidedFields} and
+      * {@code fieldAliases}/{@code variantValues} are, by construction,
+      * mutually exclusive claims about the same field -- "this client's
+      * feed never provides it" versus "here's how to recognize it when
+      * provided." A config declaring both for the same path is a
+      * durable contradiction, not a runtime edge case: without this
+      * check, {@link com.alai.agenticsheets.canonical.CanonicalModelRegistry}
+      * would accept it, {@link com.alai.agenticsheets.mapping.FieldAliasResolver}
+      * would deterministically resolve the field via the configured
+      * alias whenever a matching column showed up, and
+      * {@link com.alai.agenticsheets.mapping.ClientConventionMappingValidator}
+      * would then reject the resulting proposal every single time --
+      * the config itself is what's actually broken, and the person who
+      * needs to know that is whoever edits the config, not whoever
+      * happens to trigger a proposal against it later. */
+    private static void validateNoContradictoryNotProvided(String clientId, String modelId,
+            ClientModelConventions conventions) {
+        for (String path : conventions.notProvidedFields()) {
+            if (conventions.fieldAliases().containsKey(path)) {
+                throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                        + "' declares '" + path + "' in both notProvidedFields and fieldAliases -- "
+                        + "contradictory: a field can't simultaneously be 'never provided by this client' "
+                        + "and 'recognizable by this configured alias when provided'. Remove it from one.");
+            }
+            if (conventions.variantValues().containsKey(path)) {
+                throw new CanonicalConfigException("client '" + clientId + "' model '" + modelId
+                        + "' declares '" + path + "' in both notProvidedFields and variantValues -- "
+                        + "contradictory: a field can't simultaneously be 'never provided by this client' "
+                        + "and 'have known variant values when provided'. Remove it from one.");
             }
         }
     }

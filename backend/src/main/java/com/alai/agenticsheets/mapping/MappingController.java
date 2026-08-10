@@ -72,6 +72,7 @@ public class MappingController {
     private final MappingMemoryService mappingMemoryService;
     private final ConventionSuggestionService conventionSuggestionService;
     private final ConventionSuggestionRepository conventionSuggestionRepository;
+    private final ClientConfigFingerprint clientConfigFingerprint;
 
     public MappingController(
             AgentMappingProposalService proposalService,
@@ -87,7 +88,8 @@ public class MappingController {
             ProposalDecisionService proposalDecisionService,
             MappingMemoryService mappingMemoryService,
             ConventionSuggestionService conventionSuggestionService,
-            ConventionSuggestionRepository conventionSuggestionRepository) {
+            ConventionSuggestionRepository conventionSuggestionRepository,
+            ClientConfigFingerprint clientConfigFingerprint) {
         this.proposalService = proposalService;
         this.workflowService = workflowService;
         this.importBatchRepository = importBatchRepository;
@@ -102,6 +104,7 @@ public class MappingController {
         this.mappingMemoryService = mappingMemoryService;
         this.conventionSuggestionService = conventionSuggestionService;
         this.conventionSuggestionRepository = conventionSuggestionRepository;
+        this.clientConfigFingerprint = clientConfigFingerprint;
     }
 
     /**
@@ -137,6 +140,18 @@ public class MappingController {
      * real observed source column, a valid variant -- before the old
      * proposal is superseded and the new one persisted, both atomically
      * via {@link ProposalDecisionService#amendProposal}.
+     *
+     * <p>Post-benchmark hardening (see
+     * {@code docs/local-llm-enhancements.md}'s "review, client-config
+     * governance" section): an external review's own high-severity
+     * catch -- this used to persist the amended proposal under
+     * {@code stored.clientConfigFingerprint()}, the OLD proposal's
+     * stale fingerprint, even though {@code validateEdited} just
+     * validated the edit against the CURRENT {@code client}. The
+     * amended proposal's own stored fingerprint now reflects what it
+     * was actually validated against, computed fresh right here, not
+     * inherited from whatever config happened to exist when the
+     * original (now-superseded) proposal was first created.
      */
     @PostMapping("/proposals/{id}/amend")
     public ProposeResponse amend(@PathVariable long id, @RequestBody MappingProposal editedProposal) {
@@ -149,7 +164,7 @@ public class MappingController {
 
         long newProposalId = proposalDecisionService.amendProposal(
                 id, stored.importBatchId(), model.version(), editedProposal,
-                stored.columnFingerprint(), stored.clientConfigFingerprint());
+                stored.columnFingerprint(), clientConfigFingerprint.hash(client));
         return new ProposeResponse(stored.importBatchId(), newProposalId, editedProposal);
     }
 
@@ -195,12 +210,48 @@ public class MappingController {
      * APPROVED" and "batch claimed as PROCESSING," leaving the proposal
      * permanently APPROVED with no path forward. Both claims now
      * succeed or roll back together.
+     *
+     * <p>Post-benchmark hardening (see
+     * {@code docs/local-llm-enhancements.md}'s "review, client-config
+     * governance" section): an external review's own high-severity
+     * catch -- a pending proposal was never actually re-checked against
+     * the client config's own current fingerprint before approval and
+     * delivery. Concretely: a proposal created while
+     * {@code notProvidedFields} was empty could sit in review while the
+     * config changed to newly declare a field not-provided, then still
+     * be approved and delivered carrying that now-disallowed field --
+     * ordinary row validation wouldn't catch it, since the field being
+     * optional means its presence doesn't fail structurally, only the
+     * convention it now violates. The same risk exists for any other
+     * convention change (a corrected {@code fieldAliases} entry, a
+     * changed {@code variantValues} target, {@code dateFormat}) -- not
+     * just this one field. Checked here, before the proposal is ever
+     * claimed, rather than after: a mismatch fails the whole approval
+     * outright (HTTP 409, matching {@link IllegalStateException}'s
+     * existing mapping and this class's own established idiom for "the
+     * state this operation depends on isn't what it should be"),
+     * requiring a fresh {@code /propose} rather than approving stale
+     * content. Checking before the claim, not after, avoids ever
+     * needing to unwind a partially-committed approval.
      */
     @PostMapping("/proposals/{id}/approve")
     public ApproveResponse approve(
             @PathVariable long id,
             @RequestParam(defaultValue = "manual-api-call") String reviewedBy) {
         StoredMappingProposal stored = mappingProposalRepository.findById(id);
+        ImportBatch batch = importBatchRepository.findById(stored.importBatchId());
+        ClientConfig currentClient = registry.getClient(batch.clientId());
+        String currentFingerprint = clientConfigFingerprint.hash(currentClient);
+        if (!currentFingerprint.equals(stored.clientConfigFingerprint())) {
+            throw new IllegalStateException("proposal " + id + " was created against a different client "
+                    + "configuration than what's currently active for '" + batch.clientId() + "' -- the client "
+                    + "config changed (fieldAliases, variantValues, notProvidedFields, or dateFormat) while this "
+                    + "proposal was pending review. Approving it now could deliver a mapping that no longer "
+                    + "reflects current conventions. Re-run /propose for a fresh proposal against the current "
+                    + "config, or amend this one, which re-validates and re-fingerprints against the current "
+                    + "config automatically.");
+        }
+
         proposalDecisionService.claimForApproval(id, stored.importBatchId(), reviewedBy);
 
         // The transaction above already committed both claims -- the

@@ -89,12 +89,12 @@ public class CanonicalModelPromptRenderer {
                 .append(" (version ").append(model.version()).append(")\n");
         sb.append("Fields below are identified by path (dot-separated for a sum ")
                 .append("type's variant fields). Use the path EXACTLY as shown, e.g. \"")
-                .append("currency\" or \"asset_class.FixedIncome.maturity_date\" -- do NOT prefix a ")
+                .append("currency\" or \"sum_field.Variant.optional_detail\" -- do NOT prefix a ")
                 .append("path with the canonical model's own name (\"").append(model.modelId())
                 .append("\" above is the name of this schema, not part of any field's path). ")
-                .append("Equally, do NOT shorten or abbreviate a path -- \"security_description\" ")
-                .append("must never become \"description\", and \"asset_class.FixedIncome.maturity_date\" ")
-                .append("must never become just \"maturity_date\". A field's whole path, including any ")
+                .append("Equally, do NOT shorten or abbreviate a path -- \"account_holder_name\" ")
+                .append("must never become \"holder_name\", and \"sum_field.Variant.optional_detail\" ")
+                .append("must never become just \"optional_detail\". A field's whole path, including any ")
                 .append("prefix or dotted variant-qualifier, is one indivisible identifier -- copy it ")
                 .append("character for character from the listing below, don't reconstruct or ")
                 .append("paraphrase it from memory.\n\n");

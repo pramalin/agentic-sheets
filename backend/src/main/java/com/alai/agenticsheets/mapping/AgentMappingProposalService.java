@@ -342,7 +342,7 @@ public class AgentMappingProposalService {
                 product types (records: every field present) and sum types (tagged
                 variants: exactly one present). For a sum type field, name which
                 variant applies using its variant-qualified path for any of that
-                variant's own fields (e.g. asset_class.FixedIncome.maturity_date).
+                variant's own fields (e.g. sum_field.Variant.optional_detail).
 
                 The client this file belongs to is already known with certainty --
                 it's given below, not something for you to infer. Any canonical
@@ -360,8 +360,9 @@ public class AgentMappingProposalService {
                 called "Price", "Valuation Px", "Mkt Val", or anything else a
                 client happens to use; check the actual table below for whichever
                 text is really there. The same applies to every other field, not
-                just this one example -- maturity_date being in the schema is
-                similarly not evidence a column called "Maturity Date" exists.
+                just this one example -- a field named optional_detail being in
+                the schema is similarly not evidence a column called
+                "Optional Detail" exists.
                 Before writing any sourceColumn value, confirm it appears verbatim
                 in the table's actual header row -- do not satisfy "this field
                 needs a source" by imagining a plausible-sounding column into
@@ -401,8 +402,8 @@ public class AgentMappingProposalService {
                 field -- the large majority -- leave BOTH selectedVariant and
                 variantValueMap null. Never set either one on a field that isn't
                 a sum type, and never set either one on a sum type's own nested
-                sub-fields (e.g. asset_class.FixedIncome.maturity_date) -- only
-                the sum type field's own path (e.g. asset_class) ever takes a
+                sub-fields (e.g. sum_field.Variant.optional_detail) -- only
+                the sum type field's own path (e.g. sum_field) ever takes a
                 variant.
 
                 A source column with no reasonable canonical home is not an error --
@@ -421,28 +422,28 @@ public class AgentMappingProposalService {
 
                 Be especially conservative about a sum type's own variant-specific
                 sub-fields -- any path with a dot in it below the sum type field itself
-                (e.g. asset_class.FixedIncome.maturity_date, .coupon_rate,
-                .credit_rating). Only propose one of these if a source column exists
-                whose header or sampled values are SPECIFICALLY about that exact piece
-                of information -- a column literally about a maturity date, not a
-                generic price, identifier, or quantity column repurposed because a
+                (e.g. sum_field.Variant.optional_detail_one, .optional_detail_two,
+                .optional_detail_three). Only propose one of these if a source column
+                exists whose header or sampled values are SPECIFICALLY about that exact
+                piece of information -- a column literally about that specific detail,
+                not a generic price, identifier, or quantity column repurposed because a
                 variant sub-field happened to be listed in the schema below. If no
                 column is specifically and obviously about a given sub-field, leave it
-                out of fieldMappings entirely; an incomplete FixedIncome record is
+                out of fieldMappings entirely; an incomplete variant record is
                 normal and expected when the source file's own columns don't carry that
                 level of detail, not a gap you need to fill by reusing a nearby column.
                 And when you do leave one out, leave it out completely -- do NOT add its
-                canonical name (e.g. "maturity_date") to unmappedSourceColumns either.
-                unmappedSourceColumns is a list of source table columns you're declining
-                to map, never a list of canonical fields you're declining to fill --
-                a sub-field with no matching column was never a source column in the
-                first place, so it has no place in either list.
+                canonical name (e.g. "optional_detail_one") to unmappedSourceColumns
+                either. unmappedSourceColumns is a list of source table columns you're
+                declining to map, never a list of canonical fields you're declining
+                to fill -- a sub-field with no matching column was never a source
+                column in the first place, so it has no place in either list.
 
                 CRITICAL, and specifically why the general rule above about never
                 inventing a sourceColumn matters most here: a sub-field's own name
-                (e.g. maturity_date) is especially tempting to title-case into a
-                plausible-sounding column ("Maturity Date") precisely because the
-                schema lists it right there as something to fill in. Resist that
+                (e.g. optional_detail_one) is especially tempting to title-case into a
+                plausible-sounding column ("Optional Detail One") precisely because
+                the schema lists it right there as something to fill in. Resist that
                 temptation the same way as for any other field -- verify against
                 the real table, don't invent.
 

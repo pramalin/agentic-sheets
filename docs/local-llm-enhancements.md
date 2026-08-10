@@ -2784,3 +2784,155 @@ recurring on whichever field it targets next -- only a real re-run can
 say, and worth watching specifically for whether it recurs on a third
 field, which would suggest the issue is more fundamental than
 placement and scope.
+
+## Review, client-config governance
+
+A second external review of the client-config round (main at `2431db6`)
+found five real issues, one high-severity, plus a substantive
+architectural suggestion. Findings #1 and #4 were fixed immediately,
+per the review's own stated priority; #2 was fixed as a direct,
+contained follow-on; #3 is a documentation/semantics point addressed
+here in prose; #5 (stop asking the LLM to reproduce source-column
+strings at all -- have it choose by ID instead) is a genuinely
+substantial architectural change, engaged with seriously below but not
+attempted in this same round.
+
+**High -- a pending proposal was never re-checked against the client
+config's own current fingerprint before approval.** The most important
+catch. `StoredMappingProposal` correctly stored `clientConfigFingerprint`,
+but neither `/approve` nor `/amend` actually used it for what it was
+for. Concretely: a proposal created while `notProvidedFields` was empty
+could sit in review while the config changed to newly declare a field
+not-provided, then still be approved and delivered carrying that
+now-disallowed field -- ordinary row validation wouldn't catch it,
+since the field being optional means its presence doesn't fail
+structurally, only the convention it now violates. The same risk
+existed for any other convention change (a corrected `fieldAliases`
+entry, a changed `variantValues` target, `dateFormat`), not just this
+one field. A related, more direct bug: `/amend` validated the edit
+against the *current* client config, but then persisted the amended
+proposal under `stored.clientConfigFingerprint()` -- the OLD,
+now-superseded proposal's stale value, not what the edit was actually
+just checked against.
+
+Fixed both halves. `/approve` now resolves the current `ClientConfig`,
+computes its fingerprint, and compares it against the stored one
+*before* the proposal is ever claimed -- a mismatch throws
+`IllegalStateException` (HTTP 409, matching this class's own
+established idiom for "the state this operation depends on isn't what
+it should be"), requiring a fresh `/propose` rather than approving
+stale content. Checking before the claim, not after, avoids ever
+needing to unwind a partially-committed approval. `/amend` now persists
+the amended proposal under a freshly-computed fingerprint from the same
+`client` it just validated against, not the stale stored one.
+
+**Medium -- `notProvidedFields` wasn't as completely hidden from the
+model as the comments claimed.** The field *listing* itself correctly
+omitted the configured paths, and the all-excluded-variant rendering
+fix held. But the renderer's own instructional preamble, and the system
+prompt's general guidance, both still literally named
+`asset_class.FixedIncome.maturity_date` and its siblings as worked
+examples -- so "the model is never even shown the field as an option"
+was stronger than the actual behavior. Given the entire reason this
+round exists is a 3B model fixating on these exact names, repeating
+them elsewhere in the prompt (even in "don't do this" framing) risked
+reinforcing exactly the association the fix was meant to break.
+
+Every runtime mention of `maturity_date`/`coupon_rate`/`credit_rating`
+and the `FixedIncome`-sub-field dotted-path *pattern* was replaced with
+a generic, made-up placeholder (`sum_field.Variant.optional_detail`,
+matching the review's own suggested style), while the actual guidance
+each sentence gives was preserved unchanged. One mention of
+`"FixedIncome"` was deliberately left alone -- as a valid *variant
+name* example (not a sub-field), it isn't hidden at all; the variant
+itself is always visible in the sum-type listing, only its three
+sub-fields are excluded, so using it as an example doesn't contradict
+anything. A real, concrete consequence worth naming: since all three of
+`FixedIncome`'s sub-fields are already declared `notProvidedFields` for
+JPMC, and the schema listing already omits them, the model should now
+have **zero exposure** to these specific field names anywhere in its
+prompt for this client -- the "never even shown" claim is now genuinely
+true, not just approximately true. Caught and fixed one existing test
+that had been asserting on the exact real-field-name text this change
+removed; the two other exclusion tests referencing the same path were
+also updated for comment accuracy (their defensive "- path:" precision
+assertions remain correct and unchanged, only the explanatory comments,
+which referenced a preamble mention no longer there, needed updating).
+
+**Medium -- `notProvidedFields` semantics need to be stated more
+strictly than "absent from the fixtures we have."** A fair point: the
+JPMC config's justification for declaring the three `FixedIncome`
+sub-fields not-provided was that they're absent from every current
+fixture and from `mapping-notes.md`'s own JPMC table -- but absence
+from every example seen so far isn't, by itself, evidence a *different*
+JPMC Holdings feed will never contain them. Worth stating the intended
+semantics explicitly, in the code and in this doc, rather than leaving
+it implicit: `notProvidedFields` means "this is an explicitly approved
+invariant for every file this client sends for this canonical model,"
+not "we haven't happened to see this field yet." If multiple real feed
+profiles for one client eventually diverge on this (a summary feed
+without coupon detail, a detailed feed with it), the right fix is
+moving this negative knowledge down to a feed/profile level, not
+weakening what a model-wide declaration means. Not implemented as code
+in this round -- there's exactly one real client config in this whole
+project right now, so a feed-level mechanism has no real second case to
+be designed against yet -- but recorded here as the semantics this
+project is committing to, and the trigger for revisiting the mechanism
+if a genuine multi-profile client shows up.
+
+**Medium -- contradictory conventions were accepted at config-load
+time.** A config could legally declare a field in both
+`fieldAliases`/`variantValues` (recognizable when provided) and
+`notProvidedFields` (never provided) at once -- a durable configuration
+contradiction that would previously only have surfaced as a confusing
+runtime rejection, the first time `FieldAliasResolver` actually
+resolved the field the alias was configured to recognize, and
+`ClientConventionMappingValidator` then rejected the resulting
+proposal every time after. Fixed at the actual source: `ClientConventionsValidator`
+now rejects a `notProvidedFields` path that also carries a
+`fieldAliases` or `variantValues` entry, at config-load time, with a
+message naming the exact contradiction -- not deferred to the person
+who happens to trigger a proposal against the broken config later.
+
+**Architectural suggestion, engaged with but not implemented this
+round -- stop asking the model to reproduce source-column strings at
+all.** The review's strongest point: after this round's own fixes, the
+application already knows precisely which source columns remain
+unresolved (exactly one, for the unfamiliar-column fixture) before the
+model is ever called -- yet the structured-output contract still asks
+the model to return a `sourceColumn` string, giving it room to replace
+a fact the software already has with a fabricated one. The suggested
+fix -- a smaller decision DTO keyed by column ID
+(`ColumnMappingDecision(sourceColumnId, canonicalFieldPath, ...)`, the
+application resolving the ID back to the real header itself) removes
+an entire hallucination class deterministically, the same architectural
+move that already justified taking sum-type variant derivation away
+from the model. Genuinely the right next question, and explicitly the
+review's own suggested order: confirm findings #1 and #4 are solid,
+re-run 3B once against the now-generalized prompt, and treat this as
+the next real step if fabrication still recurs -- not because the
+suggestion is wrong, but because it's a larger, structural change
+better undertaken deliberately than folded into an already-large
+round, and because one more real run is the fastest way to learn
+whether the smaller fixes already made this unnecessary.
+
+**Files changed:**
+- `backend/src/main/java/com/alai/agenticsheets/mapping/MappingController.java` (modified -- `/approve` checks config-fingerprint drift before claiming; `/amend` persists a freshly-computed fingerprint; `ClientConfigFingerprint` now injected)
+- `backend/src/main/java/com/alai/agenticsheets/canonical/ClientConventionsValidator.java` (modified -- rejects a `notProvidedFields` path that also carries `fieldAliases`/`variantValues`)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- generic placeholder examples throughout the system prompt, replacing real excluded-field names)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/CanonicalModelPromptRenderer.java` (modified -- same, in the renderer's own instructional preamble)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/MappingControllerConfigDriftTest.java` (new -- 3 tests, Mockito-only given no existing `MappingController` test infrastructure)
+- `backend/src/test/java/com/alai/agenticsheets/canonical/CanonicalModelRegistryTest.java` (modified -- 2 new contradiction tests, 1 new model constant with a genuinely optional sum-type field, needed to isolate the variant-values contradiction test from the separate required-field check)
+- `backend/src/test/java/com/alai/agenticsheets/mapping/CanonicalModelPromptRendererTest.java` (modified -- 1 test updated for the now-generic example text, 2 comments corrected for accuracy)
+
+**Tests added** (5 new): 3 in `MappingControllerConfigDriftTest` (drift rejected, match proceeds, amend persists the fresh fingerprint), 2 in `CanonicalModelRegistryTest` (both contradiction directions). One existing test corrected (asserted on real-field-name text that no longer appears).
+
+**Confirmed live.** `mvn test`: **265/265**. The high-severity
+proposal-governance fix, the config-load contradiction check, the new
+`MappingControllerConfigDriftTest`, and both new
+`CanonicalModelRegistryTest` contradiction cases all compiled and
+passed together on the first real run, including the deliberately
+Mockito-only `MappingController` tests (no full Testcontainers
+integration harness built for this round) and the dedicated
+optional-sum-type model constant added specifically to isolate the
+variant-values contradiction test correctly.

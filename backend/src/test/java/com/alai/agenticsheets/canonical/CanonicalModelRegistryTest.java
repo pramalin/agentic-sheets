@@ -262,6 +262,40 @@ class CanonicalModelRegistryTest {
             root: Thing
             """;
 
+    // notProvidedFields (post-benchmark hardening -- see
+    // docs/local-llm-enhancements.md's "review, client-config
+    // governance" section): a genuinely optional SUM TYPE field is
+    // needed to test that notProvidedFields/variantValues contradiction
+    // specifically -- MODEL_WITH_SUM_TYPE's own status field is
+    // required, so declaring it not-provided would already fail the
+    // separate required-field check first, never reaching the
+    // contradiction check this constant exists to test in isolation.
+    private static final String MODEL_WITH_OPTIONAL_SUM_TYPE = """
+            model: WithOptionalSumType
+            version: 1
+            target:
+              service: x
+              transport: rest
+              endpoint: https://example.com
+              auth: { type: api-key, secretRef: X }
+            types:
+              Thing:
+                kind: record
+                fields:
+                  name: String
+                  status: Status?
+              Status:
+                kind: sum
+                variants:
+                  Active:
+                    kind: record
+                    fields: {}
+                  Inactive:
+                    kind: record
+                    fields: {}
+            root: Thing
+            """;
+
     @Test
     void validConventionsLoadSuccessfullyAndAreRetrievable(
             @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
@@ -421,6 +455,66 @@ class CanonicalModelRegistryTest {
                   WithOptional:
                     notProvidedFields:
                       - nonexistent_field
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThatThrownBy(() -> registry.getClient("broken"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+    }
+
+    // Post-benchmark hardening (see docs/local-llm-enhancements.md's
+    // "review, client-config governance" section): an external review's
+    // own catch -- notProvidedFields and fieldAliases/variantValues are
+    // mutually exclusive claims about the same field. A config
+    // declaring both is a durable contradiction, not a runtime edge
+    // case: it would otherwise be accepted at load time, resolved
+    // deterministically by FieldAliasResolver whenever a matching
+    // column showed up, and rejected by ClientConventionMappingValidator
+    // every single time after that -- a confusing runtime failure for a
+    // problem that was actually in the config itself.
+
+    @Test
+    void notProvidedFieldsContradictingFieldAliasesFailsAtLoadTime(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        Files.writeString(modelsDir.resolve("model.yaml"), MODEL_WITH_OPTIONAL_FIELD);
+        Files.writeString(clientsDir.resolve("broken.yaml"), """
+                client: broken
+                dateFormat: yyyy-MM-dd
+                conventions:
+                  WithOptional:
+                    fieldAliases:
+                      nickname: [Nick]
+                    notProvidedFields:
+                      - nickname
+                """);
+
+        CanonicalModelRegistry registry = new CanonicalModelRegistry(
+                modelsDir.toString(), clientsDir.toString(),
+                new CanonicalModelParser(), new ClientConfigParser());
+        registry.reload();
+
+        assertThatThrownBy(() -> registry.getClient("broken"))
+                .isInstanceOf(java.util.NoSuchElementException.class);
+    }
+
+    @Test
+    void notProvidedFieldsContradictingVariantValuesFailsAtLoadTime(
+            @TempDir Path modelsDir, @TempDir Path clientsDir) throws Exception {
+        Files.writeString(modelsDir.resolve("model.yaml"), MODEL_WITH_OPTIONAL_SUM_TYPE);
+        Files.writeString(clientsDir.resolve("broken.yaml"), """
+                client: broken
+                dateFormat: yyyy-MM-dd
+                conventions:
+                  WithOptionalSumType:
+                    variantValues:
+                      status:
+                        active: Active
+                    notProvidedFields:
+                      - status
                 """);
 
         CanonicalModelRegistry registry = new CanonicalModelRegistry(
