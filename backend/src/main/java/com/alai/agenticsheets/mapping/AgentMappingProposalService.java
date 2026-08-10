@@ -610,12 +610,12 @@ public class AgentMappingProposalService {
                         + "(a real behavior-changing fix for this distinction is open follow-up work, not "
                         + "attempted here), but worth ruling out the model/network being unavailable before "
                         + "assuming the proposal's own content was actually at fault. Message: {}",
-                        e.getClass().getSimpleName(), e.getMessage());
+                        e.getClass().getSimpleName(), e.getMessage(), e);
             } else {
                 log.warn("Model call/conversion for propose() threw {} rather than returning a parseable "
                         + "(or empty) entity -- treating as an empty proposal so it fails clean structural "
                         + "validation rather than propagating an unhandled exception. Message: {}",
-                        e.getClass().getSimpleName(), e.getMessage());
+                        e.getClass().getSimpleName(), e.getMessage(), e);
             }
             responseEntity = new ResponseEntity<>(null, null);
         }

@@ -3028,3 +3028,144 @@ review table -- reasoned through and expected to still pass, since
 those values still appear in the final proposal regardless of which
 path resolved them, but genuinely worth confirming live rather than
 assuming a second time in the same investigation.
+
+**Confirmed live.** All three E2E suites (golden-path, inbox, browser)
+passed locally, including `review-approval.spec.ts` exactly as reasoned
+above. Pushed and confirmed green in CI.
+
+## DGX Spark comparison: Qwen 3.5 122B-A10B, 7/7 clean
+
+Genuine curiosity-driven detour, not a planned benchmark round: with
+CI settled, ran the same `holdings_jpmc_llm6_unfamiliar_column.xlsx`
+question against a much larger, newer model, on real hardware already
+available for it.
+
+**This is not the clean 3B-vs-bigger comparison the earlier review
+suggested.** The original suggestion was a same-generation, dense
+Qwen 2.5 model at 7B/14B. What actually got tested is
+**Qwen3.5-122B-A10B** (a 122B-total, ~10B-active Mixture-of-Experts
+model, INT4-quantized), a different generation, a different
+architecture, and reasoning-capable -- served via vLLM on GPU rather
+than Docker's own CPU-based model runner. Worth stating plainly: this
+result shows "a much larger, newer, reasoning-capable model handles
+this specific task well," not "3.5 beats 2.5, all else equal." A
+genuine same-generation size comparison (Qwen 2.5 at 7B/14B) remains
+unexplored.
+
+**The actual result, once the infrastructure was working: 7 for 7,
+clean.** Across five independently fresh runs (full `docker compose
+down -v` before each, confirmed via the benchmark script's own
+cache-hit detection recognizing every baseline as genuine, not stale)
+plus two earlier manual confirmations, `market_price` resolved
+correctly to `Valuation Px` every single time -- no fabrication, no
+repurposing a wrong column, no silent omission, the three failure
+patterns that recurred repeatedly across five separate prompt-tuning
+rounds against the 3B model. Confidence stayed in a tight 0.90-0.95
+band; reasoning was genuinely varied trial to trial (correctly
+distinguishing `Valuation Px` from the similarly-named `Market Value`
+column more than once, unprompted), rather than a single memorized
+phrase repeating. Elapsed time stayed in an unremarkable 1:26-2:02
+band, nowhere near the configured 16,000-token budget -- no truncation
+risk materialized in practice, despite the real, confirmed risk that
+motivated setting that budget in the first place (see below). Baseline
+stayed at zero model calls throughout, exactly as expected, since that
+path never touches the model at all regardless of which model is
+configured.
+
+**A genuinely new fabrication sub-pattern did show up once, on the
+very first attempt with the 3B/CPU setup on this same machine (a
+sanity-check run, not part of the 3.5 comparison, but still real,
+still worth recording).** The model wrote `sourceColumn: "Price"` for
+`market_price` -- not a title-cased fabrication (`"Market Price"`,
+the pattern from three rounds ago) and not silence, but reverting to
+what a *typical* JPMC file usually calls this column rather than
+reading what this particular file actually contained. `Valuation Px`
+went completely unaccounted for. A third distinct shape of the same
+underlying vulnerability the review's deferred finding #5 (stop asking
+the model to reproduce column strings at all) is specifically about:
+repurposing a real column, title-casing a fabricated one, and now
+reverting to a remembered "usual" value instead of the real one. A
+single occurrence, correctly not treated as grounds for a seventh
+reactive prompt tweak -- recorded here as one more real data point for
+that open architectural conversation.
+
+**Most of this detour was infrastructure, not model evaluation, and
+several real mistakes happened along the way -- recorded honestly
+rather than smoothed over:**
+
+- `compose.local-llm.yaml`'s Docker Compose-native `models:` support
+  requires the separate `docker-model-plugin`, which wasn't installed
+  on this machine, and isn't available through Ubuntu's own or
+  NVIDIA's DGX-specific APT sources at all (confirmed: no
+  `download.docker.com` source configured, and `apt-get install`
+  reported no installation candidate) -- a real gap, not a guess,
+  resolved via `docker/model-runner`'s own documented fix for exactly
+  this symptom, which explicitly names NVIDIA DGX systems as a known
+  case: purge the distro's Docker packages and reinstall from
+  `get.docker.com`. Verified safe before running: the existing,
+  already-working `vllm-qwen35-v2` deployment and GPU passthrough both
+  survived the reinstall untouched, confirmed directly rather than
+  assumed.
+- The Model Runner CLI plugin being present isn't the same as its
+  service running -- `docker model install-runner` was a separate,
+  necessary step, caught by checking `docker model version`'s Server
+  line rather than assuming client-present meant server-ready.
+- `compose.spark-llama.yaml` defaulted to port 30000; the real,
+  confirmed-working vLLM deployment listens on 8000 (verified via a
+  real `curl`, then later confirmed beyond doubt via a real exception
+  stack trace). A first attempt at this exact fix was made directly in
+  a sandbox session and never actually packaged or delivered -- an edit
+  that existed nowhere except a soon-to-be-discarded local copy,
+  causing a long, genuinely confusing troubleshooting detour chasing
+  what looked like a model/inference problem but was actually a
+  request never leaving the backend's own network stack. Fixed for
+  real the second time: packaged, applied to the actual working copy,
+  and the applied file's own content verified via `cat` before trying
+  anything else again.
+- Nothing in this project configured `max_tokens` anywhere, and this
+  turned out to matter for a reasoning model specifically: a real,
+  live test showed a 200-token budget on a simple three-sentence
+  question returning `content: null` with `finish_reason: "length"` --
+  the model spent its entire budget on its own visible chain-of-thought
+  and never reached an actual answer. Fixed by adding
+  `SPRING_AI_OPENAI_CHAT_OPTIONS_MAX_TOKENS` (relaxed-binding-inferred
+  from the same pattern as the already-working `_TEMPERATURE`, not
+  independently confirmed against Spring AI's own source -- flagged as
+  such at the time) at a generous 16,000-token default.
+- The actual failure diagnosis took far longer than it should have
+  because `AgentMappingProposalService`'s own infrastructure-failure
+  logging never passed the caught exception to SLF4J as a `Throwable`
+  argument -- only its class name and message as strings -- so no
+  stack trace was ever printed, at any log level, through several
+  rounds of trying to fix this by adjusting logging configuration
+  instead of the actual logging call. `docker model version`'s
+  `loggers` actuator endpoint wasn't exposed either, closing off the
+  live-adjustment path. Fixed at the real source: pass `e` as a
+  trailing argument to both `log.warn(...)` calls in the
+  infrastructure-failure branch, which is what actually surfaced the
+  real cause (`java.net.ConnectException: ... :30000 -- Connection
+  refused`) the first time a full stack trace was ever visible in this
+  investigation. Worth keeping permanently, independent of this
+  specific detour -- the next infrastructure failure, whatever it is,
+  should be diagnosable directly from the logs rather than requiring
+  another multi-hour blind troubleshooting session.
+
+**Files changed:**
+- `compose.spark-llama.yaml` (modified -- port default corrected to 8000, `max_tokens` added with a documented, real reason)
+- `backend/src/main/java/com/alai/agenticsheets/mapping/AgentMappingProposalService.java` (modified -- the caught exception is now passed to SLF4J so infrastructure failures print a real stack trace)
+
+**Not run against `mvn test`** in this environment for this round --
+both changes are configuration/logging-only, no test asserts on either
+file's specific content, and the actual verification that matters here
+happened live, repeatedly, against the real DGX hardware and a real
+model, not in a unit test.
+
+**Where this leaves things.** A real, if narrow, finding: a
+much larger, newer, reasoning-capable model handled this specific
+long-standing hard case cleanly and consistently, 7 for 7. Two real,
+lasting infrastructure fixes worth keeping regardless of any future
+model comparison. A genuine same-generation size comparison (Qwen 2.5
+7B/14B) remains open, unexplored work if it's still of interest -- the
+infrastructure for it (`compose.local-llm.yaml`, now confirmed working
+on this machine too, including the Model Runner plugin fix) is in
+place either way.
