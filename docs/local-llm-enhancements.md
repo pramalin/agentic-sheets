@@ -2936,3 +2936,95 @@ Mockito-only `MappingController` tests (no full Testcontainers
 integration harness built for this round) and the dedicated
 optional-sum-type model constant added specifically to isolate the
 variant-values contradiction test correctly.
+
+## The actual CI failure, found by running E2E locally rather than guessing
+
+CI had started failing after the client-config round landed, with no
+way to fetch the real logs directly (GitHub's API rate-limits
+unauthenticated requests, and this project has no token configured for
+that). Rather than guess at a fix blind, the right move was running the
+same E2E suites locally and reading the real failure -- and it turned
+up on the very first suite tried.
+
+**`pipeline-api.spec.ts`'s "exactly one model call" assertion failed --
+`Expected: 1, Received: 0`.** Immediately recognizable, not a mystery:
+this is the exact, intended consequence of promoting
+`account_id`/`security_id`/`security_description`/`market_price` into
+`jpmc.yaml`'s `fieldAliases`, confirmed live against the real Qwen 2.5
+3B model across two consecutive benchmark runs -- baseline JPMC
+Holdings now resolves every column deterministically, so the model is
+never called at all. The test wasn't catching a regression; it was
+enforcing a premise that stopped being true the moment the
+client-config work shipped, and nobody had gone back to update it,
+since the local `mvn test` suite has no coverage of this real,
+containerized, end-to-end path at all.
+
+**Before touching the test, checked whether fixing it this way would
+lose real coverage.** The original assertion existed for a genuine
+reason -- catching a regression that makes a wasted second model call,
+the exact class of bug Step 7.4/7.5's hardening rounds found and fixed.
+Read `mapping-memory.spec.ts` in full before deciding anything: it uses
+a deliberately separate client (`jpmc-memtest`, its own config file,
+not affected by `jpmc.yaml`'s promoted aliases), and its own first
+`propose` call still genuinely triggers a real model call (confirmed by
+its own `origin === "AGENT"` check and its own `calls.length === 1`
+assertion, both of which passed on this same local run). That coverage
+never disappeared -- it was always going to keep working regardless of
+what happened to `jpmc.yaml`, since it was never affected by it in the
+first place. This is what actually justified fixing `pipeline-api.spec.ts`
+directly (updating its expectation to zero) rather than switching it to
+a different fixture just to preserve "some test somewhere calls the
+model once" -- that coverage already exists, in the right place, for
+the right reason.
+
+**Also checked whether `origin` could give a more precise signal than
+call-counting.** It can't: `ResolvedProposal.ORIGIN_AGENT` is returned
+identically whether a real model call happened or the skip-the-LLM fast
+path fired -- both are "a fresh resolution for a new batch" as far as
+that field is concerned. `llmsim`'s own call count, which the test
+already checked, remains the most precise signal actually available at
+this level.
+
+**Fixed:** the test's title now says what it actually verifies (`"JPMC
+holdings: propose through delivery, fully deterministic -- zero model
+calls"`), the assertion expects `0` instead of `1`, and the
+now-inapplicable per-call assertions (`calls[0].provider`,
+`calls[0].model`, `calls[0].outcome.type`) were removed since there's
+no call left to inspect. Every other assertion in the test --
+delivery correctness, business results, the actual JPMC values that
+cross the fake-target boundary -- is untouched, since none of it ever
+depended on whether the model was called, only on the final,
+observable outcome being correct.
+
+**Verified with real tooling, not just read carefully.** `npm ci` then
+`npx tsc --noEmit` against the actual project `tsconfig.json` --
+genuinely type-checked, not brace-counted or assumed clean from a
+careful read. Passed with zero errors, both for this file alone and for
+the whole `e2e/` project.
+
+**Files changed:**
+- `e2e/tests/pipeline-api.spec.ts` (modified -- test title and final assertion updated to expect zero model calls, matching the confirmed-correct new baseline behavior; stale per-call assertions removed; extensive comment explaining why, including where the "call the model exactly once, not twice" regression coverage this test used to provide still lives)
+
+**No production code changed** -- this was a test catching up to an
+already-correct, already-confirmed-live behavior change, not a bug in
+the application.
+
+**Not run in this environment** -- this environment has no Docker, so
+the actual E2E suite couldn't be re-run here. Verified via a real
+TypeScript compile instead (`npx tsc --noEmit`, zero errors), and by
+tracing the fix's logic directly against `mapping-memory.spec.ts`'s own
+real, already-passing assertions from the same local run rather than
+assuming coverage was preserved.
+
+**Next steps.** Re-run `./e2e/run-golden-path.sh` to confirm this
+specific fix; if clean, move on to `run-inbox-tests.sh` and
+`run-browser-tests.sh` separately (not chained -- Playwright wipes its
+own `test-results/` directory at the start of each run, so chaining
+them risks losing whichever one's artifacts matter most, the same
+lesson from earlier in this project's own E2E debugging history).
+`review-approval.spec.ts` (the browser suite) uses the same real JPMC
+baseline fixture and asserts on `account_id`/`Account` appearing in the
+review table -- reasoned through and expected to still pass, since
+those values still appear in the final proposal regardless of which
+path resolved them, but genuinely worth confirming live rather than
+assuming a second time in the same investigation.

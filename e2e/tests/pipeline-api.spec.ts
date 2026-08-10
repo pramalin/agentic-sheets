@@ -37,7 +37,7 @@ test.describe("golden path: propose -> approve -> validate -> dispatch", () => {
     await llmsimApi.dispose();
   });
 
-  test("JPMC holdings: propose through delivery, exactly one model call", async () => {
+  test("JPMC holdings: propose through delivery, fully deterministic -- zero model calls", async () => {
     // Reset llmsim and the fake-target journal first -- makes this test
     // independent of run order (not relying on being the first
     // proposal ever made against this fixture, or the first delivery
@@ -132,29 +132,44 @@ test.describe("golden path: propose -> approve -> validate -> dispatch", () => {
     expect(deliveredRows[0].quantity).toBe(5000);
     expect(deliveredRows[0].currency).toEqual({ type: "USD" });
 
-    // 8. Confirm the agent was called exactly once. This is the actual
-    // point of resetting llmsim and using Script.exactly rather than
-    // repeatingLast/cycling: a regression that makes a wasted second
-    // model call (the exact class of bug Step 7.4/7.5's hardening
-    // rounds found and fixed) fails this test instead of passing
-    // silently. Not asserting the prompt text verbatim, or a specific
-    // model string -- application.yml deliberately never pins one
-    // either ("a hardcoded model string here would just go stale over
-    // time"), relying on the Spring AI starter's own maintained
-    // default instead. A real first run of this exact test proved that
-    // reasoning right: it moved from gpt-4o-mini to gpt-5-mini between
-    // when this assertion was first written and when it was actually
-    // run. Asserting *some* non-empty model was requested still catches
-    // a real class of bug (the field silently missing or empty) without
-    // reintroducing the staleness the application code itself already
-    // decided to avoid.
+    // 8. Post-benchmark hardening (see docs/local-llm-enhancements.md's
+    // "review, client-config governance" section): this assertion used
+    // to check for exactly one model call, and this test's own title
+    // said so. That changed for a real, confirmed-correct reason, not
+    // a regression -- client-configs/jpmc.yaml now promotes
+    // account_id/security_id/security_description/market_price into
+    // configured fieldAliases (already this project's own documented,
+    // approved JPMC vocabulary -- see mapping-notes.md's JPMC table),
+    // so every column in this real fixture now resolves
+    // deterministically before the model is ever consulted, exactly
+    // the "baseline file -> all 11 columns deterministic -> zero LLM
+    // calls" outcome confirmed live against the real Qwen 2.5 3B model
+    // across two consecutive benchmark runs. This test is what proves
+    // that same architecture holds against the real backend + real
+    // Postgres + real dispatcher stack, not just the benchmark script.
+    //
+    // The original regression this assertion existed to catch --a
+    // wasted second model call, the exact class of bug Step 7.4/7.5's
+    // hardening rounds found and fixed -- is still covered, just not
+    // by this test anymore: mapping-memory.spec.ts's own client
+    // (jpmc-memtest, a deliberately separate config from this test's
+    // jpmc, so it isn't affected by these same promoted aliases) still
+    // genuinely calls the model once for its first file, and asserts
+    // exactly one call total across both its propose calls. That
+    // coverage didn't disappear, it just moved to the test that can
+    // still exercise it.
+    //
+    // origin can't distinguish these two cases either, for what it's
+    // worth -- ResolvedProposal.ORIGIN_AGENT is returned whether a real
+    // model call happened or the skip-the-LLM fast path fired, since
+    // both are still "a fresh resolution for a new batch," just
+    // internally different. llmsim's own call count, checked directly
+    // here, is the most precise signal actually available at this
+    // level.
     const callsResponse = await llmsimApi.get("/_llmsim/calls");
     const calls = await callsResponse.json();
-    expect(calls.length, "llmsim should have received exactly one call").toBe(1);
-    expect(calls[0].provider).toBe("openai");
-    expect(typeof calls[0].model).toBe("string");
-    expect(calls[0].model.length).toBeGreaterThan(0);
-    expect(calls[0].outcome.type).toBe("responded");
+    expect(calls.length, "llmsim should have received zero calls -- every column in this real fixture "
+        + "now resolves deterministically from configured client conventions").toBe(0);
   });
 });
 
